@@ -9,11 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from agentfoundry.context.builder import ContextBuildError, ContextBuilder
 from agentfoundry.models.fake import FakeModelGateway
 from agentfoundry.models.gateway import ModelCallError, ModelGateway
 from agentfoundry.runtime.episode import EpisodeWriter
 from agentfoundry.runtime.state import RunStatus
-from agentfoundry.runtime.task_contract import TaskSpec, load_task
+from agentfoundry.runtime.task_contract import load_task
 from agentfoundry.tools.base import ToolRoutingError
 from agentfoundry.tools.router import ToolRouter
 from agentfoundry.verification.engine import VerificationEngine
@@ -46,13 +47,19 @@ class RunOrchestrator:
         try:
             task = load_task(task_path)
             transition(RunStatus.PLANNING)
-            writer.write_context_manifest(self._context_manifest(task))
             writer.write_environment()
+            context = ContextBuilder(
+                task=task,
+                workspace_root=task_path.parent,
+                provider_name=self._model_gateway.provider_name,
+                episode_writer=writer,
+            ).build()
             # 模型调用和响应分开记录，方便后续区分 provider 故障与工具故障。
             writer.append_transcript(
                 {
                     "event": "model_call",
                     "provider": self._model_gateway.provider_name,
+                    "context_id": context.context_id,
                     "goal": task.goal,
                 },
             )
@@ -115,6 +122,17 @@ class RunOrchestrator:
                 },
             )
             return RunResult(RunStatus.FAILED, state_history, writer.path)
+        except ContextBuildError as error:
+            transition(RunStatus.FAILED)
+            category = "Task Spec Failure" if "unknown allowed_tools" in str(error) else "Context Failure"
+            writer.write_failure_attribution(
+                {
+                    "stage": "planning",
+                    "category": category,
+                    "evidence": str(error),
+                },
+            )
+            return RunResult(RunStatus.FAILED, state_history, writer.path)
         except Exception as error:
             transition(RunStatus.FAILED)
             writer.write_failure_attribution(
@@ -125,10 +143,3 @@ class RunOrchestrator:
                 },
             )
             return RunResult(RunStatus.FAILED, state_history, writer.path)
-
-    def _context_manifest(self, task: TaskSpec) -> dict[str, object]:
-        return {
-            "goal": task.goal,
-            "allowed_tools": task.allowed_tools,
-            "gateway": self._model_gateway.provider_name,
-        }

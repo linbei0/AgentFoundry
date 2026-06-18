@@ -123,5 +123,6 @@ verification_commands: []
         json.loads(line)
         for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert any(record.get("event") == "model_call" for record in transcript)
+    model_call = next(record for record in transcript if record.get("event") == "model_call")
+    assert model_call["context_id"] == "0001"
     assert any(record.get("event") == "model_response" for record in transcript)

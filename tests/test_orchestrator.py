@@ -69,9 +69,9 @@ def test_orchestrator_fails_when_fake_tool_is_not_allowed(tmp_path: Path) -> Non
     assert result.status is RunStatus.FAILED
     assert result.state_history[-1] is RunStatus.FAILED
     failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
-    assert "executing" in failure_text
-    tool_trace = (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8")
-    assert json.loads(tool_trace)["status"] == "error"
+    assert "Task Spec Failure" in failure_text
+    assert "other_tool" in failure_text
+    assert (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8") == ""
 
 
 def test_orchestrator_fails_when_model_gateway_fails(tmp_path: Path) -> None:
@@ -116,3 +116,21 @@ def test_orchestrator_fails_when_verification_command_fails(tmp_path: Path) -> N
     assert "Verification Failure" in failure_text
     commands_log = result.episode_path / "verification" / "commands.jsonl"
     assert json.loads(commands_log.read_text(encoding="utf-8"))["exit_code"] == 5
+
+
+def test_orchestrator_fails_unknown_tool_as_task_spec_failure(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    write_task(task_path, ["mystery_tool"])
+
+    result = RunOrchestrator(runs_root=runs_dir).run(task_path)
+
+    assert result.status is RunStatus.FAILED
+    assert result.state_history == [
+        RunStatus.CREATED,
+        RunStatus.PLANNING,
+        RunStatus.FAILED,
+    ]
+    failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
+    assert "Task Spec Failure" in failure_text
+    assert "mystery_tool" in failure_text
