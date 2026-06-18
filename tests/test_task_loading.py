@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_foundry.task import TaskLoadError, TaskSpec, load_task
+from agentfoundry.runtime.task_contract import TaskLoadError, TaskSpec, load_task
 
 
 def write_task(path: Path, content: str) -> None:

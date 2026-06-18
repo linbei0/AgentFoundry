@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from agent_foundry.episode import EpisodeWriter
-from agent_foundry.model_gateway import (
-    FakeModelGateway,
+from agentfoundry.models.fake import FakeModelGateway
+from agentfoundry.models.gateway import (
     ModelCallError,
     ModelResponse,
     OpenAIResponsesGateway,
     ToolCall,
 )
-from agent_foundry.task import TaskSpec
+from agentfoundry.runtime.episode import EpisodeWriter
+from agentfoundry.runtime.task_contract import TaskSpec
 
 
 def make_task() -> TaskSpec:
@@ -99,7 +99,7 @@ def test_openai_gateway_failure_is_explicit() -> None:
 
 
 def test_model_call_is_written_to_transcript_by_orchestrator(tmp_path: Path) -> None:
-    from agent_foundry.orchestrator import RunOrchestrator
+    from agentfoundry.runtime.orchestrator import RunOrchestrator
 
     task_path = tmp_path / "task.yaml"
     task_path.write_text(

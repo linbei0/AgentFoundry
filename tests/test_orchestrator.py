@@ -7,9 +7,9 @@ tests/test_orchestrator.py - RunOrchestrator 状态流转测试
 import json
 from pathlib import Path
 
-from agent_foundry.model_gateway import ModelCallError
-from agent_foundry.orchestrator import RunOrchestrator
-from agent_foundry.states import RunStatus
+from agentfoundry.models.gateway import ModelCallError
+from agentfoundry.runtime.orchestrator import RunOrchestrator
+from agentfoundry.runtime.state import RunStatus
 
 
 class FailingGateway:

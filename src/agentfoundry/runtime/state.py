@@ -1,5 +1,5 @@
 """
-agent_foundry/states.py - Run 状态枚举
+agentfoundry/runtime/state.py - Run 状态枚举
 
 定义 MVP Run Orchestrator 允许出现的状态集合。
 """

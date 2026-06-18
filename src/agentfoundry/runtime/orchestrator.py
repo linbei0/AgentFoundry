@@ -1,5 +1,5 @@
 """
-agent_foundry/orchestrator.py - Run Orchestrator 状态机
+agentfoundry/runtime/orchestrator.py - Run Orchestrator 状态机
 
 串联 task 加载、模型调用、工具执行和 episode trace 写入。
 """
@@ -9,11 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent_foundry.episode import EpisodeWriter
-from agent_foundry.model_gateway import FakeModelGateway, ModelCallError, ModelGateway
-from agent_foundry.states import RunStatus
-from agent_foundry.task import TaskSpec, load_task
-from agent_foundry.tools import ToolRouter, ToolRoutingError
+from agentfoundry.models.fake import FakeModelGateway
+from agentfoundry.models.gateway import ModelCallError, ModelGateway
+from agentfoundry.runtime.episode import EpisodeWriter
+from agentfoundry.runtime.state import RunStatus
+from agentfoundry.runtime.task_contract import TaskSpec, load_task
+from agentfoundry.tools.base import ToolRoutingError
+from agentfoundry.tools.router import ToolRouter
 
 
 @dataclass(frozen=True)

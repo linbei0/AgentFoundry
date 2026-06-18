@@ -1,7 +1,7 @@
 """
-agent_foundry/model_gateway.py - 统一模型网关接口
+agentfoundry/models/gateway.py - 统一模型网关接口
 
-上层只依赖 ModelGateway 协议；fake provider 用于测试，OpenAI provider 是首个真实适配。
+上层只依赖 ModelGateway 协议；真实 provider 失败必须显式暴露。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
-from agent_foundry.task import TaskSpec
+from agentfoundry.runtime.task_contract import TaskSpec
 
 
 class ModelCallError(RuntimeError):
@@ -37,19 +37,6 @@ class ModelGateway(Protocol):
 
     def generate(self, task: TaskSpec) -> ModelResponse:
         """Generate a model response for a task."""
-
-
-class FakeModelGateway:
-    provider_name = "fake"
-
-    def __init__(self, response: ModelResponse | None = None) -> None:
-        self._response = response or ModelResponse(
-            content="Use the fake tool for the MVP execution step.",
-            tool_calls=[ToolCall(name="fake_tool", args={})],
-        )
-
-    def generate(self, task: TaskSpec) -> ModelResponse:
-        return self._response
 
 
 Transport = Callable[[dict[str, object], str], dict[str, object]]

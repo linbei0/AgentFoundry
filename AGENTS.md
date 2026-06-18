@@ -14,7 +14,7 @@ The current runtime loads `task.yaml`, runs a small orchestrator state machine, 
 ## Development Workflow
 
 - Use `uv` for virtual environment and dependency management.
-- Keep the package in `src/agent_foundry`.
+- Keep the package in `src/agentfoundry`.
 - Keep tests in `tests`.
 - Prefer `apply_patch` for file edits to avoid PowerShell encoding issues.
 - Do not add UI, browser automation, multi-agent behavior, or long-term memory unless explicitly requested.

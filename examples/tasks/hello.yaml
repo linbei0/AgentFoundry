@@ -1,0 +1,8 @@
+goal: Say hello through the fake tool
+constraints:
+  - Use the MVP fake model path
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - Run reaches completed state
+verification_commands: []

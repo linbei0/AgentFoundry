@@ -1,5 +1,5 @@
 """
-agent_foundry/episode.py - Episode Package 写入器
+agentfoundry/runtime/episode.py - Episode Package 写入器
 
 负责为每次 run 创建可复盘的证据包，并追加 transcript/tool trace。
 """

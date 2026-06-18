@@ -1,5 +1,5 @@
 """
-agent_foundry/task.py - task.yaml 加载与校验
+agentfoundry/runtime/task_contract.py - task.yaml 加载与校验
 
 把用户提供的 YAML 任务规格转换成运行时使用的 TaskSpec。
 """
