@@ -209,6 +209,19 @@ def test_orchestrator_completes_after_two_tool_rounds(tmp_path: Path) -> None:
         "0003",
     ]
     assert len([record for record in transcript if record.get("event") == "tool_observation"]) == 2
+    first_context = (result.episode_path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    second_context = (result.episode_path / "contexts" / "0002.txt").read_text(encoding="utf-8")
+    second_manifest = json.loads(
+        (result.episode_path / "contexts" / "0002.json").read_text(encoding="utf-8"),
+    )
+    assert "Observations:" in first_context
+    assert "- none" in first_context
+    assert "fake_tool" in second_context
+    assert '"args": {"round": 1}' in second_context
+    assert any(
+        source["source_type"] == "observation" and source["name"] == "fake_tool"
+        for source in second_manifest["sources"]
+    )
 
 
 def test_orchestrator_verifies_immediately_when_model_returns_no_tools(tmp_path: Path) -> None:

@@ -60,7 +60,7 @@ def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> No
     context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
     assert context_manifest["generated_at"]
     manifest = json.loads((writer.path / "context-manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "1.1"
+    assert manifest["version"] == "1.2"
     assert manifest["generated_at"]
     assert manifest["context_count"] == 1
     assert manifest["summary"]["provider"] == "fake"
@@ -88,6 +88,46 @@ def test_context_builder_model_input_contains_tool_usage(tmp_path: Path) -> None
     assert "fake_tool: deterministic test tool" in model_input
     assert "file_read: read a workspace text file with offset and limit" in model_input
     assert "verification_commands:" in model_input
+    assert "Observations:" in model_input
+    assert "- none" in model_input
+
+
+def test_context_builder_model_input_contains_observation_summary(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    builder = ContextBuilder(
+        task=make_task(),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "fake_tool",
+                "args": {"round": 1},
+                "result": {"status": "success", "echo": {"round": 1}},
+            },
+        ],
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
+    observation_sources = [
+        source
+        for source in context_manifest["sources"]
+        if source["source_type"] == "observation"
+    ]
+    assert "Observations:" in model_input
+    assert "fake_tool" in model_input
+    assert '"args": {"round": 1}' in model_input
+    assert '"result": {"echo": {"round": 1}, "status": "success"}' in model_input
+    assert observation_sources == [
+        {
+            "source_type": "observation",
+            "name": "fake_tool",
+            "description": "Tool observation from previous turn",
+        },
+    ]
 
 
 def test_context_builder_records_each_allowed_tool_as_source(tmp_path: Path) -> None:

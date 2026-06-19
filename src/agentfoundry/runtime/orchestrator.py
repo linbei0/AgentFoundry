@@ -64,6 +64,7 @@ class RunOrchestrator:
                     workspace_root=task_path.parent,
                     provider_name=self._model_gateway.provider_name,
                     episode_writer=writer,
+                    observations=observations,
                 ).build()
                 # 每一轮模型调用都绑定独立 context_id，便于复盘工具观察如何进入下一轮。
                 writer.append_transcript(

@@ -17,7 +17,7 @@ from agentfoundry.runtime.task_contract import TaskSpec
 from agentfoundry.tools.catalog import TOOL_CATALOG
 
 
-CONTEXT_MANIFEST_VERSION = "1.1"
+CONTEXT_MANIFEST_VERSION = "1.2"
 
 
 class ContextBuildError(RuntimeError):
@@ -38,11 +38,13 @@ class ContextBuilder:
         workspace_root: Path,
         provider_name: str,
         episode_writer: EpisodeWriter,
+        observations: list[dict[str, object]] | None = None,
     ) -> None:
         self._task = task
         self._workspace_root = workspace_root
         self._provider_name = provider_name
         self._episode_writer = episode_writer
+        self._observations = list(observations or [])
 
     def build(self) -> BuiltContext:
         """构建第一版上下文：不检索文件，只写任务事实和工具目录。"""
@@ -107,6 +109,9 @@ class ContextBuilder:
                 "verification_commands:",
                 *_format_list(self._task.verification_commands),
                 "",
+                "Observations:",
+                *self._format_observations(),
+                "",
             ],
         )
 
@@ -122,6 +127,14 @@ class ContextBuilder:
             ContextSource("tool_catalog", tool, TOOL_CATALOG[tool])
             for tool in self._task.allowed_tools
         )
+        sources.extend(
+            ContextSource(
+                "observation",
+                _observation_tool_name(observation),
+                "Tool observation from previous turn",
+            )
+            for observation in self._observations
+        )
         return ContextManifest(
             context_id=context_id,
             provider=self._provider_name,
@@ -129,6 +142,18 @@ class ContextBuilder:
             generated_at=_now_iso(),
             sources=sources,
         )
+
+    def _format_observations(self) -> list[str]:
+        """把上一轮工具观察压成稳定 JSON 行，方便人工审计和测试复现。"""
+        if not self._observations:
+            return ["- none"]
+        return [
+            (
+                f"- {_observation_tool_name(observation)}: "
+                f"{json.dumps(_observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
+            )
+            for observation in self._observations
+        ]
 
     def _write_run_manifest(self, index: ContextIndex) -> None:
         manifest_path = self._episode_writer.path / "context-manifest.json"
@@ -160,3 +185,15 @@ def _format_list(items: list[str]) -> list[str]:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _observation_tool_name(observation: dict[str, object]) -> str:
+    tool_name = observation.get("tool_name", "unknown_tool")
+    return str(tool_name)
+
+
+def _observation_summary(observation: dict[str, object]) -> dict[str, object]:
+    return {
+        "args": observation.get("args", {}),
+        "result": observation.get("result", {}),
+    }
