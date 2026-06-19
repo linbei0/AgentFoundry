@@ -7,6 +7,7 @@ agentfoundry/runtime/episode_validator.py - Episode schema 校验模块
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,8 +34,28 @@ class EpisodeValidationError(RuntimeError):
     """Episode package 存在但 schema 损坏或版本不兼容时抛出。"""
 
 
+@dataclass(frozen=True)
+class EpisodePackageView:
+    episode_metadata: dict[str, Any]
+    failure_record: dict[str, Any]
+    context_manifest: dict[str, Any]
+    transcript: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
+    verification_commands: list[dict[str, Any]]
+
+
 def validate_episode_package(episode_path: Path) -> None:
     """校验 v1 episode package 的完整性和关键 trace 文件结构。"""
+    _read_validated_episode_package(episode_path)
+
+
+def load_validated_episode_package(episode_path: Path) -> EpisodePackageView:
+    """校验并返回已解析的 episode package view，供后续审计/导出复用。"""
+    return _read_validated_episode_package(episode_path)
+
+
+def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
+    """读取、校验并组装 package view；保持 validate 入口只负责触发该流程。"""
     for relative_path in REQUIRED_PACKAGE_FILES:
         path = episode_path / relative_path
         if not path.exists():
@@ -46,8 +67,8 @@ def validate_episode_package(episode_path: Path) -> None:
     _read_json(episode_path / "environment.json")
 
     transcript = _validate_jsonl_fields(episode_path / "transcript.jsonl", "transcript.jsonl", ["event"])
-    _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
-    _validate_jsonl_fields(
+    tool_calls = _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
+    verification_commands = _validate_jsonl_fields(
         episode_path / "verification" / "commands.jsonl",
         "verification/commands.jsonl",
         ["command", "status"],
@@ -55,6 +76,14 @@ def validate_episode_package(episode_path: Path) -> None:
     if episode_metadata is None or failure_record is None:
         raise EpisodeValidationError("episode package must contain v1 episode.json and failure.json")
     _validate_cross_file_consistency(episode_path, episode_metadata, failure_record, context_manifest, transcript)
+    return EpisodePackageView(
+        episode_metadata=episode_metadata,
+        failure_record=failure_record,
+        context_manifest=context_manifest,
+        transcript=transcript,
+        tool_calls=tool_calls,
+        verification_commands=verification_commands,
+    )
 
 
 def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any] | None, list[str]]:

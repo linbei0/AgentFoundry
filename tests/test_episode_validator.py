@@ -11,6 +11,8 @@ import pytest
 
 from agentfoundry.runtime.episode_validator import (
     EpisodeValidationError,
+    EpisodePackageView,
+    load_validated_episode_package,
     read_episode_metadata,
     read_failure_record,
     validate_episode_package,
@@ -423,3 +425,42 @@ def test_package_validator_rejects_missing_state_transition(tmp_path: Path) -> N
 
     with pytest.raises(EpisodeValidationError, match="transcript.jsonl missing state_transition"):
         validate_episode_package(result.episode_path)
+
+
+def test_load_validated_episode_package_returns_view_for_valid_run(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+
+    package_view = load_validated_episode_package(result.episode_path)
+
+    assert isinstance(package_view, EpisodePackageView)
+    assert package_view.episode_metadata["status"] == "completed"
+    assert package_view.failure_record == {"status": "success", "failure": None}
+    assert package_view.context_manifest["context_count"] == 2
+
+
+def test_load_validated_episode_package_raises_for_invalid_episode(tmp_path: Path) -> None:
+    episode_path = tmp_path / "episode-1"
+    episode_path.mkdir()
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="episode package missing required file: episode.json",
+    ):
+        load_validated_episode_package(episode_path)
+
+
+def test_load_validated_episode_package_returns_parsed_jsonl_lists(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+
+    package_view = load_validated_episode_package(result.episode_path)
+
+    assert isinstance(package_view.transcript, list)
+    assert all(isinstance(record, dict) for record in package_view.transcript)
+    assert isinstance(package_view.tool_calls, list)
+    assert all(isinstance(record, dict) for record in package_view.tool_calls)
+    assert isinstance(package_view.verification_commands, list)
+    assert all(isinstance(record, dict) for record in package_view.verification_commands)
