@@ -154,12 +154,15 @@ def _validate_jsonl_fields(path: Path, label: str, required_fields: list[str]) -
 
 
 def _validate_tool_calls(records: list[dict[str, Any]]) -> None:
-    """校验 tool-calls.jsonl 的最小字段类型和值域。"""
+    """校验 tool-calls.jsonl 的最小字段类型和值域。
+
+    ToolRouter 当前写入 success/error；failed 保留为旧 episode 兼容状态。
+    """
     for index, record in enumerate(records, start=1):
         if not isinstance(record["tool_name"], str):
             raise EpisodeValidationError(f"tool-calls.jsonl line {index} tool_name must be a string")
         status = record["status"]
-        if status not in {"success", "failed"}:
+        if status not in {"success", "error", "failed"}:
             raise EpisodeValidationError(f"tool-calls.jsonl line {index} status is invalid: {status}")
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from agentfoundry.models.gateway import ModelResponse, ToolCall
 from agentfoundry.runtime.episode_validator import (
     EpisodeValidationError,
     EpisodePackageView,
@@ -66,6 +67,16 @@ verification_commands: []
 """.strip(),
         encoding="utf-8",
     )
+
+
+class OneShotGateway:
+    provider_name = "one-shot"
+
+    def __init__(self, response: ModelResponse) -> None:
+        self._response = response
+
+    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+        return self._response
 
 
 def test_validator_accepts_valid_episode_metadata(tmp_path: Path) -> None:
@@ -341,6 +352,67 @@ def test_package_validator_rejects_tool_status_invalid(tmp_path: Path) -> None:
         match="tool-calls.jsonl line 1 status is invalid: timeout",
     ):
         validate_episode_package(result.episode_path)
+
+
+def test_package_validator_accepts_tool_status_error(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    (result.episode_path / "tool-calls.jsonl").write_text(
+        json.dumps({"tool_name": "fake_tool", "status": "error"}) + "\n",
+        encoding="utf-8",
+    )
+
+    validate_episode_package(result.episode_path)
+
+
+def test_package_validator_accepts_legacy_tool_status_failed(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    (result.episode_path / "tool-calls.jsonl").write_text(
+        json.dumps({"tool_name": "fake_tool", "status": "failed"}) + "\n",
+        encoding="utf-8",
+    )
+
+    validate_episode_package(result.episode_path)
+
+
+@pytest.mark.parametrize("status", ["timeout", "skipped"])
+def test_package_validator_rejects_unknown_tool_status(tmp_path: Path, status: str) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    (result.episode_path / "tool-calls.jsonl").write_text(
+        json.dumps({"tool_name": "fake_tool", "status": status}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match=f"tool-calls.jsonl line 1 status is invalid: {status}",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_failed_run_with_tool_argument_error_validates_package(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    gateway = OneShotGateway(
+        ModelResponse(
+            content="",
+            tool_calls=[ToolCall(name="file_read", args={"path": 123})],
+        ),
+    )
+
+    result = RunOrchestrator(runs_root=tmp_path / ".runs", model_gateway=gateway).run(task_path)
+
+    assert result.status is RunStatus.FAILED
+    tool_call = json.loads((result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8"))
+    assert tool_call["status"] == "error"
+    (result.episode_path / "verification").mkdir(exist_ok=True)
+    (result.episode_path / "verification" / "commands.jsonl").write_text("", encoding="utf-8")
+    validate_episode_package(result.episode_path)
 
 
 def test_package_validator_rejects_verification_command_missing_command(tmp_path: Path) -> None:
