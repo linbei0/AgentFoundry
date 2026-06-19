@@ -78,12 +78,11 @@ class RunOrchestrator:
                         "goal": task.goal,
                     },
                 )
-                model_response = _generate_with_observations(
-                    self._model_gateway,
+                model_response = self._model_gateway.generate(
                     task,
-                    context.model_input,
-                    tool_schemas,
-                    observations,
+                    model_input=context.model_input,
+                    tool_schemas=tool_schemas,
+                    observations=observations,
                 )
                 writer.append_transcript(
                     {
@@ -186,7 +185,7 @@ class RunOrchestrator:
             writer.write_failure_attribution(
                 {
                     "stage": state_history[-2].value if len(state_history) > 1 else "created",
-                    "category": "Runtime Failure",
+                    "category": _unexpected_failure_category(error, state_history),
                     "evidence": str(error),
                 },
             )
@@ -199,20 +198,8 @@ def _verification_evidence(verification_result) -> str:
     return f"{verification_result.failed_command} exited with {verification_result.exit_code}"
 
 
-def _generate_with_observations(model_gateway, task, model_input, tool_schemas, observations):
-    try:
-        return model_gateway.generate(
-            task,
-            model_input=model_input,
-            tool_schemas=tool_schemas,
-            observations=observations,
-        )
-    except TypeError as error:
-        if not any(keyword in str(error) for keyword in ["model_input", "tool_schemas", "observations"]):
-            raise
-        try:
-            return model_gateway.generate(task, observations=observations)
-        except TypeError as legacy_error:
-            if "observations" not in str(legacy_error):
-                raise
-            return model_gateway.generate(task)
+def _unexpected_failure_category(error: Exception, state_history: list[RunStatus]) -> str:
+    previous_status = state_history[-2] if len(state_history) > 1 else state_history[-1]
+    if isinstance(error, TypeError) and previous_status is RunStatus.PLANNING:
+        return "Model Call Failure"
+    return "Runtime Failure"

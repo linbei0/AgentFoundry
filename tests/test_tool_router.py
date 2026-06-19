@@ -67,6 +67,52 @@ def test_tool_router_rejects_disallowed_tool(tmp_path: Path) -> None:
     assert record["status"] == "error"
 
 
+def test_tool_router_rejects_missing_required_argument_and_writes_trace(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_search"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_search", {})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "invalid_tool_arguments"
+    assert "missing required argument: query" in result["error"]["message"]
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "file_search"
+    assert record["status"] == "error"
+
+
+def test_tool_router_rejects_argument_type_mismatch(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_read"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_read", {"path": "notes.txt", "offset": "1"})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "invalid_tool_arguments"
+    assert "argument offset must be integer" in result["error"]["message"]
+
+
+def test_tool_router_rejects_extra_argument_when_schema_disallows_it(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_search"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_search", {"query": "needle", "extra": True})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "invalid_tool_arguments"
+    assert "unexpected argument: extra" in result["error"]["message"]
+
+
+def test_tool_router_unknown_tool_keeps_existing_failure_semantics(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["mystery_tool"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("mystery_tool", {})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "unknown_tool"
+
+
 def test_file_read_supports_offset_and_limit(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("zero\none\ntwo\nthree\n", encoding="utf-8")
@@ -161,3 +207,8 @@ def test_shell_reports_timeout(tmp_path: Path) -> None:
     assert result["status"] == "error"
     assert result["exit_code"] is None
     assert result["error"]["type"] == "timeout"
+
+
+def _read_single_tool_call(writer: EpisodeWriter) -> dict[str, object]:
+    trace = (writer.path / "tool-calls.jsonl").read_text(encoding="utf-8")
+    return json.loads(trace)

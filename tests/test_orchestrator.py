@@ -21,6 +21,17 @@ class FailingGateway:
         raise ModelCallError("model exploded")
 
 
+class TypeErrorGateway:
+    provider_name = "type-error"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+        self.call_count += 1
+        raise TypeError("internal provider type error mentioning model_input")
+
+
 class SequenceGateway:
     provider_name = "sequence"
 
@@ -108,6 +119,22 @@ def test_orchestrator_fails_when_model_gateway_fails(tmp_path: Path) -> None:
     failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
     assert "Model Failure" in failure_text
     assert "model exploded" in failure_text
+    assert (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8") == ""
+
+
+def test_orchestrator_does_not_retry_internal_gateway_type_error(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    write_task(task_path, ["fake_tool"])
+    gateway = TypeErrorGateway()
+
+    result = RunOrchestrator(runs_root=runs_dir, model_gateway=gateway).run(task_path)
+
+    assert result.status is RunStatus.FAILED
+    assert gateway.call_count == 1
+    failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
+    assert "Model Call Failure" in failure_text
+    assert "internal provider type error mentioning model_input" in failure_text
     assert (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8") == ""
 
 

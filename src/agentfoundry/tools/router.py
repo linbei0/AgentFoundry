@@ -45,7 +45,11 @@ class ToolRouter:
             elif tool_name not in self._handlers:
                 result = tool_error("unknown_tool", f"unknown tool: {tool_name}")
             else:
-                result = self._handlers[tool_name](args)
+                validation_error = _validate_args(tool_name, args)
+                if validation_error:
+                    result = validation_error
+                else:
+                    result = self._handlers[tool_name](args)
         except Exception as error:
             result = tool_error(type(error).__name__, str(error))
 
@@ -84,3 +88,48 @@ class ToolRouter:
                 "duration_seconds": time.perf_counter() - started,
             },
         )
+
+
+def _validate_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    schema = TOOL_REGISTRY[tool_name].parameters
+    if schema.get("type") != "object":
+        return tool_error("invalid_tool_arguments", "tool arguments schema must be object")
+
+    required = schema.get("required", [])
+    for name in required:
+        if name not in args:
+            return tool_error("invalid_tool_arguments", f"missing required argument: {name}")
+
+    properties = schema.get("properties", {})
+    if schema.get("additionalProperties") is False:
+        for name in args:
+            if name not in properties:
+                return tool_error("invalid_tool_arguments", f"unexpected argument: {name}")
+
+    for name, value in args.items():
+        property_schema = properties.get(name)
+        if not property_schema:
+            continue
+        expected_type = property_schema.get("type")
+        if expected_type and not _matches_json_type(value, expected_type):
+            return tool_error(
+                "invalid_tool_arguments",
+                f"argument {name} must be {expected_type}",
+            )
+    return None
+
+
+def _matches_json_type(value: Any, expected_type: str) -> bool:
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return (isinstance(value, int | float) and not isinstance(value, bool))
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    return True
