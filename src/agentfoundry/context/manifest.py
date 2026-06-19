@@ -11,12 +11,27 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class ContextSourceBudget:
+    char_count: int
+    included_in_model_input: bool
+    inclusion_reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "char_count": self.char_count,
+            "included_in_model_input": self.included_in_model_input,
+            "inclusion_reason": self.inclusion_reason,
+        }
+
+
+@dataclass(frozen=True)
 class ContextSource:
     source_type: str
     name: str
     description: str
     inclusion_reason: str
     status: str | None = None
+    budget: ContextSourceBudget | None = None
 
     def to_dict(self) -> dict[str, Any]:
         source = {
@@ -27,6 +42,8 @@ class ContextSource:
         }
         if self.status is not None:
             source["status"] = self.status
+        if self.budget is not None:
+            source["budget"] = self.budget.to_dict()
         return source
 
 
@@ -49,13 +66,17 @@ class ContextIndex:
     context_id: str
     model_input_path: str
     manifest_path: str
+    budget: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        index = {
             "context_id": self.context_id,
             "model_input_path": self.model_input_path,
             "manifest_path": self.manifest_path,
         }
+        if self.budget is not None:
+            index["budget"] = self.budget
+        return index
 
 
 @dataclass(frozen=True)

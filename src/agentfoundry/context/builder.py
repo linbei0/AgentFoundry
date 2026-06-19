@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agentfoundry.context.manifest import ContextBudget, ContextIndex, ContextManifest, ContextSource
+from agentfoundry.context.manifest import (
+    ContextBudget,
+    ContextIndex,
+    ContextManifest,
+    ContextSource,
+    ContextSourceBudget,
+)
 from agentfoundry.runtime.episode import EpisodeWriter
 from agentfoundry.runtime.task_contract import TaskSpec
 from agentfoundry.tools.registry import TOOL_REGISTRY
@@ -77,6 +83,7 @@ class ContextBuilder:
                 context_id=context_id,
                 model_input_path=f"contexts/{context_id}.txt",
                 manifest_path=f"contexts/{context_id}.json",
+                budget=_context_budget_summary(context_id, budget, manifest.sources),
             ),
         )
         return BuiltContext(context_id=context_id, model_input=model_input, manifest=manifest)
@@ -164,6 +171,7 @@ class ContextBuilder:
             )
             for observation in self._observations
         )
+        sources = [self._source_with_budget(source) for source in sources]
         return ContextManifest(
             context_id=context_id,
             provider=self._provider_name,
@@ -172,6 +180,37 @@ class ContextBuilder:
             budget=budget,
             sources=sources,
         )
+
+    def _source_with_budget(self, source: ContextSource) -> ContextSource:
+        content = self._source_content(source)
+        return ContextSource(
+            source_type=source.source_type,
+            name=source.name,
+            description=source.description,
+            inclusion_reason=source.inclusion_reason,
+            status=source.status,
+            budget=ContextSourceBudget(
+                char_count=len(content),
+                included_in_model_input=True,
+                inclusion_reason=source.inclusion_reason,
+            ),
+        )
+
+    def _source_content(self, source: ContextSource) -> str:
+        if source.source_type == "project_instructions":
+            return "\n".join(self._format_project_instructions())
+        if source.source_type == "task":
+            return _task_source_content(source.name, self._task)
+        if source.source_type == "tool_catalog":
+            return f"- {source.name}: {TOOL_REGISTRY[source.name].description}"
+        if source.source_type == "observation":
+            for observation in self._observations:
+                if _observation_tool_name(observation) == source.name:
+                    return (
+                        f"- {_observation_tool_name(observation)}: "
+                        f"{json.dumps(_observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
+                    )
+        return ""
 
     def _format_observations(self) -> list[str]:
         """把上一轮工具观察压成稳定 JSON 行，方便人工审计和测试复现。"""
@@ -259,6 +298,45 @@ def _observation_summary(observation: dict[str, object]) -> dict[str, object]:
     return {
         "args": observation.get("args", {}),
         "result": observation.get("result", {}),
+    }
+
+
+def _task_source_content(name: str, task: TaskSpec) -> str:
+    if name == "goal":
+        return f"goal: {task.goal}"
+    if name == "constraints":
+        return "\n".join(["constraints:", *_format_list(task.constraints)])
+    if name == "allowed_tools":
+        return "\n".join(
+            [
+                "allowed_tools:",
+                *[f"- {tool}: {TOOL_REGISTRY[tool].description}" for tool in task.allowed_tools],
+            ],
+        )
+    if name == "acceptance_criteria":
+        return "\n".join(["acceptance_criteria:", *_format_list(task.acceptance_criteria)])
+    if name == "verification_commands":
+        return "\n".join(["verification_commands:", *_format_list(task.verification_commands)])
+    return ""
+
+
+def _context_budget_summary(
+    context_id: str,
+    budget: ContextBudget,
+    sources: list[ContextSource],
+) -> dict[str, object]:
+    included_source_count = sum(
+        1
+        for source in sources
+        if source.budget is not None and source.budget.included_in_model_input
+    )
+    return {
+        "context_id": context_id,
+        "total_chars": budget.character_count,
+        "max_chars": budget.character_limit,
+        "status": budget.status,
+        "source_count": len(sources),
+        "included_source_count": included_source_count,
     }
 
 

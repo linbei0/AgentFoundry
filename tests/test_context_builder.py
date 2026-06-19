@@ -64,6 +64,16 @@ def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> No
         "character_limit": 12000,
         "status": "within_limit",
     }
+    goal_source = next(
+        source for source in context_manifest["sources"] if source["source_type"] == "task" and source["name"] == "goal"
+    )
+    assert goal_source["budget"] == {
+        "char_count": len("goal: Build context"),
+        "included_in_model_input": True,
+        "inclusion_reason": "The model needs the task goal.",
+    }
+    assert all("budget" in source for source in context_manifest["sources"])
+    assert all(source["budget"]["inclusion_reason"] for source in context_manifest["sources"])
     manifest = json.loads((writer.path / "context-manifest.json").read_text(encoding="utf-8"))
     assert manifest["version"] == "1.2"
     assert manifest["generated_at"]
@@ -74,6 +84,14 @@ def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> No
         "context_id": "0001",
         "model_input_path": "contexts/0001.txt",
         "manifest_path": "contexts/0001.json",
+        "budget": {
+            "context_id": "0001",
+            "total_chars": len(result.model_input),
+            "max_chars": 12000,
+            "status": "within_limit",
+            "source_count": len(context_manifest["sources"]),
+            "included_source_count": len(context_manifest["sources"]),
+        },
     }
 
 
@@ -118,15 +136,13 @@ def test_context_builder_includes_project_instructions_when_agents_md_exists(tmp
     ]
     assert "Project Instructions:" in model_input
     assert "Use concise Chinese comments." in model_input
-    assert project_sources == [
-        {
-            "source_type": "project_instructions",
-            "name": "AGENTS.md",
-            "description": "Project instructions from workspace AGENTS.md",
-            "status": "present",
-            "inclusion_reason": "Workspace AGENTS.md is the project instruction source for this run.",
-        },
-    ]
+    assert len(project_sources) == 1
+    assert project_sources[0]["source_type"] == "project_instructions"
+    assert project_sources[0]["name"] == "AGENTS.md"
+    assert project_sources[0]["description"] == "Project instructions from workspace AGENTS.md"
+    assert project_sources[0]["status"] == "present"
+    assert project_sources[0]["inclusion_reason"] == "Workspace AGENTS.md is the project instruction source for this run."
+    assert project_sources[0]["budget"]["included_in_model_input"] is True
 
 
 def test_context_builder_records_absent_project_instructions(tmp_path: Path) -> None:
@@ -146,15 +162,13 @@ def test_context_builder_records_absent_project_instructions(tmp_path: Path) -> 
         for source in context_manifest["sources"]
         if source["source_type"] == "project_instructions"
     ]
-    assert project_sources == [
-        {
-            "source_type": "project_instructions",
-            "name": "AGENTS.md",
-            "description": "workspace AGENTS.md not found",
-            "status": "absent",
-            "inclusion_reason": "Absence is recorded so audits can see no project instructions were loaded.",
-        },
-    ]
+    assert len(project_sources) == 1
+    assert project_sources[0]["source_type"] == "project_instructions"
+    assert project_sources[0]["name"] == "AGENTS.md"
+    assert project_sources[0]["description"] == "workspace AGENTS.md not found"
+    assert project_sources[0]["status"] == "absent"
+    assert project_sources[0]["inclusion_reason"] == "Absence is recorded so audits can see no project instructions were loaded."
+    assert project_sources[0]["budget"]["included_in_model_input"] is True
 
 
 def test_context_builder_model_input_contains_observation_summary(tmp_path: Path) -> None:
@@ -186,14 +200,12 @@ def test_context_builder_model_input_contains_observation_summary(tmp_path: Path
     assert "fake_tool" in model_input
     assert '"args": {"round": 1}' in model_input
     assert '"result": {"echo": {"round": 1}, "status": "success"}' in model_input
-    assert observation_sources == [
-        {
-            "source_type": "observation",
-            "name": "fake_tool",
-            "description": "Tool observation from previous turn",
-            "inclusion_reason": "Previous tool result is needed for the next model turn.",
-        },
-    ]
+    assert len(observation_sources) == 1
+    assert observation_sources[0]["source_type"] == "observation"
+    assert observation_sources[0]["name"] == "fake_tool"
+    assert observation_sources[0]["description"] == "Tool observation from previous turn"
+    assert observation_sources[0]["inclusion_reason"] == "Previous tool result is needed for the next model turn."
+    assert observation_sources[0]["budget"]["included_in_model_input"] is True
 
 
 def test_context_builder_records_each_allowed_tool_as_source(tmp_path: Path) -> None:

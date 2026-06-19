@@ -434,6 +434,7 @@ def test_orchestrator_completes_after_two_tool_rounds(tmp_path: Path) -> None:
     second_manifest = json.loads(
         (result.episode_path / "contexts" / "0002.json").read_text(encoding="utf-8"),
     )
+    run_manifest = json.loads((result.episode_path / "context-manifest.json").read_text(encoding="utf-8"))
     assert "Observations:" in first_context
     assert "- none" in first_context
     assert "fake_tool" in second_context
@@ -442,6 +443,19 @@ def test_orchestrator_completes_after_two_tool_rounds(tmp_path: Path) -> None:
         source["source_type"] == "observation" and source["name"] == "fake_tool"
         for source in second_manifest["sources"]
     )
+    for context_id in ["0001", "0002", "0003"]:
+        context_manifest = json.loads(
+            (result.episode_path / "contexts" / f"{context_id}.json").read_text(encoding="utf-8"),
+        )
+        assert all(source["budget"]["included_in_model_input"] is True for source in context_manifest["sources"])
+        assert all(isinstance(source["budget"]["char_count"], int) for source in context_manifest["sources"])
+        assert all(source["budget"]["inclusion_reason"] for source in context_manifest["sources"])
+    assert [context["budget"]["context_id"] for context in run_manifest["contexts"]] == [
+        "0001",
+        "0002",
+        "0003",
+    ]
+    assert all(context["budget"]["source_count"] > 0 for context in run_manifest["contexts"])
 
 
 def test_orchestrator_verifies_immediately_when_model_returns_no_tools(tmp_path: Path) -> None:
