@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from agentfoundry.runtime.episode_validator import EpisodeValidationError
-from agentfoundry.runtime.eval_export import export_eval_case
+from agentfoundry.runtime.eval_export import EVAL_CASE_VERSION, export_eval_case
 from agentfoundry.runtime.orchestrator import RunOrchestrator
 from agentfoundry.runtime.state import RunStatus
 
@@ -41,6 +41,7 @@ def test_completed_episode_can_export_eval_case(tmp_path: Path) -> None:
     eval_case = export_eval_case(result.episode_path)
 
     assert result.status is RunStatus.COMPLETED
+    assert eval_case["eval_case_version"] == EVAL_CASE_VERSION
     assert eval_case["episode_version"] == "1.0"
     assert eval_case["task"]["goal"] == "Export eval case"
     assert eval_case["task"]["acceptance_criteria"] == ["Eval case contains task facts"]
@@ -60,6 +61,7 @@ def test_failed_episode_exports_failure_information(tmp_path: Path) -> None:
     eval_case = export_eval_case(result.episode_path)
 
     assert result.status is RunStatus.FAILED
+    assert eval_case["eval_case_version"] == EVAL_CASE_VERSION
     assert eval_case["final_status"] == "failed"
     assert eval_case["failure"]["category"] == "Verification Failure"
     assert eval_case["failure"]["stage"] == "verifying"
@@ -83,3 +85,14 @@ def test_invalid_episode_fails_through_validator(tmp_path: Path) -> None:
         match="episode package missing required file: episode.json",
     ):
         export_eval_case(episode_path)
+
+
+def test_exporting_same_episode_is_deterministic(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+
+    first_export = export_eval_case(result.episode_path)
+    second_export = export_eval_case(result.episode_path)
+
+    assert first_export == second_export

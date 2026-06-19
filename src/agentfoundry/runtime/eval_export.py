@@ -14,6 +14,9 @@ from agentfoundry.runtime.episode_validator import validate_episode_package
 from agentfoundry.runtime.task_contract import load_task
 
 
+EVAL_CASE_VERSION = "1.0"
+
+
 def export_eval_case(episode_path: Path) -> dict[str, Any]:
     """导出单个 episode 的 eval case；入口先执行完整 package 校验。"""
     validate_episode_package(episode_path)
@@ -25,6 +28,7 @@ def export_eval_case(episode_path: Path) -> dict[str, Any]:
     tool_calls = _read_jsonl(episode_path / "tool-calls.jsonl")
 
     return {
+        "eval_case_version": EVAL_CASE_VERSION,
         "episode_version": episode_metadata["episode_version"],
         "task": {
             "goal": task.goal,
