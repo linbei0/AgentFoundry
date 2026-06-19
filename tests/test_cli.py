@@ -1,9 +1,10 @@
 """
 tests/test_cli.py - AgentFoundry CLI 测试
 
-验证 run 子命令参数解析、runs-root 传递和 stdout 输出。
+验证 run/inspect 子命令参数解析、runs-root 传递和 stdout 输出。
 """
 
+import json
 from pathlib import Path
 
 from agentfoundry import cli
@@ -66,3 +67,75 @@ def test_cli_run_accepts_custom_runs_root(tmp_path: Path, monkeypatch) -> None:
 
     assert exit_code == 0
     assert calls == {"runs_root": custom_runs, "task_path": task_path}
+
+
+def test_cli_inspect_completed_episode_outputs_summary(tmp_path: Path, capsys) -> None:
+    episode_path = tmp_path / "episode-1"
+    (episode_path / "verification").mkdir(parents=True)
+    (episode_path / "context-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "1.1",
+                "context_count": 1,
+                "summary": {"provider": "fake", "goal": "Inspect me"},
+                "contexts": [
+                    {
+                        "context_id": "0001",
+                        "model_input_path": "contexts/0001.txt",
+                        "manifest_path": "contexts/0001.json",
+                    },
+                ],
+            },
+        ),
+        encoding="utf-8",
+    )
+    (episode_path / "transcript.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"event": "state_transition", "status": "created"}),
+                json.dumps({"event": "state_transition", "status": "completed"}),
+                json.dumps({"event": "model_call", "provider": "fake", "context_id": "0001"}),
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (episode_path / "tool-calls.jsonl").write_text(
+        json.dumps({"tool_name": "fake_tool", "status": "success"}) + "\n",
+        encoding="utf-8",
+    )
+    (episode_path / "verification" / "commands.jsonl").write_text(
+        json.dumps({"command": "uv run pytest", "status": "success", "exit_code": 0}) + "\n",
+        encoding="utf-8",
+    )
+    (episode_path / "failure-attribution.md").write_text("# Failure Attribution\n\n未失败。\n", encoding="utf-8")
+
+    exit_code = cli.main(["inspect", str(episode_path)])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Run Summary" in output
+    assert "status: completed" in output
+    assert "State Flow" in output
+    assert "created -> completed" in output
+    assert "Contexts" in output
+    assert "0001" in output
+    assert "Model Calls" in output
+    assert "Tool Calls" in output
+    assert "fake_tool: success" in output
+    assert "Verification" in output
+    assert "uv run pytest: success (exit_code=0)" in output
+    assert "Failure Attribution" in output
+    assert "未失败" in output
+
+
+def test_cli_inspect_fails_when_required_file_is_missing(tmp_path: Path, capsys) -> None:
+    episode_path = tmp_path / "episode-1"
+    episode_path.mkdir()
+
+    exit_code = cli.main(["inspect", str(episode_path)])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "missing required episode file" in output
+    assert "context-manifest.json" in output
