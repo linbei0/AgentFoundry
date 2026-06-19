@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from agentfoundry import cli
+from agentfoundry.runtime.episode_validator import EpisodePackageView
 from agentfoundry.runtime.state import RunStatus
 
 
@@ -438,6 +439,38 @@ def test_cli_inspect_new_episode_invalid_jsonl_uses_validator(tmp_path: Path, ca
     assert exit_code == 1
     output = capsys.readouterr().out
     assert "transcript.jsonl line 1 is not valid JSON" in output
+
+
+def test_cli_inspect_new_episode_uses_package_view(tmp_path: Path, monkeypatch, capsys) -> None:
+    episode_path = tmp_path / "episode-1"
+    episode_path.mkdir()
+    (episode_path / "episode.json").write_text(json.dumps(valid_episode_json(tmp_path)), encoding="utf-8")
+    (episode_path / "failure-attribution.md").write_text("view attribution", encoding="utf-8")
+    package_view = EpisodePackageView(
+        episode_metadata=valid_episode_json(tmp_path),
+        failure_record={"status": "success", "failure": None},
+        context_manifest={"summary": {"provider": "fake"}, "context_count": 0, "contexts": []},
+        transcript=[
+            {"event": "state_transition", "status": "created"},
+            {"event": "state_transition", "status": "completed"},
+        ],
+        tool_calls=[{"tool_name": "fake_tool", "status": "success"}],
+        verification_commands=[],
+    )
+
+    def fail_if_jsonl_is_read(path: Path):
+        raise AssertionError(f"unexpected JSONL read: {path}")
+
+    monkeypatch.setattr(cli, "load_validated_episode_package", lambda path: package_view)
+    monkeypatch.setattr(cli, "_read_jsonl", fail_if_jsonl_is_read)
+
+    exit_code = cli.main(["inspect", str(episode_path)])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "created -> completed" in output
+    assert "fake_tool: success" in output
+    assert "view attribution" in output
 
 
 def test_cli_inspect_fails_when_required_file_is_missing(tmp_path: Path, capsys) -> None:

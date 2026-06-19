@@ -13,9 +13,9 @@ from typing import Any
 
 from agentfoundry.runtime.episode_validator import (
     EpisodeValidationError,
+    load_validated_episode_package,
     read_episode_metadata,
     read_failure_record,
-    validate_episode_package,
 )
 from agentfoundry.runtime.orchestrator import RunOrchestrator
 
@@ -70,20 +70,23 @@ def render_episode_summary(episode_path: Path) -> str:
     try:
         episode_metadata, warnings = read_episode_metadata(episode_path)
         if episode_metadata is not None:
-            validate_episode_package(episode_path)
+            package_view = load_validated_episode_package(episode_path)
+            episode_metadata = package_view.episode_metadata
+            context_manifest = package_view.context_manifest
+            transcript = package_view.transcript
+            tool_calls = package_view.tool_calls
+            verification = package_view.verification_commands
+            failure_record = package_view.failure_record
         else:
             _ensure_legacy_inspect_files(episode_path)
+            context_manifest = _read_json(episode_path / "context-manifest.json")
+            transcript = _read_jsonl(episode_path / "transcript.jsonl")
+            tool_calls = _read_jsonl(episode_path / "tool-calls.jsonl")
+            verification = _read_jsonl(episode_path / "verification" / "commands.jsonl")
+            failure_record = read_failure_record(episode_path)
     except EpisodeValidationError as error:
         raise EpisodeInspectError(str(error)) from error
 
-    context_manifest = _read_json(episode_path / "context-manifest.json")
-    transcript = _read_jsonl(episode_path / "transcript.jsonl")
-    tool_calls = _read_jsonl(episode_path / "tool-calls.jsonl")
-    verification = _read_jsonl(episode_path / "verification" / "commands.jsonl")
-    try:
-        failure_record = read_failure_record(episode_path)
-    except EpisodeValidationError as error:
-        raise EpisodeInspectError(str(error)) from error
     failure_attribution = (episode_path / "failure-attribution.md").read_text(encoding="utf-8").strip()
 
     state_flow = [
