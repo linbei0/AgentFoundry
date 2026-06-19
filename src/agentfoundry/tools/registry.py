@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
+ALLOWED_JSON_SCHEMA_TYPES = {"string", "integer", "number", "boolean", "object", "array"}
+ALLOWED_RISK_LEVELS = {"low", "medium", "high"}
+
+
 @dataclass(frozen=True)
 class ToolDefinition:
     name: str
@@ -131,6 +135,37 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         },
     ),
 }
+
+
+def validate_tool_registry(registry: dict[str, ToolDefinition] | None = None) -> None:
+    """自检 Tool Registry，启动时显式暴露 schema 配置错误。"""
+    registry = TOOL_REGISTRY if registry is None else registry
+    for name, definition in registry.items():
+        if definition.risk_level not in ALLOWED_RISK_LEVELS:
+            raise ValueError(f"{name} risk_level is invalid: {definition.risk_level}")
+        _validate_parameters_schema(name, definition.parameters)
+
+
+def _validate_parameters_schema(tool_name: str, schema: dict[str, Any]) -> None:
+    if schema.get("type") != "object":
+        raise ValueError(f"{tool_name} parameters must be an object schema")
+    required = schema.get("required", [])
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        raise ValueError(f"{tool_name} required must be a list of strings")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        raise ValueError(f"{tool_name} properties must be a dict")
+    additional_properties = schema.get("additionalProperties")
+    if additional_properties is not None and not isinstance(additional_properties, bool):
+        raise ValueError(f"{tool_name} additionalProperties must be a bool")
+    for property_name, property_schema in properties.items():
+        if not isinstance(property_schema, dict):
+            raise ValueError(f"{tool_name}.{property_name} schema must be a dict")
+        schema_type = property_schema.get("type")
+        if schema_type is not None and schema_type not in ALLOWED_JSON_SCHEMA_TYPES:
+            raise ValueError(
+                f"{tool_name}.{property_name} has unsupported schema type: {schema_type}",
+            )
 
 
 def get_tool_definition(name: str) -> ToolDefinition:

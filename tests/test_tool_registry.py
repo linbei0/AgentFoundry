@@ -12,6 +12,7 @@ from agentfoundry.tools.registry import (
     allowed_tool_definitions,
     export_tool_schemas,
     get_tool_definition,
+    validate_tool_registry,
 )
 
 
@@ -74,3 +75,67 @@ def test_tool_registry_rejects_unknown_tool() -> None:
 def test_mutating_tools_are_high_risk() -> None:
     assert TOOL_REGISTRY["apply_patch"].risk_level == "high"
     assert TOOL_REGISTRY["shell"].risk_level == "high"
+
+
+def test_current_tool_registry_self_check_passes() -> None:
+    validate_tool_registry()
+
+
+def test_tool_registry_self_check_rejects_unknown_schema_type() -> None:
+    registry = {
+        "bad": ToolDefinition(
+            name="bad",
+            description="bad",
+            risk_level="low",
+            parameters={
+                "type": "object",
+                "properties": {"value": {"type": "mystery"}},
+                "required": [],
+            },
+        ),
+    }
+
+    with pytest.raises(ValueError, match="bad.value has unsupported schema type: mystery"):
+        validate_tool_registry(registry)
+
+
+def test_tool_registry_self_check_rejects_required_not_list() -> None:
+    registry = {
+        "bad": ToolDefinition(
+            name="bad",
+            description="bad",
+            risk_level="low",
+            parameters={"type": "object", "properties": {}, "required": "value"},
+        ),
+    }
+
+    with pytest.raises(ValueError, match="bad required must be a list of strings"):
+        validate_tool_registry(registry)
+
+
+def test_tool_registry_self_check_rejects_properties_not_dict() -> None:
+    registry = {
+        "bad": ToolDefinition(
+            name="bad",
+            description="bad",
+            risk_level="low",
+            parameters={"type": "object", "properties": [], "required": []},
+        ),
+    }
+
+    with pytest.raises(ValueError, match="bad properties must be a dict"):
+        validate_tool_registry(registry)
+
+
+def test_tool_registry_self_check_rejects_invalid_risk_level() -> None:
+    registry = {
+        "bad": ToolDefinition(
+            name="bad",
+            description="bad",
+            risk_level="extreme",
+            parameters={"type": "object", "properties": {}, "required": []},
+        ),
+    }
+
+    with pytest.raises(ValueError, match="bad risk_level is invalid: extreme"):
+        validate_tool_registry(registry)

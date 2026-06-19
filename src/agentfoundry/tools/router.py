@@ -14,7 +14,7 @@ from agentfoundry.runtime.episode import EpisodeWriter
 from agentfoundry.runtime.policy import PolicyDecision, evaluate_tool_call
 from agentfoundry.tools.base import ToolHandler, ToolRoutingError, tool_error
 from agentfoundry.tools.file_tools import apply_patch, file_read, file_search
-from agentfoundry.tools.registry import TOOL_REGISTRY
+from agentfoundry.tools.registry import TOOL_REGISTRY, validate_tool_registry
 from agentfoundry.tools.shell import shell
 
 
@@ -35,6 +35,10 @@ class ToolRouter:
             "apply_patch": lambda args: apply_patch(args, self._workspace_root),
             "shell": lambda args: shell(args, self._workspace_root),
         }
+        try:
+            validate_tool_registry()
+        except ValueError as error:
+            raise ToolRoutingError(str(error), error_type="tool_registry_invalid") from error
         self._assert_registry_alignment()
 
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
