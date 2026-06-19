@@ -131,17 +131,23 @@ class ContextBuilder:
         )
 
     def _write_run_manifest(self, index: ContextIndex) -> None:
+        manifest_path = self._episode_writer.path / "context-manifest.json"
+        contexts = []
+        if manifest_path.exists():
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+            contexts = list(existing.get("contexts", []))
+        contexts.append(index.to_dict())
         run_manifest = {
             "version": CONTEXT_MANIFEST_VERSION,
             "generated_at": _now_iso(),
-            "context_count": 1,
+            "context_count": len(contexts),
             "summary": {
                 "provider": self._provider_name,
                 "workspace_root": str(self._workspace_root),
                 "goal": self._task.goal,
                 "allowed_tools": self._task.allowed_tools,
             },
-            "contexts": [index.to_dict()],
+            "contexts": contexts,
         }
         self._episode_writer.write_context_manifest(run_manifest)
 

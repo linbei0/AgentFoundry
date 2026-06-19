@@ -60,6 +60,14 @@ def test_fake_model_gateway_returns_configured_response() -> None:
     assert response.tool_calls == [ToolCall(name="fake_tool", args={"value": 1})]
 
 
+def test_fake_model_gateway_accepts_optional_observations() -> None:
+    gateway = FakeModelGateway()
+
+    response = gateway.generate(make_task(), observations=[{"tool_name": "fake_tool"}])
+
+    assert response.tool_calls == []
+
+
 def test_openai_gateway_uses_unified_response_shape() -> None:
     captured: dict[str, object] = {}
 

@@ -28,9 +28,15 @@ class RunResult:
 
 
 class RunOrchestrator:
-    def __init__(self, runs_root: Path, model_gateway: ModelGateway | None = None) -> None:
+    def __init__(
+        self,
+        runs_root: Path,
+        model_gateway: ModelGateway | None = None,
+        max_turns: int = 3,
+    ) -> None:
         self._runs_root = runs_root
         self._model_gateway = model_gateway or FakeModelGateway()
+        self._max_turns = max_turns
 
     def run(self, task_path: Path) -> RunResult:
         """执行一次 run，并把所有阶段变化写入 transcript.jsonl。"""
@@ -48,40 +54,80 @@ class RunOrchestrator:
             task = load_task(task_path)
             transition(RunStatus.PLANNING)
             writer.write_environment()
-            context = ContextBuilder(
-                task=task,
-                workspace_root=task_path.parent,
-                provider_name=self._model_gateway.provider_name,
-                episode_writer=writer,
-            ).build()
-            # 模型调用和响应分开记录，方便后续区分 provider 故障与工具故障。
-            writer.append_transcript(
-                {
-                    "event": "model_call",
-                    "provider": self._model_gateway.provider_name,
-                    "context_id": context.context_id,
-                    "goal": task.goal,
-                },
-            )
-            model_response = self._model_gateway.generate(task)
-            writer.append_transcript(
-                {
-                    "event": "model_response",
-                    "provider": self._model_gateway.provider_name,
-                    "content": model_response.content,
-                    "tool_calls": [
-                        {"name": tool_call.name, "args": tool_call.args}
-                        for tool_call in model_response.tool_calls
-                    ],
-                },
-            )
 
-            transition(RunStatus.EXECUTING)
             router = ToolRouter(task.allowed_tools, writer, workspace_root=task_path.parent)
-            # 工具失败以结构化结果返回；orchestrator 在这里显式转换成 failed run。
-            for tool_call in model_response.tool_calls:
-                tool_result = router.dispatch(tool_call.name, tool_call.args)
-                router.raise_for_error(tool_result)
+            observations: list[dict[str, object]] = []
+            has_entered_executing = False
+            for turn in range(1, self._max_turns + 1):
+                context = ContextBuilder(
+                    task=task,
+                    workspace_root=task_path.parent,
+                    provider_name=self._model_gateway.provider_name,
+                    episode_writer=writer,
+                ).build()
+                # 每一轮模型调用都绑定独立 context_id，便于复盘工具观察如何进入下一轮。
+                writer.append_transcript(
+                    {
+                        "event": "model_call",
+                        "provider": self._model_gateway.provider_name,
+                        "context_id": context.context_id,
+                        "turn": turn,
+                        "goal": task.goal,
+                    },
+                )
+                model_response = _generate_with_observations(
+                    self._model_gateway,
+                    task,
+                    observations,
+                )
+                writer.append_transcript(
+                    {
+                        "event": "model_response",
+                        "provider": self._model_gateway.provider_name,
+                        "turn": turn,
+                        "content": model_response.content,
+                        "tool_calls": [
+                            {"name": tool_call.name, "args": tool_call.args}
+                            for tool_call in model_response.tool_calls
+                        ],
+                    },
+                )
+
+                if not model_response.tool_calls:
+                    break
+
+                if not has_entered_executing:
+                    transition(RunStatus.EXECUTING)
+                    has_entered_executing = True
+
+                observations = []
+                # 工具失败以结构化结果返回；orchestrator 在这里显式转换成 failed run。
+                for tool_call in model_response.tool_calls:
+                    tool_result = router.dispatch(tool_call.name, tool_call.args)
+                    router.raise_for_error(tool_result)
+                    observation = {
+                        "tool_name": tool_call.name,
+                        "args": tool_call.args,
+                        "result": tool_result,
+                    }
+                    observations.append(observation)
+                    writer.append_transcript(
+                        {
+                            "event": "tool_observation",
+                            "turn": turn,
+                            **observation,
+                        },
+                    )
+            else:
+                transition(RunStatus.FAILED)
+                writer.write_failure_attribution(
+                    {
+                        "stage": "executing",
+                        "category": "Loop Limit Failure",
+                        "evidence": f"exceeded max_turns={self._max_turns}",
+                    },
+                )
+                return RunResult(RunStatus.FAILED, state_history, writer.path)
 
             transition(RunStatus.VERIFYING)
             verification_result = VerificationEngine(writer, task_path.parent).run(task.verification_commands)
@@ -146,3 +192,12 @@ def _verification_evidence(verification_result) -> str:
     if verification_result.failure_reason == "timeout":
         return f"{verification_result.failed_command} timeout"
     return f"{verification_result.failed_command} exited with {verification_result.exit_code}"
+
+
+def _generate_with_observations(model_gateway, task, observations):
+    try:
+        return model_gateway.generate(task, observations=observations)
+    except TypeError as error:
+        if "observations" not in str(error):
+            raise
+        return model_gateway.generate(task)

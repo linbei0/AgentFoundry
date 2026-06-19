@@ -6,6 +6,8 @@ agentfoundry/models/fake.py - 测试用模型网关
 
 from __future__ import annotations
 
+from typing import Any
+
 from agentfoundry.models.gateway import ModelResponse, ToolCall
 from agentfoundry.runtime.task_contract import TaskSpec
 
@@ -19,5 +21,11 @@ class FakeModelGateway:
             tool_calls=[ToolCall(name="fake_tool", args={})],
         )
 
-    def generate(self, task: TaskSpec) -> ModelResponse:
+    def generate(
+        self,
+        task: TaskSpec,
+        observations: list[dict[str, Any]] | None = None,
+    ) -> ModelResponse:
+        if observations and self._response.tool_calls:
+            return ModelResponse(content="Fake model observed tool results.", tool_calls=[])
         return self._response

@@ -35,7 +35,11 @@ class ModelResponse:
 class ModelGateway(Protocol):
     provider_name: str
 
-    def generate(self, task: TaskSpec) -> ModelResponse:
+    def generate(
+        self,
+        task: TaskSpec,
+        observations: list[dict[str, Any]] | None = None,
+    ) -> ModelResponse:
         """Generate a model response for a task."""
 
 
@@ -55,7 +59,11 @@ class OpenAIResponsesGateway:
         self._model = model
         self._transport = transport or _responses_transport
 
-    def generate(self, task: TaskSpec) -> ModelResponse:
+    def generate(
+        self,
+        task: TaskSpec,
+        observations: list[dict[str, Any]] | None = None,
+    ) -> ModelResponse:
         """调用 OpenAI Responses API，并把 provider 输出收敛成统一 ModelResponse。"""
         if not self._api_key:
             raise ModelCallError("OPENAI_API_KEY is required for OpenAIResponsesGateway")
