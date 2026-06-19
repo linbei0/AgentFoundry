@@ -7,7 +7,7 @@ agentfoundry/runtime/episode_validator.py - Episode schema 校验模块
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,7 @@ from agentfoundry.runtime.state import RunStatus
 REQUIRED_PACKAGE_FILES = [
     "episode.json",
     "task.yaml",
+    "plan.json",
     "context-manifest.json",
     "transcript.jsonl",
     "tool-calls.jsonl",
@@ -42,6 +43,7 @@ class EpisodePackageView:
     transcript: list[dict[str, Any]]
     tool_calls: list[dict[str, Any]]
     verification_commands: list[dict[str, Any]]
+    plan: dict[str, Any] = field(default_factory=dict)
 
 
 def validate_episode_package(episode_path: Path) -> None:
@@ -63,6 +65,7 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
 
     episode_metadata, _warnings = read_episode_metadata(episode_path)
     failure_record = read_failure_record(episode_path)
+    plan = _read_json(episode_path / "plan.json")
     context_manifest = _read_json(episode_path / "context-manifest.json")
     environment = _read_json(episode_path / "environment.json")
 
@@ -76,6 +79,7 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
     if episode_metadata is None or failure_record is None:
         raise EpisodeValidationError("episode package must contain v1 episode.json and failure.json")
     _validate_environment(environment)
+    _validate_plan(plan)
     _validate_tool_calls(tool_calls)
     _validate_verification_commands(verification_commands)
     _validate_cross_file_consistency(
@@ -89,6 +93,7 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
     return EpisodePackageView(
         episode_metadata=episode_metadata,
         failure_record=failure_record,
+        plan=plan,
         context_manifest=context_manifest,
         transcript=transcript,
         tool_calls=tool_calls,
@@ -201,6 +206,21 @@ def _validate_environment(environment: dict[str, Any]) -> None:
     )
     if "workspace_root" in environment and not isinstance(environment["workspace_root"], str):
         raise EpisodeValidationError("environment.json workspace_root must be a string")
+
+
+def _validate_plan(plan: dict[str, Any]) -> None:
+    """校验 Agent Plan Trace v0 的最小字段类型。"""
+    if not isinstance(plan.get("goal"), str):
+        raise EpisodeValidationError("plan.json goal must be a string")
+    for field_name in [
+        "allowed_tools",
+        "acceptance_criteria",
+        "verification_commands",
+        "planned_steps",
+    ]:
+        value = plan.get(field_name)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise EpisodeValidationError(f"plan.json {field_name} must be a list of strings")
 
 
 def _validate_cross_file_consistency(

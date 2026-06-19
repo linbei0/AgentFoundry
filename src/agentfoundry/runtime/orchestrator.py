@@ -14,6 +14,7 @@ from agentfoundry.models.fake import FakeModelGateway
 from agentfoundry.models.gateway import ModelCallError, ModelGateway
 from agentfoundry.runtime.episode import EpisodeWriter
 from agentfoundry.runtime.failure import FailureCategory
+from agentfoundry.runtime.plan import build_plan
 from agentfoundry.runtime.state import RunStatus
 from agentfoundry.runtime.task_contract import TaskLoadError, load_task, resolve_workspace_root
 from agentfoundry.tools.base import ToolRoutingError
@@ -62,6 +63,15 @@ class RunOrchestrator:
             )
             transition(RunStatus.PLANNING)
             writer.write_environment(workspace_root)
+            plan = build_plan(task)
+            writer.write_plan(plan)
+            writer.append_transcript(
+                {
+                    "event": "planning",
+                    "plan_path": "plan.json",
+                    "planned_step_count": len(plan["planned_steps"]),
+                },
+            )
 
             router = ToolRouter(task.allowed_tools, writer, workspace_root=workspace_root)
             observations: list[dict[str, object]] = []

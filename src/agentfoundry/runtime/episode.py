@@ -47,6 +47,9 @@ class EpisodeWriter:
     def write_context_manifest(self, manifest: dict[str, Any]) -> None:
         self._write_json("context-manifest.json", manifest)
 
+    def write_plan(self, plan: dict[str, Any]) -> None:
+        self._write_json("plan.json", plan)
+
     def write_episode_metadata(
         self,
         status: str,

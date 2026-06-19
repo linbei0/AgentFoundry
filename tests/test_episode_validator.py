@@ -252,6 +252,34 @@ def test_package_validator_rejects_missing_required_file(tmp_path: Path) -> None
         validate_episode_package(result.episode_path)
 
 
+def test_package_validator_rejects_missing_plan_json(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    (result.episode_path / "plan.json").unlink()
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="episode package missing required file: plan.json",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_plan_field_type_error(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    plan = read_json(result.episode_path / "plan.json")
+    plan["planned_steps"] = "not-a-list"
+    write_json(result.episode_path / "plan.json", plan)
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="plan.json planned_steps must be a list of strings",
+    ):
+        validate_episode_package(result.episode_path)
+
+
 def test_package_validator_rejects_environment_python_non_string(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path)

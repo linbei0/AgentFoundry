@@ -98,6 +98,26 @@ def test_orchestrator_records_successful_state_flow(tmp_path: Path) -> None:
     assert episode["workspace_root"] == str(tmp_path.resolve())
     failure = json.loads((result.episode_path / "failure.json").read_text(encoding="utf-8"))
     assert failure == {"status": "success", "failure": None}
+    plan = json.loads((result.episode_path / "plan.json").read_text(encoding="utf-8"))
+    assert plan["goal"] == "Exercise orchestrator"
+    assert plan["allowed_tools"] == ["fake_tool"]
+    assert plan["acceptance_criteria"] == ["Run reaches terminal state"]
+    assert plan["verification_commands"] == []
+    assert plan["planned_steps"] == [
+        "Clarify the task goal and constraints from task.yaml.",
+        "Use allowed tools: fake_tool.",
+        "Check acceptance criteria: Run reaches terminal state.",
+        "Run verification commands if provided.",
+    ]
+    transcript = [
+        json.loads(line)
+        for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert {
+        "event": "planning",
+        "plan_path": "plan.json",
+        "planned_step_count": 4,
+    } in transcript
 
 
 def test_orchestrator_fails_when_fake_tool_is_not_allowed(tmp_path: Path) -> None:

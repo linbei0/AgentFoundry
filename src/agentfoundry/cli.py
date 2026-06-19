@@ -73,6 +73,7 @@ def render_episode_summary(episode_path: Path) -> str:
             package_view = load_validated_episode_package(episode_path)
             episode_metadata = package_view.episode_metadata
             context_manifest = package_view.context_manifest
+            plan = package_view.plan
             transcript = package_view.transcript
             tool_calls = package_view.tool_calls
             verification = package_view.verification_commands
@@ -80,6 +81,7 @@ def render_episode_summary(episode_path: Path) -> str:
         else:
             _ensure_legacy_inspect_files(episode_path)
             context_manifest = _read_json(episode_path / "context-manifest.json")
+            plan = None
             transcript = _read_jsonl(episode_path / "transcript.jsonl")
             tool_calls = _read_jsonl(episode_path / "tool-calls.jsonl")
             verification = _read_jsonl(episode_path / "verification" / "commands.jsonl")
@@ -118,6 +120,8 @@ def render_episode_summary(episode_path: Path) -> str:
         "Contexts",
     ]
     lines.extend(_format_contexts(context_manifest.get("contexts", [])))
+    lines.extend(["", "Plan"])
+    lines.extend(_format_plan(plan))
     lines.extend(["", "Model Calls"])
     lines.extend(_format_model_calls(model_calls))
     lines.extend(["", "Tool Calls"])
@@ -172,6 +176,15 @@ def _format_contexts(contexts: list[dict[str, Any]]) -> list[str]:
         )
         for context in contexts
     ]
+
+
+def _format_plan(plan: dict[str, Any] | None) -> list[str]:
+    if plan is None:
+        return ["- legacy episode without plan.json"]
+    planned_steps = plan.get("planned_steps", [])
+    if not planned_steps:
+        return ["- none"]
+    return [f"- {step}" for step in planned_steps]
 
 
 def _format_model_calls(model_calls: list[dict[str, Any]]) -> list[str]:

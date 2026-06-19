@@ -42,6 +42,18 @@ verification_commands: []
             json.dumps({"workspace_root": episode_json.get("workspace_root")}),
             encoding="utf-8",
         )
+        (episode_path / "plan.json").write_text(
+            json.dumps(
+                {
+                    "goal": "Inspect me",
+                    "allowed_tools": ["fake_tool"],
+                    "acceptance_criteria": [],
+                    "verification_commands": [],
+                    "planned_steps": ["Use allowed tools: fake_tool."],
+                },
+            ),
+            encoding="utf-8",
+        )
     if failure_json is not None:
         (episode_path / "failure.json").write_text(json.dumps(failure_json), encoding="utf-8")
     (episode_path / "context-manifest.json").write_text(
@@ -176,6 +188,13 @@ verification_commands: []
         "\n".join(
             [
                 json.dumps({"event": "state_transition", "status": "created"}),
+                json.dumps(
+                    {
+                        "event": "planning",
+                        "plan_path": "plan.json",
+                        "planned_step_count": 1,
+                    },
+                ),
                 json.dumps({"event": "state_transition", "status": "completed"}),
                 json.dumps({"event": "model_call", "provider": "fake", "context_id": "0001"}),
             ],
@@ -203,6 +222,18 @@ verification_commands: []
                 "platform": "test",
                 "created_at": "2026-06-19T00:00:00+00:00",
                 "workspace_root": str(tmp_path),
+            },
+        ),
+        encoding="utf-8",
+    )
+    (episode_path / "plan.json").write_text(
+        json.dumps(
+            {
+                "goal": "Inspect me",
+                "allowed_tools": ["fake_tool"],
+                "acceptance_criteria": [],
+                "verification_commands": ["uv run pytest"],
+                "planned_steps": ["Use allowed tools: fake_tool."],
             },
         ),
         encoding="utf-8",
@@ -244,6 +275,8 @@ verification_commands: []
     assert "status: completed" in output
     assert "State Flow" in output
     assert "created -> completed" in output
+    assert "Plan" in output
+    assert "Use allowed tools: fake_tool." in output
     assert "Contexts" in output
     assert "0001" in output
     assert "Model Calls" in output
@@ -329,6 +362,18 @@ verification_commands: []
                 "platform": "test",
                 "created_at": "2026-06-19T00:00:00+00:00",
                 "workspace_root": str(tmp_path),
+            },
+        ),
+        encoding="utf-8",
+    )
+    (episode_path / "plan.json").write_text(
+        json.dumps(
+            {
+                "goal": "Inspect me",
+                "allowed_tools": ["fake_tool"],
+                "acceptance_criteria": [],
+                "verification_commands": [],
+                "planned_steps": ["Run verification commands if provided."],
             },
         ),
         encoding="utf-8",
