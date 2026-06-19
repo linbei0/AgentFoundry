@@ -43,6 +43,7 @@ class ContextManifest:
     context_id: str
     provider: str
     workspace_root: str
+    generated_at: str
     sources: list[ContextSource]
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,5 +51,6 @@ class ContextManifest:
             "context_id": self.context_id,
             "provider": self.provider,
             "workspace_root": self.workspace_root,
+            "generated_at": self.generated_at,
             "sources": [source.to_dict() for source in self.sources],
         }

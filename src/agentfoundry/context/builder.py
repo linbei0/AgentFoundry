@@ -8,20 +8,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agentfoundry.context.manifest import ContextIndex, ContextManifest, ContextSource
 from agentfoundry.runtime.episode import EpisodeWriter
 from agentfoundry.runtime.task_contract import TaskSpec
+from agentfoundry.tools.catalog import TOOL_CATALOG
 
 
-TOOL_CATALOG = {
-    "fake_tool": "deterministic test tool",
-    "file_search": "search workspace text using ripgrep when available",
-    "file_read": "read a workspace text file with offset and limit",
-    "apply_patch": "replace unique text inside a workspace file",
-    "shell": "run a shell command with timeout and captured output",
-}
+CONTEXT_MANIFEST_VERSION = "1.1"
 
 
 class ContextBuildError(RuntimeError):
@@ -68,8 +64,8 @@ class ContextBuilder:
         self._write_run_manifest(
             ContextIndex(
                 context_id=context_id,
-                model_input_path=str(model_input_path),
-                manifest_path=str(manifest_path),
+                model_input_path=f"contexts/{context_id}.txt",
+                manifest_path=f"contexts/{context_id}.json",
             ),
         )
         return BuiltContext(context_id=context_id, model_input=model_input, manifest=manifest)
@@ -118,19 +114,27 @@ class ContextBuilder:
         sources = [
             ContextSource("task", "goal", "Goal from task.yaml"),
             ContextSource("task", "constraints", "Constraints from task.yaml"),
-            ContextSource("task", "allowed_tools", "Allowed tools from task.yaml and ToolCatalog"),
+            ContextSource("task", "allowed_tools", "Allowed tools from task.yaml"),
             ContextSource("task", "acceptance_criteria", "Acceptance criteria from task.yaml"),
             ContextSource("task", "verification_commands", "Verification commands from task.yaml"),
         ]
+        sources.extend(
+            ContextSource("tool_catalog", tool, TOOL_CATALOG[tool])
+            for tool in self._task.allowed_tools
+        )
         return ContextManifest(
             context_id=context_id,
             provider=self._provider_name,
             workspace_root=str(self._workspace_root),
+            generated_at=_now_iso(),
             sources=sources,
         )
 
     def _write_run_manifest(self, index: ContextIndex) -> None:
         run_manifest = {
+            "version": CONTEXT_MANIFEST_VERSION,
+            "generated_at": _now_iso(),
+            "context_count": 1,
             "summary": {
                 "provider": self._provider_name,
                 "workspace_root": str(self._workspace_root),
@@ -146,3 +150,7 @@ def _format_list(items: list[str]) -> list[str]:
     if not items:
         return ["- none"]
     return [f"- {item}" for item in items]
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()

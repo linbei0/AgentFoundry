@@ -57,10 +57,19 @@ def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> No
     assert result.context_id == "0001"
     assert (writer.path / "contexts" / "0001.txt").exists()
     assert (writer.path / "contexts" / "0001.json").exists()
+    context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
+    assert context_manifest["generated_at"]
     manifest = json.loads((writer.path / "context-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "1.1"
+    assert manifest["generated_at"]
+    assert manifest["context_count"] == 1
     assert manifest["summary"]["provider"] == "fake"
     assert manifest["summary"]["workspace_root"] == str(tmp_path)
-    assert manifest["contexts"][0]["context_id"] == "0001"
+    assert manifest["contexts"][0] == {
+        "context_id": "0001",
+        "model_input_path": "contexts/0001.txt",
+        "manifest_path": "contexts/0001.json",
+    }
 
 
 def test_context_builder_model_input_contains_tool_usage(tmp_path: Path) -> None:
@@ -79,6 +88,27 @@ def test_context_builder_model_input_contains_tool_usage(tmp_path: Path) -> None
     assert "fake_tool: deterministic test tool" in model_input
     assert "file_read: read a workspace text file with offset and limit" in model_input
     assert "verification_commands:" in model_input
+
+
+def test_context_builder_records_each_allowed_tool_as_source(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    builder = ContextBuilder(
+        task=make_task(["fake_tool", "file_read"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    )
+
+    builder.build()
+
+    context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
+    tool_sources = [
+        source
+        for source in context_manifest["sources"]
+        if source["source_type"] == "tool_catalog"
+    ]
+    assert [source["name"] for source in tool_sources] == ["fake_tool", "file_read"]
+    assert tool_sources[0]["description"] == "deterministic test tool"
 
 
 def test_context_builder_rejects_unknown_allowed_tool(tmp_path: Path) -> None:
