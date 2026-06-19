@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agentfoundry.runtime.episode import EPISODE_VERSION
 from agentfoundry.runtime.orchestrator import RunOrchestrator
 
 
@@ -61,6 +62,7 @@ class EpisodeInspectError(RuntimeError):
 
 def render_episode_summary(episode_path: Path) -> str:
     """读取 episode package，并生成面向人的审计摘要。"""
+    episode_metadata, warnings = _read_episode_metadata(episode_path)
     required_files = [
         "context-manifest.json",
         "transcript.jsonl",
@@ -85,6 +87,8 @@ def render_episode_summary(episode_path: Path) -> str:
         if record.get("event") == "state_transition"
     ]
     final_status = state_flow[-1] if state_flow else "unknown"
+    if episode_metadata:
+        final_status = episode_metadata.get("status", final_status)
     model_calls = [
         record
         for record in transcript
@@ -92,10 +96,12 @@ def render_episode_summary(episode_path: Path) -> str:
     ]
 
     lines = [
+        *warnings,
         "Run Summary",
         f"- episode_path: {episode_path}",
+        f"- episode_version: {episode_metadata.get('episode_version', 'legacy') if episode_metadata else 'legacy'}",
         f"- status: {final_status}",
-        f"- provider: {context_manifest.get('summary', {}).get('provider', 'unknown')}",
+        f"- provider: {_summary_provider(episode_metadata, context_manifest)}",
         f"- context_count: {context_manifest.get('context_count', 0)}",
         "",
         "State Flow",
@@ -116,6 +122,26 @@ def render_episode_summary(episode_path: Path) -> str:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    metadata_path = episode_path / "episode.json"
+    if not metadata_path.exists():
+        return None, ["warning: episode.json missing; inspecting legacy episode", ""]
+    metadata = _read_json(metadata_path)
+    version = metadata.get("episode_version")
+    if version != EPISODE_VERSION:
+        raise EpisodeInspectError(f"unsupported episode_version: {version}")
+    return metadata, []
+
+
+def _summary_provider(
+    episode_metadata: dict[str, Any] | None,
+    context_manifest: dict[str, Any],
+) -> str:
+    if episode_metadata and episode_metadata.get("provider"):
+        return str(episode_metadata["provider"])
+    return str(context_manifest.get("summary", {}).get("provider", "unknown"))
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

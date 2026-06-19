@@ -54,6 +54,11 @@ class RunOrchestrator:
         try:
             task = load_task(task_path)
             workspace_root = resolve_workspace_root(task, task_path)
+            writer.write_episode_metadata(
+                status=RunStatus.CREATED.value,
+                provider=self._model_gateway.provider_name,
+                workspace_root=workspace_root,
+            )
             transition(RunStatus.PLANNING)
             writer.write_environment(workspace_root)
 
@@ -132,7 +137,7 @@ class RunOrchestrator:
                         "evidence": f"exceeded max_turns={self._max_turns}",
                     },
                 )
-                return RunResult(RunStatus.FAILED, state_history, writer.path)
+                return _finish_run(writer, RunStatus.FAILED, state_history)
 
             transition(RunStatus.VERIFYING)
             verification_result = VerificationEngine(writer, workspace_root).run(task.verification_commands)
@@ -145,11 +150,11 @@ class RunOrchestrator:
                         "evidence": _verification_evidence(verification_result),
                     },
                 )
-                return RunResult(RunStatus.FAILED, state_history, writer.path)
+                return _finish_run(writer, RunStatus.FAILED, state_history)
 
             transition(RunStatus.COMPLETED)
             writer.write_failure_attribution(None)
-            return RunResult(RunStatus.COMPLETED, state_history, writer.path)
+            return _finish_run(writer, RunStatus.COMPLETED, state_history)
         except ToolRoutingError as error:
             transition(RunStatus.FAILED)
             writer.write_failure_attribution(
@@ -159,7 +164,7 @@ class RunOrchestrator:
                     "evidence": str(error),
                 },
             )
-            return RunResult(RunStatus.FAILED, state_history, writer.path)
+            return _finish_run(writer, RunStatus.FAILED, state_history)
         except ModelCallError as error:
             transition(RunStatus.FAILED)
             writer.write_failure_attribution(
@@ -169,7 +174,7 @@ class RunOrchestrator:
                     "evidence": str(error),
                 },
             )
-            return RunResult(RunStatus.FAILED, state_history, writer.path)
+            return _finish_run(writer, RunStatus.FAILED, state_history)
         except ContextBuildError as error:
             transition(RunStatus.FAILED)
             category = "Task Spec Failure" if "unknown allowed_tools" in str(error) else "Context Failure"
@@ -180,7 +185,7 @@ class RunOrchestrator:
                     "evidence": str(error),
                 },
             )
-            return RunResult(RunStatus.FAILED, state_history, writer.path)
+            return _finish_run(writer, RunStatus.FAILED, state_history)
         except TaskLoadError as error:
             transition(RunStatus.FAILED)
             writer.write_failure_attribution(
@@ -190,7 +195,7 @@ class RunOrchestrator:
                     "evidence": str(error),
                 },
             )
-            return RunResult(RunStatus.FAILED, state_history, writer.path)
+            return _finish_run(writer, RunStatus.FAILED, state_history)
         except Exception as error:
             transition(RunStatus.FAILED)
             writer.write_failure_attribution(
@@ -200,7 +205,7 @@ class RunOrchestrator:
                     "evidence": str(error),
                 },
             )
-            return RunResult(RunStatus.FAILED, state_history, writer.path)
+            return _finish_run(writer, RunStatus.FAILED, state_history)
 
 
 def _verification_evidence(verification_result) -> str:
@@ -214,6 +219,15 @@ def _verification_evidence(verification_result) -> str:
     if verification_result.stderr_excerpt:
         lines.append(f"stderr: {verification_result.stderr_excerpt}")
     return "\n".join(lines)
+
+
+def _finish_run(
+    writer: EpisodeWriter,
+    status: RunStatus,
+    state_history: list[RunStatus],
+) -> RunResult:
+    writer.write_episode_metadata(status=status.value)
+    return RunResult(status, state_history, writer.path)
 
 
 def _unexpected_failure_category(error: Exception, state_history: list[RunStatus]) -> str:

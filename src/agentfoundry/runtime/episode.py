@@ -17,9 +17,13 @@ from pathlib import Path
 from typing import Any
 
 
+EPISODE_VERSION = "1.0"
+
+
 @dataclass(frozen=True)
 class EpisodeWriter:
     path: Path
+    task_path: Path
 
     @classmethod
     def create(cls, runs_root: Path, task_path: Path) -> "EpisodeWriter":
@@ -30,7 +34,7 @@ class EpisodeWriter:
         shutil.copyfile(task_path, episode_path / "task.yaml")
         (episode_path / "transcript.jsonl").write_text("", encoding="utf-8")
         (episode_path / "tool-calls.jsonl").write_text("", encoding="utf-8")
-        return cls(path=episode_path)
+        return cls(path=episode_path, task_path=task_path)
 
     def append_transcript(self, record: dict[str, Any]) -> None:
         self._append_jsonl("transcript.jsonl", record)
@@ -40,6 +44,33 @@ class EpisodeWriter:
 
     def write_context_manifest(self, manifest: dict[str, Any]) -> None:
         self._write_json("context-manifest.json", manifest)
+
+    def write_episode_metadata(
+        self,
+        status: str,
+        provider: str | None = None,
+        workspace_root: Path | None = None,
+    ) -> None:
+        """写入 episode 根 schema，terminal state 会复写 status。"""
+        metadata_path = self.path / "episode.json"
+        metadata = {}
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.update(
+            {
+                "episode_version": EPISODE_VERSION,
+                "created_at": metadata.get("created_at", datetime.now(UTC).isoformat()),
+                "task_path": str(self.task_path),
+                "status": status,
+                "provider": provider if provider is not None else metadata.get("provider"),
+                "workspace_root": (
+                    str(workspace_root)
+                    if workspace_root is not None
+                    else metadata.get("workspace_root")
+                ),
+            },
+        )
+        self._write_json("episode.json", metadata)
 
     def write_environment(self, workspace_root: Path | None = None) -> None:
         environment = {

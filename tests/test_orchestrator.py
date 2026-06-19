@@ -90,6 +90,12 @@ def test_orchestrator_records_successful_state_flow(tmp_path: Path) -> None:
     ]
     environment = json.loads((result.episode_path / "environment.json").read_text(encoding="utf-8"))
     assert environment["workspace_root"] == str(tmp_path.resolve())
+    episode = json.loads((result.episode_path / "episode.json").read_text(encoding="utf-8"))
+    assert episode["episode_version"] == "1.0"
+    assert episode["status"] == "completed"
+    assert episode["provider"] == "fake"
+    assert episode["task_path"] == str(task_path)
+    assert episode["workspace_root"] == str(tmp_path.resolve())
 
 
 def test_orchestrator_fails_when_fake_tool_is_not_allowed(tmp_path: Path) -> None:
@@ -191,6 +197,8 @@ def test_orchestrator_fails_when_workspace_root_does_not_exist(tmp_path: Path) -
     failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
     assert "Task Spec Failure" in failure_text
     assert "workspace_root does not exist" in failure_text
+    episode = json.loads((result.episode_path / "episode.json").read_text(encoding="utf-8"))
+    assert episode["status"] == "failed"
 
 
 def test_orchestrator_fails_when_model_gateway_fails(tmp_path: Path) -> None:
