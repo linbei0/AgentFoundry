@@ -54,7 +54,7 @@ def validate_episode_package(episode_path: Path) -> None:
     )
     if episode_metadata is None or failure_record is None:
         raise EpisodeValidationError("episode package must contain v1 episode.json and failure.json")
-    _validate_cross_file_consistency(episode_metadata, failure_record, context_manifest, transcript)
+    _validate_cross_file_consistency(episode_path, episode_metadata, failure_record, context_manifest, transcript)
 
 
 def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any] | None, list[str]]:
@@ -115,6 +115,7 @@ def _validate_jsonl_fields(path: Path, label: str, required_fields: list[str]) -
 
 
 def _validate_cross_file_consistency(
+    episode_path: Path,
     episode_metadata: dict[str, Any],
     failure_record: dict[str, Any],
     context_manifest: dict[str, Any],
@@ -146,10 +147,45 @@ def _validate_cross_file_consistency(
     context_count = context_manifest.get("context_count")
     if not isinstance(contexts, list):
         raise EpisodeValidationError("context-manifest.json contexts must be a list")
+    if not isinstance(context_count, int):
+        raise EpisodeValidationError("context-manifest.json context_count must be an integer")
     if context_count != len(contexts):
         raise EpisodeValidationError(
             f"context-manifest.json context_count {context_count} does not match contexts length {len(contexts)}",
         )
+    _validate_context_items(episode_path, contexts)
+
+
+def _validate_context_items(episode_path: Path, contexts: list[Any]) -> None:
+    """校验 context-manifest contexts 索引项和对应文件存在性。"""
+    required_fields = ["context_id", "model_input_path", "manifest_path"]
+    for index, context in enumerate(contexts):
+        if not isinstance(context, dict):
+            raise EpisodeValidationError(f"context-manifest.json contexts[{index}] must be an object")
+        for field_name in required_fields:
+            if field_name not in context:
+                raise EpisodeValidationError(
+                    f"context-manifest.json contexts[{index}] missing required field: {field_name}",
+                )
+            if not isinstance(context[field_name], str):
+                raise EpisodeValidationError(
+                    f"context-manifest.json contexts[{index}].{field_name} must be a string",
+                )
+        for field_name in ["model_input_path", "manifest_path"]:
+            if not _is_episode_internal_file(episode_path, context[field_name]):
+                raise EpisodeValidationError(
+                    f"context-manifest.json contexts[{index}].{field_name} file missing: {context[field_name]}",
+                )
+
+
+def _is_episode_internal_file(episode_path: Path, relative_path: str) -> bool:
+    candidate = (episode_path / relative_path).resolve()
+    episode_root = episode_path.resolve()
+    try:
+        candidate.relative_to(episode_root)
+    except ValueError:
+        return False
+    return candidate.is_file()
 
 
 def _validate_episode_metadata(metadata: dict[str, Any]) -> None:

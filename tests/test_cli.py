@@ -121,6 +121,7 @@ def test_cli_run_accepts_custom_runs_root(tmp_path: Path, monkeypatch) -> None:
 def test_cli_inspect_completed_episode_outputs_summary(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
     (episode_path / "verification").mkdir(parents=True)
+    (episode_path / "contexts").mkdir(parents=True)
     (episode_path / "task.yaml").write_text(
         """
 goal: Inspect me
@@ -190,6 +191,8 @@ verification_commands: []
         json.dumps({"workspace_root": str(tmp_path)}),
         encoding="utf-8",
     )
+    (episode_path / "contexts" / "0001.txt").write_text("model input", encoding="utf-8")
+    (episode_path / "contexts" / "0001.json").write_text("{}", encoding="utf-8")
 
     exit_code = cli.main(["inspect", str(episode_path)])
 

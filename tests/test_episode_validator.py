@@ -39,6 +39,12 @@ def read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def update_context_manifest(episode_path: Path, **updates: object) -> None:
+    context_manifest = read_json(episode_path / "context-manifest.json")
+    context_manifest.update(updates)
+    write_json(episode_path / "context-manifest.json", context_manifest)
+
+
 def write_task(path: Path) -> None:
     path.write_text(
         """
@@ -316,6 +322,92 @@ def test_package_validator_rejects_context_count_mismatch(tmp_path: Path) -> Non
     with pytest.raises(
         EpisodeValidationError,
         match="context-manifest.json context_count 999 does not match contexts length",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_non_integer_context_count(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    update_context_manifest(result.episode_path, context_count="2")
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="context-manifest.json context_count must be an integer",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_non_object_context_item(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    update_context_manifest(result.episode_path, context_count=1, contexts=["bad"])
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="context-manifest.json contexts\\[0\\] must be an object",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_context_item_missing_field(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    update_context_manifest(
+        result.episode_path,
+        context_count=1,
+        contexts=[
+            {
+                "context_id": "0001",
+                "model_input_path": "contexts/0001.txt",
+            },
+        ],
+    )
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="context-manifest.json contexts\\[0\\] missing required field: manifest_path",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_context_item_non_string_field(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    update_context_manifest(
+        result.episode_path,
+        context_count=1,
+        contexts=[
+            {
+                "context_id": "0001",
+                "model_input_path": 123,
+                "manifest_path": "contexts/0001.json",
+            },
+        ],
+    )
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="context-manifest.json contexts\\[0\\].model_input_path must be a string",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_missing_context_file(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    context_manifest = read_json(result.episode_path / "context-manifest.json")
+    first_context = context_manifest["contexts"][0]
+    (result.episode_path / first_context["model_input_path"]).unlink()
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="context-manifest.json contexts\\[0\\].model_input_path file missing",
     ):
         validate_episode_package(result.episode_path)
 
