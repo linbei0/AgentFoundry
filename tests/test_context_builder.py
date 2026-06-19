@@ -11,6 +11,7 @@ import pytest
 
 from agentfoundry.context.builder import ContextBuildError, ContextBuilder
 from agentfoundry.runtime.episode import EpisodeWriter
+from agentfoundry.runtime.plan import build_plan
 from agentfoundry.runtime.task_contract import TaskSpec
 
 
@@ -25,6 +26,7 @@ def make_task(allowed_tools: list[str] | None = None) -> TaskSpec:
 
 
 def make_writer(tmp_path: Path) -> EpisodeWriter:
+    task = make_task()
     task_path = tmp_path / "task.yaml"
     task_path.write_text(
         """
@@ -40,7 +42,9 @@ verification_commands:
 """.strip(),
         encoding="utf-8",
     )
-    return EpisodeWriter.create(runs_root=tmp_path / ".runs", task_path=task_path)
+    writer = EpisodeWriter.create(runs_root=tmp_path / ".runs", task_path=task_path)
+    writer.write_plan(build_plan(task))
+    return writer
 
 
 def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> None:
@@ -113,6 +117,40 @@ def test_context_builder_model_input_contains_tool_usage(tmp_path: Path) -> None
     assert "verification_commands:" in model_input
     assert "Observations:" in model_input
     assert "- none" in model_input
+
+
+def test_context_builder_includes_plan_source_and_budget(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    builder = ContextBuilder(
+        task=make_task(),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
+    plan_source = next(source for source in context_manifest["sources"] if source["source_type"] == "plan")
+    injected_plan = "\n".join(
+        [
+            "Plan:",
+            "- Clarify the task goal and constraints from task.yaml.",
+            "- Use allowed tools: fake_tool, file_read.",
+            "- Check acceptance criteria: Context is auditable.",
+            "- Run verification commands if provided.",
+        ],
+    )
+    assert injected_plan in model_input
+    assert plan_source["name"] == "plan.json"
+    assert plan_source["description"]
+    assert plan_source["inclusion_reason"]
+    assert plan_source["budget"] == {
+        "char_count": len(injected_plan),
+        "included_in_model_input": True,
+        "inclusion_reason": plan_source["inclusion_reason"],
+    }
 
 
 def test_context_builder_includes_project_instructions_when_agents_md_exists(tmp_path: Path) -> None:
@@ -244,7 +282,7 @@ def test_context_builder_sources_include_inclusion_reason(tmp_path: Path) -> Non
 
     context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
     source_types = {source["source_type"] for source in context_manifest["sources"]}
-    assert {"task", "tool_catalog", "observation", "project_instructions"} <= source_types
+    assert {"task", "tool_catalog", "observation", "project_instructions", "plan"} <= source_types
     assert all(source["inclusion_reason"] for source in context_manifest["sources"])
 
 

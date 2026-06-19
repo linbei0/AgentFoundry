@@ -53,11 +53,13 @@ class ContextBuilder:
         self._episode_writer = episode_writer
         self._observations = list(observations or [])
         self._project_instructions: str | None = None
+        self._plan: dict[str, object] | None = None
 
     def build(self) -> BuiltContext:
         """构建第一版上下文：不检索文件，只写任务事实和工具目录。"""
         self._validate_tools()
         self._project_instructions = self._read_project_instructions()
+        self._plan = self._read_plan()
         context_id = self._next_context_id()
         contexts_dir = self._episode_writer.path / "contexts"
         contexts_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,9 @@ class ContextBuilder:
                 "verification_commands:",
                 *_format_list(self._task.verification_commands),
                 "",
+                "Plan:",
+                *self._format_plan(),
+                "",
                 "Observations:",
                 *self._format_observations(),
                 "",
@@ -151,6 +156,12 @@ class ContextBuilder:
                 "verification_commands",
                 "Verification commands from task.yaml",
                 "The model needs to know how the run will be verified.",
+            ),
+            ContextSource(
+                "plan",
+                "plan.json",
+                "Agent plan trace for this episode",
+                "The model needs the planned steps produced during planning.",
             ),
         ]
         sources.extend(
@@ -203,6 +214,8 @@ class ContextBuilder:
             return _task_source_content(source.name, self._task)
         if source.source_type == "tool_catalog":
             return f"- {source.name}: {TOOL_REGISTRY[source.name].description}"
+        if source.source_type == "plan":
+            return "\n".join(["Plan:", *self._format_plan()])
         if source.source_type == "observation":
             for observation in self._observations:
                 if _observation_tool_name(observation) == source.name:
@@ -223,6 +236,26 @@ class ContextBuilder:
             )
             for observation in self._observations
         ]
+
+    def _read_plan(self) -> dict[str, object]:
+        path = self._episode_writer.path / "plan.json"
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as error:
+            raise ContextBuildError(f"plan.json missing: {path}") from error
+        except json.JSONDecodeError as error:
+            raise ContextBuildError(f"plan.json is not valid JSON: {error.msg}") from error
+        if not isinstance(plan, dict):
+            raise ContextBuildError("plan.json must contain a JSON object")
+        planned_steps = plan.get("planned_steps")
+        if not isinstance(planned_steps, list) or not all(isinstance(step, str) for step in planned_steps):
+            raise ContextBuildError("plan.json planned_steps must be a list of strings")
+        return plan
+
+    def _format_plan(self) -> list[str]:
+        if self._plan is None:
+            return ["- none"]
+        return _format_list(self._plan["planned_steps"])
 
     def _read_project_instructions(self) -> str | None:
         path = self._workspace_root / "AGENTS.md"

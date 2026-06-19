@@ -457,10 +457,18 @@ def test_orchestrator_completes_after_two_tool_rounds(tmp_path: Path) -> None:
     run_manifest = json.loads((result.episode_path / "context-manifest.json").read_text(encoding="utf-8"))
     assert "Observations:" in first_context
     assert "- none" in first_context
+    assert "Plan:" in first_context
+    assert "- Use allowed tools: fake_tool." in first_context
+    assert "Plan:" in second_context
+    assert "- Use allowed tools: fake_tool." in second_context
     assert "fake_tool" in second_context
     assert '"args": {"round": 1}' in second_context
     assert any(
         source["source_type"] == "observation" and source["name"] == "fake_tool"
+        for source in second_manifest["sources"]
+    )
+    assert any(
+        source["source_type"] == "plan" and source["name"] == "plan.json"
         for source in second_manifest["sources"]
     )
     for context_id in ["0001", "0002", "0003"]:
