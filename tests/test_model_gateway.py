@@ -68,6 +68,24 @@ def test_fake_model_gateway_accepts_optional_observations() -> None:
     assert response.tool_calls == []
 
 
+def test_fake_model_gateway_keeps_old_usage_and_records_optional_inputs() -> None:
+    gateway = FakeModelGateway(response=ModelResponse(content="done", tool_calls=[]))
+
+    legacy_response = gateway.generate(make_task())
+    response = gateway.generate(
+        make_task(),
+        model_input="context text",
+        tool_schemas=[{"name": "fake_tool"}],
+        observations=[{"tool_name": "fake_tool"}],
+    )
+
+    assert legacy_response.content == "done"
+    assert response.content == "done"
+    assert gateway.calls[-1]["model_input"] == "context text"
+    assert gateway.calls[-1]["tool_schemas"] == [{"name": "fake_tool"}]
+    assert gateway.calls[-1]["observations"] == [{"tool_name": "fake_tool"}]
+
+
 def test_openai_gateway_uses_unified_response_shape() -> None:
     captured: dict[str, object] = {}
 
@@ -89,6 +107,32 @@ def test_openai_gateway_uses_unified_response_shape() -> None:
     assert captured["payload"] == {
         "model": "gpt-test",
         "input": "Goal: Exercise model gateway\nConstraints:\n- none\nAcceptance criteria:\n- none",
+    }
+
+
+def test_openai_gateway_payload_uses_model_input_and_tools() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(payload: dict[str, object], api_key: str) -> dict[str, object]:
+        captured["payload"] = payload
+        return {"output_text": "provider text"}
+
+    gateway = OpenAIResponsesGateway(
+        api_key="test-key",
+        model="gpt-test",
+        transport=transport,
+    )
+
+    gateway.generate(
+        make_task(),
+        model_input="standardized context",
+        tool_schemas=[{"name": "fake_tool", "description": "test", "parameters": {}}],
+    )
+
+    assert captured["payload"] == {
+        "model": "gpt-test",
+        "input": "standardized context",
+        "tools": [{"name": "fake_tool", "description": "test", "parameters": {}}],
     }
 
 

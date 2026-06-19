@@ -20,12 +20,23 @@ class FakeModelGateway:
             content="Use the fake tool for the MVP execution step.",
             tool_calls=[ToolCall(name="fake_tool", args={})],
         )
+        self.calls: list[dict[str, Any]] = []
 
     def generate(
         self,
         task: TaskSpec,
+        model_input: str | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
         observations: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
+        self.calls.append(
+            {
+                "task": task,
+                "model_input": model_input,
+                "tool_schemas": list(tool_schemas or []),
+                "observations": list(observations or []),
+            },
+        )
         if observations and self._response.tool_calls:
             return ModelResponse(content="Fake model observed tool results.", tool_calls=[])
         return self._response

@@ -38,6 +38,8 @@ class ModelGateway(Protocol):
     def generate(
         self,
         task: TaskSpec,
+        model_input: str | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
         observations: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
         """Generate a model response for a task."""
@@ -62,6 +64,8 @@ class OpenAIResponsesGateway:
     def generate(
         self,
         task: TaskSpec,
+        model_input: str | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
         observations: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
         """调用 OpenAI Responses API，并把 provider 输出收敛成统一 ModelResponse。"""
@@ -69,7 +73,12 @@ class OpenAIResponsesGateway:
             raise ModelCallError("OPENAI_API_KEY is required for OpenAIResponsesGateway")
 
         # provider 失败必须显式暴露给 orchestrator，禁止静默回退到 fake model。
-        payload = {"model": self._model, "input": _prompt_for_task(task)}
+        payload: dict[str, object] = {
+            "model": self._model,
+            "input": model_input if model_input is not None else _prompt_for_task(task),
+        }
+        if tool_schemas is not None:
+            payload["tools"] = tool_schemas
         try:
             response = self._transport(payload, self._api_key)
         except Exception as error:

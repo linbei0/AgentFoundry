@@ -17,7 +17,7 @@ from agentfoundry.verification.engine import VerificationResult
 class FailingGateway:
     provider_name = "failing"
 
-    def generate(self, task):
+    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
         raise ModelCallError("model exploded")
 
 
@@ -27,9 +27,13 @@ class SequenceGateway:
     def __init__(self, responses: list[ModelResponse]) -> None:
         self._responses = responses
         self.observations_seen = []
+        self.model_inputs_seen = []
+        self.tool_schemas_seen = []
 
-    def generate(self, task, observations=None):
+    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
         self.observations_seen.append(list(observations or []))
+        self.model_inputs_seen.append(model_input)
+        self.tool_schemas_seen.append(list(tool_schemas or []))
         return self._responses.pop(0)
 
 
@@ -281,6 +285,24 @@ def test_orchestrator_model_call_has_context_id_each_turn(tmp_path: Path) -> Non
     model_calls = [record for record in transcript if record.get("event") == "model_call"]
     assert result.status is RunStatus.COMPLETED
     assert [record["context_id"] for record in model_calls] == ["0001", "0002"]
+
+
+def test_orchestrator_passes_model_input_and_tool_schemas_to_gateway(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    write_task(task_path, ["fake_tool", "file_read"])
+    gateway = SequenceGateway([ModelResponse("done", [])])
+
+    result = RunOrchestrator(runs_root=runs_dir, model_gateway=gateway).run(task_path)
+
+    assert result.status is RunStatus.COMPLETED
+    assert gateway.model_inputs_seen[0] is not None
+    assert "AgentFoundry Context v1" in gateway.model_inputs_seen[0]
+    assert [schema["name"] for schema in gateway.tool_schemas_seen[0]] == [
+        "fake_tool",
+        "file_read",
+    ]
+    assert gateway.tool_schemas_seen[0][0]["parameters"]["type"] == "object"
 
 
 def _read_transcript(episode_path: Path) -> list[dict[str, object]]:

@@ -16,6 +16,7 @@ from agentfoundry.runtime.episode import EpisodeWriter
 from agentfoundry.runtime.state import RunStatus
 from agentfoundry.runtime.task_contract import load_task
 from agentfoundry.tools.base import ToolRoutingError
+from agentfoundry.tools.registry import export_tool_schemas
 from agentfoundry.tools.router import ToolRouter
 from agentfoundry.verification.engine import VerificationEngine
 
@@ -66,6 +67,7 @@ class RunOrchestrator:
                     episode_writer=writer,
                     observations=observations,
                 ).build()
+                tool_schemas = export_tool_schemas(task.allowed_tools)
                 # 每一轮模型调用都绑定独立 context_id，便于复盘工具观察如何进入下一轮。
                 writer.append_transcript(
                     {
@@ -79,6 +81,8 @@ class RunOrchestrator:
                 model_response = _generate_with_observations(
                     self._model_gateway,
                     task,
+                    context.model_input,
+                    tool_schemas,
                     observations,
                 )
                 writer.append_transcript(
@@ -195,10 +199,20 @@ def _verification_evidence(verification_result) -> str:
     return f"{verification_result.failed_command} exited with {verification_result.exit_code}"
 
 
-def _generate_with_observations(model_gateway, task, observations):
+def _generate_with_observations(model_gateway, task, model_input, tool_schemas, observations):
     try:
-        return model_gateway.generate(task, observations=observations)
+        return model_gateway.generate(
+            task,
+            model_input=model_input,
+            tool_schemas=tool_schemas,
+            observations=observations,
+        )
     except TypeError as error:
-        if "observations" not in str(error):
+        if not any(keyword in str(error) for keyword in ["model_input", "tool_schemas", "observations"]):
             raise
-        return model_gateway.generate(task)
+        try:
+            return model_gateway.generate(task, observations=observations)
+        except TypeError as legacy_error:
+            if "observations" not in str(legacy_error):
+                raise
+            return model_gateway.generate(task)
