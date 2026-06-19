@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from agentfoundry.runtime.episode_validator import EpisodeValidationError
+from agentfoundry.runtime import eval_export
+from agentfoundry.runtime.episode_validator import EpisodePackageView, EpisodeValidationError
 from agentfoundry.runtime.eval_export import EVAL_CASE_VERSION, export_eval_case
 from agentfoundry.runtime.orchestrator import RunOrchestrator
 from agentfoundry.runtime.state import RunStatus
@@ -96,3 +97,31 @@ def test_exporting_same_episode_is_deterministic(tmp_path: Path) -> None:
     second_export = export_eval_case(result.episode_path)
 
     assert first_export == second_export
+
+
+def test_export_eval_case_uses_package_view(tmp_path: Path, monkeypatch) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    episode_path = tmp_path / "episode-1"
+    episode_path.mkdir()
+    (episode_path / "task.yaml").write_text(task_path.read_text(encoding="utf-8"), encoding="utf-8")
+    package_view = EpisodePackageView(
+        episode_metadata={
+            "episode_version": "1.0",
+            "workspace_root": str(tmp_path),
+            "status": "completed",
+        },
+        failure_record={"status": "success", "failure": None},
+        context_manifest={"context_count": 0, "contexts": []},
+        transcript=[],
+        tool_calls=[{"tool_name": "fake_tool", "status": "success"}],
+        verification_commands=[],
+    )
+
+    monkeypatch.setattr(eval_export, "load_validated_episode_package", lambda path: package_view)
+
+    eval_case = export_eval_case(episode_path)
+
+    assert eval_case["episode_version"] == "1.0"
+    assert eval_case["task"]["goal"] == "Export eval case"
+    assert eval_case["tool_names_used"] == ["fake_tool"]
