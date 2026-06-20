@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agentfoundry.models.gateway import ModelCallError
 from agentfoundry.models.gateway import ModelResponse, ToolCall
+from agentfoundry.models.gateway import OpenAIResponsesGateway
 from agentfoundry.runtime.orchestrator import RunOrchestrator
 from agentfoundry.runtime.state import RunStatus
 from agentfoundry.verification.engine import VerificationResult
@@ -127,6 +128,71 @@ def test_orchestrator_records_successful_state_flow(tmp_path: Path) -> None:
         "plan_path": "plan.json",
         "planned_step_count": 4,
     } in transcript
+
+
+def test_orchestrator_executes_openai_provider_tool_call_smoke(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    write_task(task_path, ["fake_tool"])
+    payloads: list[dict[str, object]] = []
+
+    def fake_transport(payload: dict[str, object], api_key: str) -> dict[str, object]:
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return {
+                "output_text": "",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "fake_tool",
+                        "arguments": "{}",
+                    },
+                ],
+            }
+        return {"output_text": "provider finished after observing fake_tool"}
+
+    gateway = OpenAIResponsesGateway(
+        api_key="test-key",
+        model="gpt-test",
+        transport=fake_transport,
+    )
+
+    result = RunOrchestrator(runs_root=runs_dir, model_gateway=gateway).run(task_path)
+
+    episode = json.loads((result.episode_path / "episode.json").read_text(encoding="utf-8"))
+    transcript = [
+        json.loads(line)
+        for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    context_manifest = json.loads(
+        (result.episode_path / "context-manifest.json").read_text(encoding="utf-8"),
+    )
+    tool_calls = [
+        json.loads(line)
+        for line in (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    model_calls = [record for record in transcript if record["event"] == "model_call"]
+    model_responses = [record for record in transcript if record["event"] == "model_response"]
+    tool_observations = [record for record in transcript if record["event"] == "tool_observation"]
+
+    assert result.status is RunStatus.COMPLETED
+    assert episode["provider"] == "openai"
+    assert len(model_calls) >= 2
+    assert model_responses[0]["tool_calls"] == [{"name": "fake_tool", "args": {}}]
+    assert tool_observations[0]["tool_name"] == "fake_tool"
+    assert tool_observations[0]["result"]["status"] == "success"
+    assert context_manifest["context_count"] == 2
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["tool_name"] == "fake_tool"
+    assert tool_calls[0]["args"] == {}
+    assert tool_calls[0]["status"] == "success"
+    assert tool_calls[0]["result"]["status"] == "success"
+    assert tool_calls[0]["policy"]["action"] == "allow"
+    assert len(payloads) == 2
+    assert all("tools" in payload for payload in payloads)
+    first_tools = payloads[0]["tools"]
+    assert isinstance(first_tools, list)
+    assert first_tools[0]["name"] == "fake_tool"
 
 
 def test_orchestrator_fails_when_fake_tool_is_not_allowed(tmp_path: Path) -> None:
