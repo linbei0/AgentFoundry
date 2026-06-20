@@ -437,6 +437,35 @@ verification_commands: []
     assert "structured evidence" in output
 
 
+def test_cli_inspect_redacts_verification_secrets_from_real_episode(tmp_path: Path, capsys) -> None:
+    raw_key = "OPENAI_API_KEY=super-secret-value"
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        f"""
+goal: Redact inspect output
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - Secret is not shown
+verification_commands:
+  - python -c "import sys; print('{raw_key}'); sys.exit(9)"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    run_exit = cli.main(["run", str(task_path), "--runs-root", str(tmp_path / ".runs")])
+    run_output = capsys.readouterr().out
+    episode_path = Path(next(line.split("=", 1)[1] for line in run_output.splitlines() if line.startswith("episode_path=")))
+    inspect_exit = cli.main(["inspect", str(episode_path)])
+
+    output = capsys.readouterr().out
+    assert run_exit == 1
+    assert inspect_exit == 0
+    assert raw_key not in output
+    assert "OPENAI_API_KEY=[REDACTED]" in output
+
+
 def test_cli_inspect_legacy_episode_without_episode_json_warns(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
     (episode_path / "verification").mkdir(parents=True)

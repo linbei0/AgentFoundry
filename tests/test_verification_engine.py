@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from agentfoundry.runtime.episode import EpisodeWriter
-from agentfoundry.verification.engine import VerificationEngine
+from agentfoundry.verification.engine import EXCERPT_LIMIT, VerificationEngine
 
 
 def make_writer(tmp_path: Path) -> EpisodeWriter:
@@ -41,8 +41,13 @@ def test_verification_engine_records_each_command(tmp_path: Path) -> None:
     assert record["timeout"] is False
     assert "verified" in record["stdout"]
     assert record["stdout_excerpt"] == "verified\n"
+    assert record["stdout_truncated"] is False
+    assert record["stdout_original_length"] == len("verified\n")
     assert record["stderr"] == ""
     assert record["stderr_excerpt"] == ""
+    assert record["stderr_truncated"] is False
+    assert record["stderr_original_length"] == 0
+    assert record["redacted"] is False
     assert record["duration_seconds"] >= 0
     assert record["timeout_seconds"] == 60
 
@@ -64,7 +69,68 @@ def test_verification_engine_reports_failed_command(tmp_path: Path) -> None:
     assert record["timeout"] is False
     assert record["stdout_excerpt"] == "bad-out\n"
     assert record["stderr_excerpt"] == "bad-err\n"
+    assert record["stdout_truncated"] is False
+    assert record["stderr_truncated"] is False
+    assert record["stdout_original_length"] == len("bad-out\n")
+    assert record["stderr_original_length"] == len("bad-err\n")
+    assert record["redacted"] is False
     assert record["timeout_seconds"] == 60
+
+
+def test_verification_engine_records_truncation_metadata(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    engine = VerificationEngine(episode_writer=writer, workspace_root=tmp_path)
+
+    stdout = "x" * (EXCERPT_LIMIT + 7)
+    stderr = "y" * (EXCERPT_LIMIT + 9)
+    engine.run(
+        [
+            (
+                "python -c "
+                "\"import sys; "
+                f"print('{stdout}', end=''); "
+                f"print('{stderr}', end='', file=sys.stderr)\""
+            ),
+        ],
+    )
+
+    record = json.loads((writer.path / "verification" / "commands.jsonl").read_text(encoding="utf-8"))
+    assert record["stdout_excerpt"] == "x" * EXCERPT_LIMIT
+    assert record["stderr_excerpt"] == "y" * EXCERPT_LIMIT
+    assert record["stdout_truncated"] is True
+    assert record["stderr_truncated"] is True
+    assert record["stdout_original_length"] == EXCERPT_LIMIT + 7
+    assert record["stderr_original_length"] == EXCERPT_LIMIT + 9
+    assert record["redacted"] is False
+
+
+def test_verification_engine_redacts_sensitive_output(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    engine = VerificationEngine(episode_writer=writer, workspace_root=tmp_path)
+    raw_key = "OPENAI_API_KEY=super-secret-value"
+    raw_token = "sk-" + ("a" * 48)
+
+    result = engine.run(
+        [
+            (
+                "python -c "
+                "\"import sys; "
+                f"print('{raw_key}'); "
+                f"print('{raw_token}', file=sys.stderr); "
+                "sys.exit(3)\""
+            ),
+        ],
+    )
+
+    record = json.loads((writer.path / "verification" / "commands.jsonl").read_text(encoding="utf-8"))
+    assert result.status == "failed"
+    assert raw_key not in record["stdout"]
+    assert raw_key not in record["stdout_excerpt"]
+    assert raw_token not in record["stderr"]
+    assert raw_token not in record["stderr_excerpt"]
+    assert record["stdout_excerpt"] == "OPENAI_API_KEY=[REDACTED]\n"
+    assert record["stderr_excerpt"] == "[REDACTED_TOKEN]\n"
+    assert record["redacted"] is True
 
 
 def test_verification_engine_records_timeout(tmp_path: Path) -> None:

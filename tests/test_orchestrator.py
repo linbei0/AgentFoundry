@@ -246,6 +246,29 @@ def test_orchestrator_verification_uses_resolved_workspace_root(tmp_path: Path) 
     assert (project_root / "verified-root.txt").read_text(encoding="utf-8") == "ok"
 
 
+def test_orchestrator_redacts_verification_output_in_failure_attribution(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    raw_key = "OPENAI_API_KEY=super-secret-value"
+    write_task(
+        task_path,
+        ["fake_tool"],
+        verification_commands=[
+            f"python -c \"import sys; print('{raw_key}'); sys.exit(5)\"",
+        ],
+    )
+    gateway = SequenceGateway([ModelResponse("done", [])])
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=gateway,
+    ).run(task_path)
+
+    failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
+    assert result.status is RunStatus.FAILED
+    assert raw_key not in failure_text
+    assert "OPENAI_API_KEY=[REDACTED]" in failure_text
+
+
 def test_orchestrator_fails_when_workspace_root_does_not_exist(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path, ["fake_tool"], workspace_root="missing-workspace")
