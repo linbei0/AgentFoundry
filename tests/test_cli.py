@@ -176,6 +176,108 @@ def test_cli_run_accepts_custom_runs_root(tmp_path: Path, monkeypatch) -> None:
     assert calls == {"runs_root": custom_runs, "task_path": task_path}
 
 
+def test_cli_run_explicit_fake_provider_keeps_default_gateway_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: x\n", encoding="utf-8")
+    calls = {}
+
+    class FakeOrchestrator:
+        def __init__(self, runs_root: Path) -> None:
+            calls["runs_root"] = runs_root
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            calls["task_path"] = received_task_path
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(["run", str(task_path), "--provider", "fake"])
+
+    assert exit_code == 0
+    assert calls == {"runs_root": Path(".runs"), "task_path": task_path}
+
+
+def test_cli_run_openai_provider_passes_gateway_to_orchestrator(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: x\n", encoding="utf-8")
+    calls = {}
+
+    class FakeOpenAIGateway:
+        provider_name = "openai"
+
+        def __init__(self, model: str = "gpt-4.1-mini") -> None:
+            calls["model"] = model
+
+    class FakeOrchestrator:
+        def __init__(self, runs_root: Path, model_gateway=None) -> None:
+            calls["runs_root"] = runs_root
+            calls["model_gateway"] = model_gateway
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            calls["task_path"] = received_task_path
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "OpenAIResponsesGateway", FakeOpenAIGateway)
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(
+        ["run", str(task_path), "--provider", "openai", "--model", "gpt-test"],
+    )
+
+    assert exit_code == 0
+    assert calls["runs_root"] == Path(".runs")
+    assert calls["task_path"] == task_path
+    assert calls["model"] == "gpt-test"
+    assert isinstance(calls["model_gateway"], FakeOpenAIGateway)
+
+
+def test_cli_run_openai_missing_api_key_fails_without_network(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Fail before OpenAI network call
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - Missing key is explicit
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "run",
+            str(task_path),
+            "--provider",
+            "openai",
+            "--runs-root",
+            str(tmp_path / ".runs"),
+        ],
+    )
+
+    output = capsys.readouterr().out
+    episode_path = Path(
+        next(line.split("=", 1)[1] for line in output.splitlines() if line.startswith("episode_path=")),
+    )
+    failure_text = (episode_path / "failure.json").read_text(encoding="utf-8")
+    assert exit_code == 1
+    assert "status=failed" in output
+    assert "OPENAI_API_KEY is required for OpenAIResponsesGateway" in failure_text
+
+
 def test_cli_inspect_completed_episode_outputs_summary(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
     (episode_path / "verification").mkdir(parents=True)

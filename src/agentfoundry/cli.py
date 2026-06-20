@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agentfoundry.models.gateway import OpenAIResponsesGateway
 from agentfoundry.runtime.episode_validator import (
     EpisodeValidationError,
     load_validated_episode_package,
@@ -33,6 +34,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(".runs"),
         help="directory for episode packages (default: .runs)",
+    )
+    run_parser.add_argument(
+        "--provider",
+        choices=["fake", "openai"],
+        default="fake",
+        help="model provider to use (default: fake)",
+    )
+    run_parser.add_argument(
+        "--model",
+        help="OpenAI model name; only used when --provider openai",
     )
 
     inspect_parser = subparsers.add_parser("inspect", help="inspect an episode package")
@@ -64,7 +75,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        result = RunOrchestrator(runs_root=args.runs_root).run(args.task_yaml)
+        if args.provider == "openai":
+            model_gateway = (
+                OpenAIResponsesGateway(model=args.model)
+                if args.model is not None
+                else OpenAIResponsesGateway()
+            )
+            result = RunOrchestrator(
+                runs_root=args.runs_root,
+                model_gateway=model_gateway,
+            ).run(args.task_yaml)
+        else:
+            result = RunOrchestrator(runs_root=args.runs_root).run(args.task_yaml)
         print(f"status={result.status.value}")
         print(f"episode_path={result.episode_path}")
         return 0 if result.status.value == "completed" else 1
