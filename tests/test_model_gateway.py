@@ -11,9 +11,11 @@ import pytest
 
 from agentfoundry.models.fake import FakeModelGateway
 from agentfoundry.models.gateway import (
+    DEFAULT_CHAT_COMPLETIONS_ENDPOINT,
     DEFAULT_RESPONSES_ENDPOINT,
     ModelCallError,
     ModelResponse,
+    OpenAIChatCompletionsGateway,
     OpenAIResponsesGateway,
     ToolCall,
 )
@@ -148,6 +150,174 @@ def test_openai_gateway_normalizes_base_url(base_url: str, expected_endpoint: st
     )
 
     assert gateway.responses_endpoint == expected_endpoint
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected_endpoint"),
+    [
+        (None, DEFAULT_CHAT_COMPLETIONS_ENDPOINT),
+        (
+            "https://compatible.example/v1/chat/completions",
+            "https://compatible.example/v1/chat/completions",
+        ),
+        ("https://compatible.example/v1", "https://compatible.example/v1/chat/completions"),
+        ("https://compatible.example", "https://compatible.example/v1/chat/completions"),
+        ("compatible.example", "https://compatible.example/v1/chat/completions"),
+    ],
+)
+def test_openai_chat_gateway_normalizes_endpoint(
+    base_url: str | None,
+    expected_endpoint: str,
+) -> None:
+    gateway = OpenAIChatCompletionsGateway(
+        api_key="test-key",
+        base_url=base_url,
+        transport=lambda payload, api_key: {
+            "choices": [{"message": {"content": "ok"}}],
+        },
+    )
+
+    assert gateway.chat_completions_endpoint == expected_endpoint
+
+
+def test_openai_chat_gateway_text_only_response_uses_messages_payload() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(payload: dict[str, object], api_key: str) -> dict[str, object]:
+        captured["payload"] = payload
+        captured["api_key"] = api_key
+        return {"choices": [{"message": {"content": "chat text"}}]}
+
+    gateway = OpenAIChatCompletionsGateway(
+        api_key="test-key",
+        model="chat-test",
+        transport=transport,
+    )
+
+    response = gateway.generate(make_task(), model_input="standardized context")
+
+    assert response == ModelResponse(content="chat text", tool_calls=[])
+    assert captured["api_key"] == "test-key"
+    assert captured["payload"] == {
+        "model": "chat-test",
+        "messages": [{"role": "user", "content": "standardized context"}],
+    }
+
+
+def test_openai_chat_gateway_normalizes_tool_calls_and_tools_payload() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(payload: dict[str, object], api_key: str) -> dict[str, object]:
+        captured["payload"] = payload
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "fake_tool",
+                                    "arguments": "{\"value\": 1}",
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        }
+
+    gateway = OpenAIChatCompletionsGateway(
+        api_key="test-key",
+        model="chat-test",
+        transport=transport,
+    )
+
+    response = gateway.generate(
+        make_task(),
+        model_input="context with tools",
+        tool_schemas=[
+            {
+                "name": "fake_tool",
+                "description": "test tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        ],
+    )
+
+    assert response == ModelResponse(
+        content="",
+        tool_calls=[ToolCall(name="fake_tool", args={"value": 1})],
+    )
+    assert captured["payload"] == {
+        "model": "chat-test",
+        "messages": [{"role": "user", "content": "context with tools"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "fake_tool",
+                    "description": "test tool",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ],
+    }
+
+
+def test_openai_chat_gateway_rejects_invalid_tool_arguments_json() -> None:
+    def transport(payload: dict[str, object], api_key: str) -> dict[str, object]:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "fake_tool",
+                                    "arguments": "{not-json",
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        }
+
+    gateway = OpenAIChatCompletionsGateway(api_key="test-key", transport=transport)
+
+    with pytest.raises(ModelCallError, match="invalid tool arguments JSON"):
+        gateway.generate(make_task())
+
+
+def test_openai_chat_gateway_rejects_non_object_tool_arguments() -> None:
+    def transport(payload: dict[str, object], api_key: str) -> dict[str, object]:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "fake_tool",
+                                    "arguments": "[1, 2]",
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        }
+
+    gateway = OpenAIChatCompletionsGateway(api_key="test-key", transport=transport)
+
+    with pytest.raises(ModelCallError, match="tool arguments must be a JSON object"):
+        gateway.generate(make_task())
 
 
 def test_openai_gateway_payload_uses_model_input_and_tools() -> None:

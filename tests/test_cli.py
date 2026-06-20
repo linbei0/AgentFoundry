@@ -364,6 +364,58 @@ def test_cli_run_base_url_argument_takes_priority_over_environment(
     assert calls["base_url"] == "https://cli.example/v1"
 
 
+def test_cli_run_openai_chat_provider_passes_gateway_to_orchestrator(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: x\n", encoding="utf-8")
+    calls = {}
+
+    class FakeOpenAIChatGateway:
+        provider_name = "openai-chat"
+
+        def __init__(
+            self,
+            model: str = "gpt-4.1-mini",
+            base_url: str | None = None,
+        ) -> None:
+            calls["model"] = model
+            calls["base_url"] = base_url
+
+    class FakeOrchestrator:
+        def __init__(self, runs_root: Path, model_gateway=None) -> None:
+            calls["runs_root"] = runs_root
+            calls["model_gateway"] = model_gateway
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            calls["task_path"] = received_task_path
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FakeOpenAIChatGateway)
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(
+        [
+            "run",
+            str(task_path),
+            "--provider",
+            "openai-chat",
+            "--model",
+            "deepseek-chat",
+            "--base-url",
+            "https://api.deepseek.com/v1",
+        ],
+    )
+
+    assert exit_code == 0
+    assert calls["runs_root"] == Path(".runs")
+    assert calls["task_path"] == task_path
+    assert calls["model"] == "deepseek-chat"
+    assert calls["base_url"] == "https://api.deepseek.com/v1"
+    assert isinstance(calls["model_gateway"], FakeOpenAIChatGateway)
+
+
 def test_cli_run_openai_missing_api_key_fails_without_network(
     tmp_path: Path,
     capsys,

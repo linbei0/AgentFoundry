@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agentfoundry.models.gateway import OpenAIResponsesGateway
+from agentfoundry.models.gateway import OpenAIChatCompletionsGateway, OpenAIResponsesGateway
 from agentfoundry.runtime.episode_validator import (
     EpisodeValidationError,
     load_validated_episode_package,
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--provider",
-        choices=["fake", "openai"],
+        choices=["fake", "openai", "openai-chat"],
         default="fake",
         help="model provider to use (default: fake)",
     )
@@ -79,13 +79,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        if args.provider == "openai":
+        if args.provider in {"openai", "openai-chat"}:
             gateway_kwargs = {}
             if args.model is not None:
                 gateway_kwargs["model"] = args.model
             if args.base_url is not None:
                 gateway_kwargs["base_url"] = args.base_url
-            model_gateway = OpenAIResponsesGateway(**gateway_kwargs)
+            gateway_class = (
+                OpenAIResponsesGateway
+                if args.provider == "openai"
+                else OpenAIChatCompletionsGateway
+            )
+            model_gateway = gateway_class(**gateway_kwargs)
             result = RunOrchestrator(
                 runs_root=args.runs_root,
                 model_gateway=model_gateway,
