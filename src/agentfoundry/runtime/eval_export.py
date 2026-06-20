@@ -39,6 +39,7 @@ def export_eval_case(episode_path: Path) -> dict[str, Any]:
         "verification": _verification_summary(package_view.verification_commands),
         "tool_names_used": _tool_names_used(package_view.tool_calls),
         "tool_argument_errors": _tool_argument_errors(package_view.tool_calls),
+        "approval_summary": _approval_summary(package_view.tool_calls),
         "next_actions": _next_actions_summary(episode_path, package_view.context_manifest),
     }
 
@@ -94,6 +95,31 @@ def _tool_argument_errors(records: list[dict[str, Any]]) -> list[dict[str, str]]
                 },
             )
     return errors
+
+
+def _approval_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_approval_summary_record(record) for record in records]
+
+
+def _approval_summary_record(record: dict[str, Any]) -> dict[str, Any]:
+    tool_name = str(record.get("tool_name", "unknown"))
+    policy = record.get("policy")
+    approval = policy.get("approval") if isinstance(policy, dict) else None
+    if not isinstance(policy, dict) or not isinstance(approval, dict):
+        return {
+            "tool_name": tool_name,
+            "action": "missing",
+            "approval_required": False,
+            "approval_status": "missing",
+            "approval_reason": "legacy/missing",
+        }
+    return {
+        "tool_name": tool_name,
+        "action": str(policy.get("action", "missing")),
+        "approval_required": bool(approval.get("required", False)),
+        "approval_status": str(approval.get("status", "missing")),
+        "approval_reason": str(approval.get("reason", "legacy/missing")),
+    }
 
 
 def _next_actions_summary(episode_path: Path, context_manifest: dict[str, Any]) -> list[dict[str, Any]]:

@@ -30,6 +30,19 @@ class OneShotGateway:
         return ModelResponse("bad args", [ToolCall("file_read", {"offset": 1})])
 
 
+class ShellOnceGateway:
+    provider_name = "shell-once"
+
+    def __init__(self) -> None:
+        self._called = False
+
+    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+        if self._called or observations:
+            return ModelResponse("done", [])
+        self._called = True
+        return ModelResponse("shell", [ToolCall("shell", {"command": "echo approval"})])
+
+
 def write_minimal_episode(
     episode_path: Path,
     episode_json: dict[str, object] | None = None,
@@ -50,7 +63,14 @@ verification_commands: []
             encoding="utf-8",
         )
         (episode_path / "environment.json").write_text(
-            json.dumps({"workspace_root": episode_json.get("workspace_root")}),
+            json.dumps(
+                {
+                    "python": "3.13",
+                    "platform": "test",
+                    "created_at": "2026-06-19T00:00:00+00:00",
+                    "workspace_root": episode_json.get("workspace_root"),
+                },
+            ),
             encoding="utf-8",
         )
         (episode_path / "plan.json").write_text(
@@ -228,7 +248,24 @@ verification_commands: []
         encoding="utf-8",
     )
     (episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": "fake_tool", "status": "success"}) + "\n",
+        json.dumps(
+            {
+                "tool_name": "fake_tool",
+                "status": "success",
+                "policy": {
+                    "tool_name": "fake_tool",
+                    "risk_level": "low",
+                    "action": "allow",
+                    "reason": "policy allows low risk tool fake_tool",
+                    "approval": {
+                        "required": False,
+                        "status": "not_required",
+                        "reason": "approval not required for low risk tool fake_tool",
+                    },
+                },
+            },
+        )
+        + "\n",
         encoding="utf-8",
     )
     (episode_path / "verification" / "commands.jsonl").write_text(
@@ -338,6 +375,9 @@ verification_commands: []
     assert "Model Calls" in output
     assert "Tool Calls" in output
     assert "fake_tool: success" in output
+    assert "Approval Summary" in output
+    assert "fake_tool: action=allow approval.required=false approval.status=not_required" in output
+    assert "approval not required for low risk tool fake_tool" in output
     assert "Tool Argument Errors" in output
     assert "- none" in output
     assert "Verification" in output
@@ -482,6 +522,125 @@ verification_commands: []
     assert "missing required argument: path" in output
 
 
+def test_cli_inspect_approval_summary_shows_none_without_tool_calls(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    episode_path = tmp_path / "episode-1"
+    write_minimal_episode(
+        episode_path,
+        episode_json=valid_episode_json(tmp_path),
+        failure_json={"status": "success", "failure": None},
+    )
+
+    exit_code = cli.main(["inspect", str(episode_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Approval Summary\n- none" in output
+
+
+def test_cli_inspect_approval_summary_handles_legacy_missing(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    episode_path = tmp_path / "episode-1"
+    write_minimal_episode(
+        episode_path,
+        episode_json=valid_episode_json(tmp_path),
+        failure_json={"status": "success", "failure": None},
+    )
+    (episode_path / "tool-calls.jsonl").write_text(
+        json.dumps({"tool_name": "legacy_tool", "status": "success"}) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(["inspect", str(episode_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Approval Summary" in output
+    assert "legacy_tool: legacy/missing" in output
+
+
+def test_cli_inspect_approval_summary_shows_high_risk_missing(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Inspect missing approval
+constraints: []
+allowed_tools:
+  - shell
+acceptance_criteria: []
+verification_commands: []
+policy:
+  approval_allowed_tools:
+    - shell
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=ShellOnceGateway(),
+    ).run(task_path)
+    verification_dir = result.episode_path / "verification"
+    verification_dir.mkdir(exist_ok=True)
+    (verification_dir / "commands.jsonl").write_text("", encoding="utf-8")
+    inspect_exit = cli.main(["inspect", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert result.status is RunStatus.FAILED
+    assert inspect_exit == 0
+    assert "Approval Summary" in output
+    assert "shell: action=deny approval.required=true approval.status=missing" in output
+    assert "approval allowed but missing for high risk tool shell" in output
+
+
+def test_cli_inspect_approval_summary_shows_high_risk_granted(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Inspect granted approval
+constraints: []
+allowed_tools:
+  - shell
+acceptance_criteria: []
+verification_commands: []
+policy:
+  approval_allowed_tools:
+    - shell
+  approved_tools:
+    - shell
+""".strip(),
+        encoding="utf-8",
+    )
+
+    def approved_shell(args, workspace_root):
+        return {"status": "success", "stdout": "ok\n", "stderr": ""}
+
+    monkeypatch.setattr("agentfoundry.tools.router.shell", approved_shell)
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=ShellOnceGateway(),
+    ).run(task_path)
+    inspect_exit = cli.main(["inspect", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert result.status is RunStatus.COMPLETED
+    assert inspect_exit == 0
+    assert "Approval Summary" in output
+    assert "shell: action=allow approval.required=true approval.status=granted" in output
+    assert "approval granted for high risk tool shell" in output
+
+
 def test_cli_inspect_redacts_verification_secrets_from_real_episode(tmp_path: Path, capsys) -> None:
     raw_key = "OPENAI_API_KEY=super-secret-value"
     task_path = tmp_path / "task.yaml"
@@ -551,6 +710,7 @@ def test_cli_inspect_legacy_episode_without_episode_json_warns(tmp_path: Path, c
     assert "warning: episode.json missing; inspecting legacy episode" in output
     assert "Next Actions" in output
     assert "0001: legacy/missing" in output
+    assert "Approval Summary\n- none" in output
 
 
 def test_cli_inspect_unknown_episode_version_fails(tmp_path: Path, capsys) -> None:

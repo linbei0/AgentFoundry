@@ -26,6 +26,19 @@ class BadArgsGateway:
         return ModelResponse("bad args", [ToolCall("file_read", {"offset": 1})])
 
 
+class ShellOnceGateway:
+    provider_name = "shell-once"
+
+    def __init__(self) -> None:
+        self._called = False
+
+    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+        if self._called or observations:
+            return ModelResponse("done", [])
+        self._called = True
+        return ModelResponse("shell", [ToolCall("shell", {"command": "echo approval"})])
+
+
 def write_task(path: Path, verification_commands: list[str] | None = None) -> None:
     verification_commands = verification_commands or []
     verification_yaml = "\n".join(f"  - {command}" for command in verification_commands)
@@ -64,6 +77,15 @@ def test_completed_episode_can_export_eval_case(tmp_path: Path) -> None:
     assert eval_case["verification"] == []
     assert eval_case["tool_names_used"] == ["fake_tool"]
     assert eval_case["tool_argument_errors"] == []
+    assert eval_case["approval_summary"] == [
+        {
+            "tool_name": "fake_tool",
+            "action": "allow",
+            "approval_required": False,
+            "approval_status": "not_required",
+            "approval_reason": "approval not required for low risk tool fake_tool",
+        },
+    ]
     assert eval_case["next_actions"] == [
         {
             "context_id": "0001",
@@ -141,6 +163,115 @@ verification_commands: []
         {
             "tool_name": "file_read",
             "message": "missing required argument: path",
+        },
+    ]
+
+
+def test_eval_export_approval_summary_marks_missing_for_denied_high_risk_tool(
+    tmp_path: Path,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Export missing approval
+constraints: []
+allowed_tools:
+  - shell
+acceptance_criteria: []
+verification_commands: []
+policy:
+  approval_allowed_tools:
+    - shell
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=ShellOnceGateway(),
+    ).run(task_path)
+    verification_dir = result.episode_path / "verification"
+    verification_dir.mkdir(exist_ok=True)
+    (verification_dir / "commands.jsonl").write_text("", encoding="utf-8")
+
+    eval_case = export_eval_case(result.episode_path)
+
+    assert result.status is RunStatus.FAILED
+    assert eval_case["approval_summary"] == [
+        {
+            "tool_name": "shell",
+            "action": "deny",
+            "approval_required": True,
+            "approval_status": "missing",
+            "approval_reason": "approval allowed but missing for high risk tool shell",
+        },
+    ]
+
+
+def test_eval_export_approval_summary_marks_granted_for_approved_high_risk_tool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Export granted approval
+constraints: []
+allowed_tools:
+  - shell
+acceptance_criteria: []
+verification_commands: []
+policy:
+  approval_allowed_tools:
+    - shell
+  approved_tools:
+    - shell
+""".strip(),
+        encoding="utf-8",
+    )
+
+    def approved_shell(args, workspace_root):
+        return {"status": "success", "stdout": "ok\n", "stderr": ""}
+
+    monkeypatch.setattr("agentfoundry.tools.router.shell", approved_shell)
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=ShellOnceGateway(),
+    ).run(task_path)
+
+    eval_case = export_eval_case(result.episode_path)
+
+    assert result.status is RunStatus.COMPLETED
+    assert eval_case["approval_summary"] == [
+        {
+            "tool_name": "shell",
+            "action": "allow",
+            "approval_required": True,
+            "approval_status": "granted",
+            "approval_reason": "approval granted for high risk tool shell",
+        },
+    ]
+
+
+def test_eval_export_defaults_missing_approval_summary_for_legacy_tool_call(
+    tmp_path: Path,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    tool_calls_path = result.episode_path / "tool-calls.jsonl"
+    record = json.loads(tool_calls_path.read_text(encoding="utf-8"))
+    record.pop("policy", None)
+    tool_calls_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    eval_case = export_eval_case(result.episode_path)
+
+    assert eval_case["approval_summary"] == [
+        {
+            "tool_name": "fake_tool",
+            "action": "missing",
+            "approval_required": False,
+            "approval_status": "missing",
+            "approval_reason": "legacy/missing",
         },
     ]
 
@@ -275,4 +406,13 @@ def test_export_eval_case_uses_package_view(tmp_path: Path, monkeypatch) -> None
     assert eval_case["task"]["goal"] == "Export eval case"
     assert eval_case["tool_names_used"] == ["fake_tool"]
     assert eval_case["tool_argument_errors"] == []
+    assert eval_case["approval_summary"] == [
+        {
+            "tool_name": "fake_tool",
+            "action": "missing",
+            "approval_required": False,
+            "approval_status": "missing",
+            "approval_reason": "legacy/missing",
+        },
+    ]
     assert eval_case["next_actions"] == []

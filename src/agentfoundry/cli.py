@@ -128,6 +128,8 @@ def render_episode_summary(episode_path: Path) -> str:
     lines.extend(_format_model_calls(model_calls))
     lines.extend(["", "Tool Calls"])
     lines.extend(_format_tool_calls(tool_calls))
+    lines.extend(["", "Approval Summary"])
+    lines.extend(_format_approval_summary(tool_calls))
     lines.extend(["", "Tool Argument Errors"])
     lines.extend(_format_tool_argument_errors(tool_calls))
     lines.extend(["", "Verification"])
@@ -247,6 +249,29 @@ def _format_tool_calls(tool_calls: list[dict[str, Any]]) -> list[str]:
         f"- {call.get('tool_name', 'unknown')}: {call.get('status', 'unknown')}"
         for call in tool_calls
     ]
+
+
+def _format_approval_summary(tool_calls: list[dict[str, Any]]) -> list[str]:
+    if not tool_calls:
+        return ["- none"]
+    lines = []
+    for call in tool_calls:
+        tool_name = call.get("tool_name", "unknown")
+        policy = call.get("policy")
+        approval = policy.get("approval") if isinstance(policy, dict) else None
+        if not isinstance(policy, dict) or not isinstance(approval, dict):
+            lines.append(f"- {tool_name}: legacy/missing")
+            continue
+        required = "true" if approval.get("required") is True else "false"
+        lines.append(
+            (
+                f"- {tool_name}: action={policy.get('action', 'missing')} "
+                f"approval.required={required} "
+                f"approval.status={approval.get('status', 'missing')} "
+                f"approval.reason={approval.get('reason', 'legacy/missing')}"
+            ),
+        )
+    return lines
 
 
 def _format_tool_argument_errors(tool_calls: list[dict[str, Any]]) -> list[str]:
