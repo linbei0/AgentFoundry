@@ -122,6 +122,8 @@ def render_episode_summary(episode_path: Path) -> str:
     lines.extend(_format_contexts(context_manifest.get("contexts", [])))
     lines.extend(["", "Plan"])
     lines.extend(_format_plan(plan))
+    lines.extend(["", "Next Actions"])
+    lines.extend(_format_next_actions(episode_path, context_manifest.get("contexts", [])))
     lines.extend(["", "Model Calls"])
     lines.extend(_format_model_calls(model_calls))
     lines.extend(["", "Tool Calls"])
@@ -185,6 +187,43 @@ def _format_plan(plan: dict[str, Any] | None) -> list[str]:
     if not planned_steps:
         return ["- none"]
     return [f"- {step}" for step in planned_steps]
+
+
+def _format_next_actions(episode_path: Path, contexts: list[dict[str, Any]]) -> list[str]:
+    if not contexts:
+        return ["- none"]
+    lines = []
+    for context in contexts:
+        context_id = str(context.get("context_id", "unknown"))
+        manifest_path = context.get("manifest_path")
+        if not isinstance(manifest_path, str):
+            lines.append(f"- {context_id}: legacy/missing")
+            continue
+        next_action = _read_context_next_action(episode_path / manifest_path)
+        if next_action is None:
+            lines.append(f"- {context_id}: legacy/missing")
+            continue
+        tool_name = next_action.get("based_on_tool_name")
+        based_on_tool_name = str(tool_name) if tool_name is not None else "none"
+        lines.append(
+            (
+                f"- {context_id}: status={next_action.get('status', 'unknown')} "
+                f"based_on_tool_name={based_on_tool_name} "
+                f"reason={next_action.get('reason', '')}"
+            ),
+        )
+    return lines
+
+
+def _read_context_next_action(path: Path) -> dict[str, Any] | None:
+    try:
+        context_manifest = _read_json(path)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    next_action = context_manifest.get("next_action")
+    if not isinstance(next_action, dict):
+        return None
+    return next_action
 
 
 def _format_model_calls(model_calls: list[dict[str, Any]]) -> list[str]:

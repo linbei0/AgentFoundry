@@ -163,7 +163,7 @@ verification_commands: []
         json.dumps(
             {
                 "version": "1.1",
-                "context_count": 1,
+                "context_count": 2,
                 "summary": {"provider": "fake", "goal": "Inspect me"},
                     "contexts": [
                         {
@@ -177,6 +177,19 @@ verification_commands: []
                                 "status": "within_limit",
                                 "source_count": 1,
                                 "included_source_count": 1,
+                            },
+                        },
+                        {
+                            "context_id": "0002",
+                            "model_input_path": "contexts/0002.txt",
+                            "manifest_path": "contexts/0002.json",
+                            "budget": {
+                                "context_id": "0002",
+                                "total_chars": 12,
+                                "max_chars": 12000,
+                                "status": "within_limit",
+                                "source_count": 0,
+                                "included_source_count": 0,
                             },
                         },
                     ],
@@ -197,6 +210,7 @@ verification_commands: []
                 ),
                 json.dumps({"event": "state_transition", "status": "completed"}),
                 json.dumps({"event": "model_call", "provider": "fake", "context_id": "0001"}),
+                json.dumps({"event": "model_call", "provider": "fake", "context_id": "0002"}),
             ],
         )
         + "\n",
@@ -261,6 +275,33 @@ verification_commands: []
                         },
                     },
                 ],
+                "next_action": {
+                    "status": "none",
+                    "reason": "none",
+                    "based_on_observation_index": None,
+                    "based_on_tool_name": None,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    (episode_path / "contexts" / "0002.txt").write_text("model input 2", encoding="utf-8")
+    (episode_path / "contexts" / "0002.json").write_text(
+        json.dumps(
+            {
+                "context_id": "0002",
+                "budget": {
+                    "character_count": 12,
+                    "character_limit": 12000,
+                    "status": "within_limit",
+                },
+                "sources": [],
+                "next_action": {
+                    "status": "continue",
+                    "reason": "Continue from the latest successful tool observation and judge whether the acceptance criteria are satisfied.",
+                    "based_on_observation_index": 0,
+                    "based_on_tool_name": "fake_tool",
+                },
             },
         ),
         encoding="utf-8",
@@ -277,6 +318,10 @@ verification_commands: []
     assert "created -> completed" in output
     assert "Plan" in output
     assert "Use allowed tools: fake_tool." in output
+    assert "Next Actions" in output
+    assert "0001: status=none based_on_tool_name=none reason=none" in output
+    assert "0002: status=continue based_on_tool_name=fake_tool" in output
+    assert "latest successful tool observation" in output
     assert "Contexts" in output
     assert "0001" in output
     assert "Model Calls" in output
@@ -395,8 +440,26 @@ verification_commands: []
 def test_cli_inspect_legacy_episode_without_episode_json_warns(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
     (episode_path / "verification").mkdir(parents=True)
+    (episode_path / "contexts").mkdir(parents=True)
     (episode_path / "context-manifest.json").write_text(
-        json.dumps({"summary": {"provider": "fake"}, "context_count": 0, "contexts": []}),
+        json.dumps(
+            {
+                "summary": {"provider": "fake"},
+                "context_count": 1,
+                "contexts": [
+                    {
+                        "context_id": "0001",
+                        "model_input_path": "contexts/0001.txt",
+                        "manifest_path": "contexts/0001.json",
+                    },
+                ],
+            },
+        ),
+        encoding="utf-8",
+    )
+    (episode_path / "contexts" / "0001.txt").write_text("legacy input", encoding="utf-8")
+    (episode_path / "contexts" / "0001.json").write_text(
+        json.dumps({"context_id": "0001", "sources": []}),
         encoding="utf-8",
     )
     (episode_path / "transcript.jsonl").write_text(
@@ -412,6 +475,8 @@ def test_cli_inspect_legacy_episode_without_episode_json_warns(tmp_path: Path, c
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "warning: episode.json missing; inspecting legacy episode" in output
+    assert "Next Actions" in output
+    assert "0001: legacy/missing" in output
 
 
 def test_cli_inspect_unknown_episode_version_fails(tmp_path: Path, capsys) -> None:
