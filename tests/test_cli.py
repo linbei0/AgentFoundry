@@ -5,6 +5,7 @@ tests/test_cli.py - AgentFoundry CLI 测试
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from agentfoundry import cli
@@ -1030,6 +1031,8 @@ verification_commands: []
     second_output = output_dir / f"{second.episode_path.name}.json"
     first_case = json.loads(first_output.read_text(encoding="utf-8"))
     second_case = json.loads(second_output.read_text(encoding="utf-8"))
+    manifest_path = output_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert f"exported_eval_case={first_output}" in stdout
     assert f"exported_eval_case={second_output}" in stdout
@@ -1037,6 +1040,26 @@ verification_commands: []
     assert second_case["eval_case_version"] == "1.0"
     assert "sandbox_summary" in first_case
     assert "approval_summary" in second_case
+    assert manifest["manifest_version"] == "1.0"
+    assert datetime.fromisoformat(manifest["generated_at"])
+    assert manifest["output_dir"] == str(output_dir)
+    assert manifest["total_count"] == 2
+    assert manifest["success_count"] == 2
+    assert manifest["failure_count"] == 0
+    assert manifest["records"] == [
+        {
+            "episode_path": str(first.episode_path),
+            "status": "success",
+            "output_file": str(first_output),
+            "error": None,
+        },
+        {
+            "episode_path": str(second.episode_path),
+            "status": "success",
+            "output_file": str(second_output),
+            "error": None,
+        },
+    ]
 
 
 def test_cli_export_eval_batch_continues_after_invalid_episode(
@@ -1079,11 +1102,75 @@ verification_commands: []
     stdout = capsys.readouterr().out
     valid_output = output_dir / f"{valid.episode_path.name}.json"
     invalid_output = output_dir / "bad-episode.json"
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
     assert exit_code == 1
     assert f"error={invalid}: episode package missing required file: sandbox.json" in stdout
     assert f"exported_eval_case={valid_output}" in stdout
     assert valid_output.exists()
     assert not invalid_output.exists()
+    assert manifest["total_count"] == 2
+    assert manifest["success_count"] == 1
+    assert manifest["failure_count"] == 1
+    assert manifest["records"] == [
+        {
+            "episode_path": str(invalid),
+            "status": "error",
+            "output_file": None,
+            "error": "episode package missing required file: sandbox.json",
+        },
+        {
+            "episode_path": str(valid.episode_path),
+            "status": "success",
+            "output_file": str(valid_output),
+            "error": None,
+        },
+    ]
+
+
+def test_cli_export_eval_single_stdout_does_not_write_manifest(tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Export eval case without manifest
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+
+    exit_code = cli.main(["export-eval", str(result.episode_path)])
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out)
+    assert not (result.episode_path / "manifest.json").exists()
+
+
+def test_cli_export_eval_single_output_does_not_write_manifest(tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Export eval case file without manifest
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    output_path = tmp_path / "eval-case.json"
+
+    exit_code = cli.main(["export-eval", str(result.episode_path), "--output", str(output_path)])
+
+    assert exit_code == 0
+    assert "exported_eval_case=" in capsys.readouterr().out
+    assert output_path.exists()
+    assert not (tmp_path / "manifest.json").exists()
 
 
 def test_cli_export_eval_batch_output_dir_must_exist(tmp_path: Path, capsys) -> None:

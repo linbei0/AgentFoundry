@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -107,17 +108,35 @@ def _handle_export_eval(
     if not output_dir.is_dir():
         print(f"error: output directory is not a directory: {output_dir}")
         return 1
-    had_error = False
+    records = []
     for episode_path in episode_paths:
         target_path = output_dir / f"{episode_path.name}.json"
         try:
             _write_eval_case_file(episode_path, target_path)
         except EpisodeValidationError as error:
-            had_error = True
-            print(f"error={episode_path}: {error}")
+            message = str(error)
+            records.append(
+                {
+                    "episode_path": str(episode_path),
+                    "status": "error",
+                    "output_file": None,
+                    "error": message,
+                },
+            )
+            print(f"error={episode_path}: {message}")
             continue
+        records.append(
+            {
+                "episode_path": str(episode_path),
+                "status": "success",
+                "output_file": str(target_path),
+                "error": None,
+            },
+        )
         print(f"exported_eval_case={target_path}")
-    return 1 if had_error else 0
+    _write_eval_dataset_manifest(output_dir, records)
+    failure_count = sum(1 for record in records if record["status"] == "error")
+    return 1 if failure_count else 0
 
 
 def _export_single_eval_case(
@@ -149,6 +168,24 @@ def _write_eval_case_file(episode_path: Path, output_path: Path) -> None:
     eval_case = export_eval_case(episode_path)
     output = json.dumps(eval_case, ensure_ascii=False, indent=2)
     output_path.write_text(output + "\n", encoding="utf-8")
+
+
+def _write_eval_dataset_manifest(output_dir: Path, records: list[dict[str, Any]]) -> None:
+    success_count = sum(1 for record in records if record["status"] == "success")
+    failure_count = sum(1 for record in records if record["status"] == "error")
+    manifest = {
+        "manifest_version": "1.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "output_dir": str(output_dir),
+        "total_count": len(records),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "records": records,
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def render_episode_summary(episode_path: Path) -> str:
