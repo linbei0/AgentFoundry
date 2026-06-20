@@ -26,6 +26,7 @@ verification_commands: []
     writer = EpisodeWriter.create(runs_root=tmp_path / ".runs", task_path=task_path)
     writer.write_context_manifest({"allowed_tools": ["fake_tool"]})
     writer.write_environment()
+    writer.write_sandbox_metadata(tmp_path, command_timeout_seconds=60)
     writer.write_failure_attribution(None)
 
     assert (writer.path / "task.yaml").exists()
@@ -34,3 +35,4 @@ verification_commands: []
     assert (writer.path / "tool-calls.jsonl").exists()
     assert (writer.path / "failure-attribution.md").exists()
     assert (writer.path / "environment.json").exists()
+    assert (writer.path / "sandbox.json").exists()

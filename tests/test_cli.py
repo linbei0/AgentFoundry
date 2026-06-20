@@ -73,6 +73,19 @@ verification_commands: []
             ),
             encoding="utf-8",
         )
+        (episode_path / "sandbox.json").write_text(
+            json.dumps(
+                {
+                    "workspace_root": episode_json.get("workspace_root"),
+                    "filesystem_boundary": "workspace_root",
+                    "network_policy": "unrestricted",
+                    "process_policy": "local_subprocess",
+                    "credential_policy": "inherit_environment",
+                    "resource_limits": {"command_timeout_seconds": 60},
+                },
+            ),
+            encoding="utf-8",
+        )
         (episode_path / "plan.json").write_text(
             json.dumps(
                 {
@@ -288,6 +301,19 @@ verification_commands: []
         ),
         encoding="utf-8",
     )
+    (episode_path / "sandbox.json").write_text(
+        json.dumps(
+            {
+                "workspace_root": str(tmp_path),
+                "filesystem_boundary": "workspace_root",
+                "network_policy": "unrestricted",
+                "process_policy": "local_subprocess",
+                "credential_policy": "inherit_environment",
+                "resource_limits": {"command_timeout_seconds": 60},
+            },
+        ),
+        encoding="utf-8",
+    )
     (episode_path / "plan.json").write_text(
         json.dumps(
             {
@@ -372,6 +398,12 @@ verification_commands: []
     assert "latest successful tool observation" in output
     assert "Contexts" in output
     assert "0001" in output
+    assert "Sandbox" in output
+    assert "filesystem_boundary: workspace_root" in output
+    assert "network_policy: unrestricted" in output
+    assert "process_policy: local_subprocess" in output
+    assert "credential_policy: inherit_environment" in output
+    assert "command_timeout_seconds: 60" in output
     assert "Model Calls" in output
     assert "Tool Calls" in output
     assert "fake_tool: success" in output
@@ -460,6 +492,19 @@ verification_commands: []
                 "platform": "test",
                 "created_at": "2026-06-19T00:00:00+00:00",
                 "workspace_root": str(tmp_path),
+            },
+        ),
+        encoding="utf-8",
+    )
+    (episode_path / "sandbox.json").write_text(
+        json.dumps(
+            {
+                "workspace_root": str(tmp_path),
+                "filesystem_boundary": "workspace_root",
+                "network_policy": "unrestricted",
+                "process_policy": "local_subprocess",
+                "credential_policy": "inherit_environment",
+                "resource_limits": {"command_timeout_seconds": 60},
             },
         ),
         encoding="utf-8",

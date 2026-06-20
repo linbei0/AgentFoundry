@@ -75,6 +75,12 @@ def update_environment(episode_path: Path, **updates: object) -> None:
     write_json(episode_path / "environment.json", environment)
 
 
+def update_sandbox(episode_path: Path, **updates: object) -> None:
+    sandbox = read_json(episode_path / "sandbox.json")
+    sandbox.update(updates)
+    write_json(episode_path / "sandbox.json", sandbox)
+
+
 def write_task(path: Path) -> None:
     path.write_text(
         """
@@ -261,6 +267,47 @@ def test_package_validator_rejects_missing_plan_json(tmp_path: Path) -> None:
     with pytest.raises(
         EpisodeValidationError,
         match="episode package missing required file: plan.json",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_missing_sandbox_json(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    (result.episode_path / "sandbox.json").unlink()
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="episode package missing required file: sandbox.json",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_sandbox_field_type_error(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    update_sandbox(result.episode_path, network_policy=123)
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="sandbox.json network_policy must be a string",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_sandbox_command_timeout_type_error(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    sandbox = read_json(result.episode_path / "sandbox.json")
+    sandbox["resource_limits"]["command_timeout_seconds"] = "60"
+    write_json(result.episode_path / "sandbox.json", sandbox)
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="sandbox.json resource_limits.command_timeout_seconds must be a number",
     ):
         validate_episode_package(result.episode_path)
 

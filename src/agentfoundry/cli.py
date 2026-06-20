@@ -78,6 +78,7 @@ def render_episode_summary(episode_path: Path) -> str:
             tool_calls = package_view.tool_calls
             verification = package_view.verification_commands
             failure_record = package_view.failure_record
+            sandbox = _read_optional_json(episode_path / "sandbox.json")
         else:
             _ensure_legacy_inspect_files(episode_path)
             context_manifest = _read_json(episode_path / "context-manifest.json")
@@ -86,6 +87,7 @@ def render_episode_summary(episode_path: Path) -> str:
             tool_calls = _read_jsonl(episode_path / "tool-calls.jsonl")
             verification = _read_jsonl(episode_path / "verification" / "commands.jsonl")
             failure_record = read_failure_record(episode_path)
+            sandbox = _read_optional_json(episode_path / "sandbox.json")
     except EpisodeValidationError as error:
         raise EpisodeInspectError(str(error)) from error
 
@@ -122,6 +124,8 @@ def render_episode_summary(episode_path: Path) -> str:
     lines.extend(_format_contexts(context_manifest.get("contexts", [])))
     lines.extend(["", "Plan"])
     lines.extend(_format_plan(plan))
+    lines.extend(["", "Sandbox"])
+    lines.extend(_format_sandbox(sandbox))
     lines.extend(["", "Next Actions"])
     lines.extend(_format_next_actions(episode_path, context_manifest.get("contexts", [])))
     lines.extend(["", "Model Calls"])
@@ -142,6 +146,12 @@ def render_episode_summary(episode_path: Path) -> str:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return _read_json(path)
 
 
 def _ensure_legacy_inspect_files(episode_path: Path) -> None:
@@ -191,6 +201,24 @@ def _format_plan(plan: dict[str, Any] | None) -> list[str]:
     if not planned_steps:
         return ["- none"]
     return [f"- {step}" for step in planned_steps]
+
+
+def _format_sandbox(sandbox: dict[str, Any] | None) -> list[str]:
+    if sandbox is None:
+        return ["- legacy/missing"]
+    resource_limits = sandbox.get("resource_limits", {})
+    if not isinstance(resource_limits, dict):
+        resource_limits = {}
+    return [
+        f"- filesystem_boundary: {sandbox.get('filesystem_boundary', 'unknown')}",
+        f"- network_policy: {sandbox.get('network_policy', 'unknown')}",
+        f"- process_policy: {sandbox.get('process_policy', 'unknown')}",
+        f"- credential_policy: {sandbox.get('credential_policy', 'unknown')}",
+        (
+            "- command_timeout_seconds: "
+            f"{resource_limits.get('command_timeout_seconds', 'unknown')}"
+        ),
+    ]
 
 
 def _format_next_actions(episode_path: Path, contexts: list[dict[str, Any]]) -> list[str]:

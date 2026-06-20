@@ -92,6 +92,13 @@ def test_orchestrator_records_successful_state_flow(tmp_path: Path) -> None:
     ]
     environment = json.loads((result.episode_path / "environment.json").read_text(encoding="utf-8"))
     assert environment["workspace_root"] == str(tmp_path.resolve())
+    sandbox = json.loads((result.episode_path / "sandbox.json").read_text(encoding="utf-8"))
+    assert sandbox["workspace_root"] == str(tmp_path.resolve())
+    assert sandbox["filesystem_boundary"] == "workspace_root"
+    assert sandbox["network_policy"] == "unrestricted"
+    assert sandbox["process_policy"] == "local_subprocess"
+    assert sandbox["credential_policy"] == "inherit_environment"
+    assert isinstance(sandbox["resource_limits"]["command_timeout_seconds"], int | float)
     episode = json.loads((result.episode_path / "episode.json").read_text(encoding="utf-8"))
     assert episode["episode_version"] == "1.0"
     assert episode["status"] == "completed"

@@ -87,6 +87,25 @@ class EpisodeWriter:
             environment["workspace_root"] = str(workspace_root)
         self._write_json("environment.json", environment)
 
+    def write_sandbox_metadata(
+        self,
+        workspace_root: Path,
+        command_timeout_seconds: int | float,
+    ) -> None:
+        self._write_json(
+            "sandbox.json",
+            {
+                "workspace_root": str(workspace_root),
+                "filesystem_boundary": "workspace_root",
+                "network_policy": "unrestricted",
+                "process_policy": "local_subprocess",
+                "credential_policy": "inherit_environment",
+                "resource_limits": {
+                    "command_timeout_seconds": command_timeout_seconds,
+                },
+            },
+        )
+
     def write_failure_attribution(self, failure: dict[str, Any] | None) -> None:
         """写入失败归因；成功 run 也保留文件，方便测试和审计稳定读取。"""
         if failure is None:

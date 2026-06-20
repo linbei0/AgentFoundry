@@ -16,6 +16,7 @@ from agentfoundry.runtime.episode import EpisodeWriter
 
 
 EXCERPT_LIMIT = 2000
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 60
 TOKEN_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{20,}")
 OPENAI_API_KEY_PATTERN = re.compile(r"OPENAI_API_KEY=[^\s'\";]+")
 
@@ -36,7 +37,7 @@ class VerificationEngine:
         self,
         episode_writer: EpisodeWriter,
         workspace_root: Path,
-        timeout_seconds: float = 60,
+        timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     ) -> None:
         self._episode_writer = episode_writer
         self._workspace_root = workspace_root

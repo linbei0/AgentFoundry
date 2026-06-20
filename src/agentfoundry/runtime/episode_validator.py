@@ -28,6 +28,7 @@ REQUIRED_PACKAGE_FILES = [
     "failure-attribution.md",
     "failure.json",
     "environment.json",
+    "sandbox.json",
 ]
 
 
@@ -68,6 +69,7 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
     plan = _read_json(episode_path / "plan.json")
     context_manifest = _read_json(episode_path / "context-manifest.json")
     environment = _read_json(episode_path / "environment.json")
+    sandbox = _read_json(episode_path / "sandbox.json")
 
     transcript = _validate_jsonl_fields(episode_path / "transcript.jsonl", "transcript.jsonl", ["event"])
     tool_calls = _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
@@ -79,6 +81,7 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
     if episode_metadata is None or failure_record is None:
         raise EpisodeValidationError("episode package must contain v1 episode.json and failure.json")
     _validate_environment(environment)
+    _validate_sandbox(sandbox)
     _validate_plan(plan)
     _validate_tool_calls(tool_calls)
     _validate_verification_commands(verification_commands)
@@ -88,6 +91,7 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
         failure_record,
         context_manifest,
         environment,
+        sandbox,
         transcript,
     )
     return EpisodePackageView(
@@ -208,6 +212,30 @@ def _validate_environment(environment: dict[str, Any]) -> None:
         raise EpisodeValidationError("environment.json workspace_root must be a string")
 
 
+def _validate_sandbox(sandbox: dict[str, Any]) -> None:
+    """校验 sandbox.json 的最小 sandbox 元数据字段类型。"""
+    for field_name in [
+        "workspace_root",
+        "filesystem_boundary",
+        "network_policy",
+        "process_policy",
+        "credential_policy",
+    ]:
+        if not isinstance(sandbox.get(field_name), str):
+            raise EpisodeValidationError(f"sandbox.json {field_name} must be a string")
+    resource_limits = sandbox.get("resource_limits")
+    if not isinstance(resource_limits, dict):
+        raise EpisodeValidationError("sandbox.json resource_limits must be an object")
+    command_timeout = resource_limits.get("command_timeout_seconds")
+    if not (
+        isinstance(command_timeout, int | float)
+        and not isinstance(command_timeout, bool)
+    ):
+        raise EpisodeValidationError(
+            "sandbox.json resource_limits.command_timeout_seconds must be a number",
+        )
+
+
 def _validate_plan(plan: dict[str, Any]) -> None:
     """校验 Agent Plan Trace v0 的最小字段类型。"""
     if not isinstance(plan.get("goal"), str):
@@ -229,6 +257,7 @@ def _validate_cross_file_consistency(
     failure_record: dict[str, Any],
     context_manifest: dict[str, Any],
     environment: dict[str, Any],
+    sandbox: dict[str, Any],
     transcript: list[dict[str, Any]],
 ) -> None:
     """校验 episode 根状态、失败记录、context 索引与 transcript 末态一致。"""
@@ -260,6 +289,10 @@ def _validate_cross_file_consistency(
     ):
         raise EpisodeValidationError(
             "environment.json workspace_root does not match episode.json workspace_root",
+        )
+    if sandbox["workspace_root"] != episode_metadata["workspace_root"]:
+        raise EpisodeValidationError(
+            "sandbox.json workspace_root does not match episode.json workspace_root",
         )
 
     contexts = context_manifest.get("contexts")

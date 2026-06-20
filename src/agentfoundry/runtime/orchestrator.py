@@ -20,7 +20,7 @@ from agentfoundry.runtime.task_contract import TaskLoadError, load_task, resolve
 from agentfoundry.tools.base import ToolRoutingError
 from agentfoundry.tools.registry import export_tool_schemas
 from agentfoundry.tools.router import ToolRouter
-from agentfoundry.verification.engine import VerificationEngine
+from agentfoundry.verification.engine import DEFAULT_COMMAND_TIMEOUT_SECONDS, VerificationEngine
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,10 @@ class RunOrchestrator:
             )
             transition(RunStatus.PLANNING)
             writer.write_environment(workspace_root)
+            writer.write_sandbox_metadata(
+                workspace_root,
+                command_timeout_seconds=DEFAULT_COMMAND_TIMEOUT_SECONDS,
+            )
             plan = build_plan(task)
             writer.write_plan(plan)
             writer.append_transcript(
