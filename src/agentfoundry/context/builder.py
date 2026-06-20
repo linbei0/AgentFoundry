@@ -266,7 +266,13 @@ class ContextBuilder:
         status = latest_result.get("status") if isinstance(latest_result, dict) else None
         if status == "success":
             next_action_status = "continue"
-            reason = "Continue from the latest successful tool observation and judge whether the acceptance criteria are satisfied."
+            reason = (
+                "Continue from the latest successful tool observation. "
+                "A successful tool result has already been received; do not repeat the same "
+                "successful tool call unless new information is truly needed. If the acceptance "
+                "criteria are satisfied, produce the final answer instead of continuing with "
+                "another tool call."
+            )
         elif status in {"error", "failed"}:
             next_action_status = "handle_error"
             reason = "Use the latest tool error to adjust parameters, or stop and explain the failure explicitly."

@@ -275,8 +275,17 @@ def test_context_builder_model_input_contains_observation_summary(tmp_path: Path
     assert '"args": {"round": 1}' in model_input
     assert '"result": {"echo": {"round": 1}, "status": "success"}' in model_input
     assert "Pending next step:" in model_input
-    expected_reason = "Continue from the latest successful tool observation and judge whether the acceptance criteria are satisfied."
+    expected_reason = (
+        "Continue from the latest successful tool observation. "
+        "A successful tool result has already been received; do not repeat the same "
+        "successful tool call unless new information is truly needed. If the acceptance "
+        "criteria are satisfied, produce the final answer instead of continuing with "
+        "another tool call."
+    )
     assert expected_reason in model_input
+    assert "successful tool result has already been received" in model_input
+    assert "do not repeat the same successful tool call" in model_input
+    assert "produce the final answer instead of continuing with another tool call" in model_input
     assert context_manifest["next_action"] == {
         "status": "continue",
         "reason": expected_reason,
@@ -317,6 +326,8 @@ def test_context_builder_pending_next_step_handles_tool_error(tmp_path: Path) ->
     expected_reason = "Use the latest tool error to adjust parameters, or stop and explain the failure explicitly."
     assert "Pending next step:" in model_input
     assert expected_reason in model_input
+    assert "do not repeat the same successful tool call" not in model_input
+    assert "produce the final answer instead of continuing with another tool call" not in model_input
     assert context_manifest["next_action"] == {
         "status": "handle_error",
         "reason": expected_reason,

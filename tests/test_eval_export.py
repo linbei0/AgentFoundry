@@ -106,7 +106,13 @@ def test_completed_episode_can_export_eval_case(tmp_path: Path) -> None:
         {
             "context_id": "0002",
             "status": "continue",
-            "reason": "Continue from the latest successful tool observation and judge whether the acceptance criteria are satisfied.",
+            "reason": (
+                "Continue from the latest successful tool observation. "
+                "A successful tool result has already been received; do not repeat "
+                "the same successful tool call unless new information is truly needed. "
+                "If the acceptance criteria are satisfied, produce the final answer "
+                "instead of continuing with another tool call."
+            ),
             "based_on_observation_index": 0,
             "based_on_tool_name": "fake_tool",
         },
