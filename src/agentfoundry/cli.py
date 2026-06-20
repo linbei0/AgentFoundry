@@ -17,6 +17,7 @@ from agentfoundry.runtime.episode_validator import (
     read_episode_metadata,
     read_failure_record,
 )
+from agentfoundry.runtime.eval_export import export_eval_case
 from agentfoundry.runtime.orchestrator import RunOrchestrator
 
 
@@ -35,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect_parser = subparsers.add_parser("inspect", help="inspect an episode package")
     inspect_parser.add_argument("episode_path", type=Path, help="path to an episode directory")
+
+    export_eval_parser = subparsers.add_parser("export-eval", help="export an eval case JSON")
+    export_eval_parser.add_argument("episode_path", type=Path, help="path to an episode directory")
     return parser
 
 
@@ -55,6 +59,15 @@ def main(argv: list[str] | None = None) -> int:
         except EpisodeInspectError as error:
             print(f"error: {error}")
             return 1
+        return 0
+
+    if args.command == "export-eval":
+        try:
+            eval_case = export_eval_case(args.episode_path)
+        except EpisodeValidationError as error:
+            print(f"error: {error}")
+            return 1
+        print(json.dumps(eval_case, ensure_ascii=False, indent=2))
         return 0
 
     parser.error(f"unknown command: {args.command}")

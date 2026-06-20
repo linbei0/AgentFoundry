@@ -861,6 +861,83 @@ def test_cli_inspect_new_episode_missing_required_file_uses_validator(tmp_path: 
     assert "episode package missing required file: environment.json" in output
 
 
+def test_cli_export_eval_outputs_valid_json_for_episode(tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Export CLI eval case
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - Eval JSON is emitted
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+
+    exit_code = cli.main(["export-eval", str(result.episode_path)])
+
+    assert exit_code == 0
+    eval_case = json.loads(capsys.readouterr().out)
+    assert eval_case["eval_case_version"] == "1.0"
+    assert eval_case["task"]["goal"] == "Export CLI eval case"
+    assert "sandbox_summary" in eval_case
+    assert eval_case["sandbox_summary"]["command_timeout_seconds"] == 60
+    assert eval_case["approval_summary"] == [
+        {
+            "tool_name": "fake_tool",
+            "action": "allow",
+            "approval_required": False,
+            "approval_status": "not_required",
+            "approval_reason": "approval not required for low risk tool fake_tool",
+        },
+    ]
+
+
+def test_cli_export_eval_uses_pretty_utf8_json(tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: 导出 eval case
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - 输出 UTF-8 JSON
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+
+    exit_code = cli.main(["export-eval", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\n  \"eval_case_version\"" in output
+    assert "导出 eval case" in output
+    assert "\\u5bfc\\u51fa" not in output
+
+
+def test_cli_export_eval_invalid_episode_returns_error(tmp_path: Path, capsys) -> None:
+    episode_path = tmp_path / "episode-1"
+    write_minimal_episode(
+        episode_path,
+        episode_json=valid_episode_json(tmp_path),
+        failure_json={"status": "success", "failure": None},
+    )
+    (episode_path / "sandbox.json").unlink()
+
+    exit_code = cli.main(["export-eval", str(episode_path)])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "error:" in output
+    assert "episode package missing required file: sandbox.json" in output
+
+
 def test_cli_inspect_new_episode_invalid_jsonl_uses_validator(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
     write_minimal_episode(
