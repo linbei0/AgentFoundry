@@ -921,6 +921,82 @@ verification_commands: []
     assert "\\u5bfc\\u51fa" not in output
 
 
+def test_cli_export_eval_writes_output_file(tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Export eval case to file
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - JSON file is emitted
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    output_path = tmp_path / "eval-case.json"
+
+    exit_code = cli.main(["export-eval", str(result.episode_path), "--output", str(output_path)])
+
+    stdout = capsys.readouterr().out
+    eval_case = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert stdout.strip() == f"exported_eval_case={output_path}"
+    assert "\"eval_case_version\"" not in stdout
+    assert eval_case["eval_case_version"] == "1.0"
+    assert "sandbox_summary" in eval_case
+    assert "approval_summary" in eval_case
+
+
+def test_cli_export_eval_output_file_parent_must_exist(tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Export eval case to missing directory
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    output_path = tmp_path / "missing-parent" / "eval-case.json"
+
+    exit_code = cli.main(["export-eval", str(result.episode_path), "--output", str(output_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "error:" in output
+    assert "output parent directory does not exist" in output
+    assert not output_path.exists()
+    assert not output_path.parent.exists()
+
+
+def test_cli_export_eval_invalid_episode_with_output_does_not_write_file(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    episode_path = tmp_path / "episode-1"
+    write_minimal_episode(
+        episode_path,
+        episode_json=valid_episode_json(tmp_path),
+        failure_json={"status": "success", "failure": None},
+    )
+    (episode_path / "sandbox.json").unlink()
+    output_path = tmp_path / "eval-case.json"
+
+    exit_code = cli.main(["export-eval", str(episode_path), "--output", str(output_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "episode package missing required file: sandbox.json" in output
+    assert not output_path.exists()
+
+
 def test_cli_export_eval_invalid_episode_returns_error(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
     write_minimal_episode(

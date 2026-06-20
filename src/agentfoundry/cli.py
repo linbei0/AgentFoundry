@@ -39,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     export_eval_parser = subparsers.add_parser("export-eval", help="export an eval case JSON")
     export_eval_parser.add_argument("episode_path", type=Path, help="path to an episode directory")
+    export_eval_parser.add_argument(
+        "--output",
+        type=Path,
+        help="write eval case JSON to this file instead of stdout",
+    )
     return parser
 
 
@@ -67,7 +72,15 @@ def main(argv: list[str] | None = None) -> int:
         except EpisodeValidationError as error:
             print(f"error: {error}")
             return 1
-        print(json.dumps(eval_case, ensure_ascii=False, indent=2))
+        output = json.dumps(eval_case, ensure_ascii=False, indent=2)
+        if args.output is not None:
+            if not args.output.parent.exists():
+                print(f"error: output parent directory does not exist: {args.output.parent}")
+                return 1
+            args.output.write_text(output + "\n", encoding="utf-8")
+            print(f"exported_eval_case={args.output}")
+            return 0
+        print(output)
         return 0
 
     parser.error(f"unknown command: {args.command}")
