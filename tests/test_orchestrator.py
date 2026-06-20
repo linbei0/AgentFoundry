@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agentfoundry.models.gateway import ModelCallError
 from agentfoundry.models.gateway import ModelResponse, ToolCall
+from agentfoundry.models.gateway import OpenAIChatCompletionsGateway
 from agentfoundry.models.gateway import OpenAIResponsesGateway
 from agentfoundry.runtime.orchestrator import RunOrchestrator
 from agentfoundry.runtime.state import RunStatus
@@ -169,7 +170,9 @@ def test_orchestrator_executes_openai_provider_tool_call_smoke(tmp_path: Path) -
     )
     tool_calls = [
         json.loads(line)
-        for line in (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (
+            result.episode_path / "tool-calls.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
     ]
     model_calls = [record for record in transcript if record["event"] == "model_call"]
     model_responses = [record for record in transcript if record["event"] == "model_response"]
@@ -193,6 +196,75 @@ def test_orchestrator_executes_openai_provider_tool_call_smoke(tmp_path: Path) -
     first_tools = payloads[0]["tools"]
     assert isinstance(first_tools, list)
     assert first_tools[0]["name"] == "fake_tool"
+
+
+def test_orchestrator_executes_openai_chat_provider_file_read_tool_call_smoke(
+    tmp_path: Path,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    note_text = "workspace note says hello from file_read\n"
+    (tmp_path / "notes.txt").write_text(note_text, encoding="utf-8")
+    write_task(task_path, ["file_read"])
+    payloads: list[dict[str, object]] = []
+
+    def fake_transport(payload: dict[str, object], api_key: str) -> dict[str, object]:
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "file_read",
+                                        "arguments": "{\"path\": \"notes.txt\"}",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            }
+        return {"choices": [{"message": {"content": "final answer from file note"}}]}
+
+    gateway = OpenAIChatCompletionsGateway(
+        api_key="test-key",
+        model="chat-test",
+        transport=fake_transport,
+    )
+
+    result = RunOrchestrator(runs_root=runs_dir, model_gateway=gateway).run(task_path)
+
+    episode = json.loads((result.episode_path / "episode.json").read_text(encoding="utf-8"))
+    transcript = _read_transcript(result.episode_path)
+    context_manifest = json.loads(
+        (result.episode_path / "context-manifest.json").read_text(encoding="utf-8"),
+    )
+    tool_calls = [
+        json.loads(line)
+        for line in (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    tool_observations = [record for record in transcript if record["event"] == "tool_observation"]
+    second_message = payloads[1]["messages"][0]
+
+    assert result.status is RunStatus.COMPLETED
+    assert episode["provider"] == "openai-chat"
+    assert context_manifest["context_count"] == 2
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["tool_name"] == "file_read"
+    assert tool_calls[0]["args"] == {"path": "notes.txt"}
+    assert tool_calls[0]["status"] == "success"
+    assert tool_calls[0]["result"]["content"] == note_text
+    assert tool_observations[0]["tool_name"] == "file_read"
+    assert tool_observations[0]["result"]["content"] == note_text
+    assert len(payloads) == 2
+    assert isinstance(second_message, dict)
+    assert note_text.strip() in str(second_message["content"])
+    assert '"path": "notes.txt"' in str(second_message["content"])
 
 
 def test_orchestrator_fails_when_fake_tool_is_not_allowed(tmp_path: Path) -> None:

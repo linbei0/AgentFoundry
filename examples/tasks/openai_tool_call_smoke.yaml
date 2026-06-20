@@ -1,6 +1,6 @@
 goal: Call fake_tool first, then use its observed result to finish the smoke task.
 constraints:
-  - This task is for manual OpenAI provider smoke testing.
+  - This task is for manual OpenAI-compatible provider smoke testing.
   - The model must call fake_tool before producing the final answer.
   - Do not use any tool except fake_tool.
 allowed_tools:
@@ -8,5 +8,5 @@ allowed_tools:
 acceptance_criteria:
   - Run reaches completed state.
   - The episode records a fake_tool success in tool-calls.jsonl.
-  - Inspect output shows provider=openai and a tool observation for fake_tool.
+  - Inspect output shows the selected provider and a tool observation for fake_tool.
 verification_commands: []
