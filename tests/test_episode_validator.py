@@ -20,26 +20,16 @@ from haagent.runtime.episode_validator import (
 )
 from haagent.runtime.orchestrator import RunOrchestrator
 from haagent.runtime.state import RunStatus
-
-
-def valid_episode_json(tmp_path: Path, status: str = "completed") -> dict[str, object]:
-    return {
-        "episode_version": "1.0",
-        "created_at": "2026-06-19T00:00:00+00:00",
-        "task_path": "task.yaml",
-        "status": status,
-        "provider": "fake",
-        "workspace_root": str(tmp_path),
-    }
-
-
-def write_json(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-def read_json(path: Path) -> dict[str, object]:
-    return json.loads(path.read_text(encoding="utf-8"))
+from tests.support.episode_packages import (
+    read_json,
+    valid_episode_json,
+    valid_policy,
+    valid_verification_command,
+    write_json,
+    write_task,
+    write_tool_call,
+    write_verification_command,
+)
 
 
 def update_context_manifest(episode_path: Path, **updates: object) -> None:
@@ -81,21 +71,6 @@ def update_sandbox(episode_path: Path, **updates: object) -> None:
     write_json(episode_path / "sandbox.json", sandbox)
 
 
-def write_task(path: Path) -> None:
-    path.write_text(
-        """
-goal: Validate package
-constraints: []
-allowed_tools:
-  - fake_tool
-acceptance_criteria:
-  - Run reaches completed state
-verification_commands: []
-""".strip(),
-        encoding="utf-8",
-    )
-
-
 class OneShotGateway:
     provider_name = "one-shot"
 
@@ -104,65 +79,6 @@ class OneShotGateway:
 
     def generate(self, task, model_input, tool_schemas, observations):
         return self._response
-
-
-def valid_policy(tool_name: str = "fake_tool") -> dict[str, object]:
-    return {
-        "tool_name": tool_name,
-        "risk_level": "low",
-        "action": "allow",
-        "reason": "Allowed by test policy",
-        "approval": {
-            "required": False,
-            "status": "not_required",
-            "reason": "low risk",
-        },
-    }
-
-
-def write_tool_call(
-    episode_path: Path,
-    *,
-    tool_name: object = "fake_tool",
-    status: object = "success",
-    policy: object = None,
-    include_policy: bool = True,
-    error: object | None = None,
-) -> None:
-    record: dict[str, object] = {"tool_name": tool_name, "status": status}
-    if include_policy:
-        record["policy"] = valid_policy(str(tool_name)) if policy is None else policy
-    if error is not None:
-        record["error"] = error
-    (episode_path / "tool-calls.jsonl").write_text(
-        json.dumps(record) + "\n",
-        encoding="utf-8",
-    )
-
-
-def valid_verification_command() -> dict[str, object]:
-    return {
-        "command": "uv run pytest",
-        "status": "success",
-        "exit_code": 0,
-        "timeout": False,
-        "stdout_excerpt": "",
-        "stderr_excerpt": "",
-        "stdout_truncated": False,
-        "stderr_truncated": False,
-        "stdout_original_length": 0,
-        "stderr_original_length": 0,
-        "redacted": False,
-    }
-
-
-def write_verification_command(episode_path: Path, **updates: object) -> None:
-    record = valid_verification_command()
-    record.update(updates)
-    (episode_path / "verification" / "commands.jsonl").write_text(
-        json.dumps(record) + "\n",
-        encoding="utf-8",
-    )
 
 
 def test_validator_accepts_valid_episode_metadata(tmp_path: Path) -> None:
@@ -396,68 +312,33 @@ def test_package_validator_rejects_plan_field_type_error(tmp_path: Path) -> None
         validate_episode_package(result.episode_path)
 
 
-def test_package_validator_rejects_environment_python_non_string(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "bad_value", "message"),
+    [
+        ("python", 123, "environment.json python must be a string"),
+        ("platform", 123, "environment.json platform must be a string"),
+        ("created_at", "not-a-date", "environment.json created_at is invalid: not-a-date"),
+        ("workspace_root", 123, "environment.json workspace_root must be a string"),
+        (
+            "workspace_root",
+            "__other_root__",
+            "environment.json workspace_root does not match episode.json workspace_root",
+        ),
+    ],
+)
+def test_package_validator_rejects_environment_field_errors(
+    tmp_path: Path,
+    field: str,
+    bad_value: object,
+    message: str,
+) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    update_environment(result.episode_path, python=123)
+    value = str(tmp_path / "other") if bad_value == "__other_root__" else bad_value
+    update_environment(result.episode_path, **{field: value})
 
-    with pytest.raises(
-        EpisodeValidationError,
-        match="environment.json python must be a string",
-    ):
-        validate_episode_package(result.episode_path)
-
-
-def test_package_validator_rejects_environment_platform_non_string(tmp_path: Path) -> None:
-    task_path = tmp_path / "task.yaml"
-    write_task(task_path)
-    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    update_environment(result.episode_path, platform=123)
-
-    with pytest.raises(
-        EpisodeValidationError,
-        match="environment.json platform must be a string",
-    ):
-        validate_episode_package(result.episode_path)
-
-
-def test_package_validator_rejects_environment_created_at_invalid(tmp_path: Path) -> None:
-    task_path = tmp_path / "task.yaml"
-    write_task(task_path)
-    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    update_environment(result.episode_path, created_at="not-a-date")
-
-    with pytest.raises(
-        EpisodeValidationError,
-        match="environment.json created_at is invalid: not-a-date",
-    ):
-        validate_episode_package(result.episode_path)
-
-
-def test_package_validator_rejects_environment_workspace_root_non_string(tmp_path: Path) -> None:
-    task_path = tmp_path / "task.yaml"
-    write_task(task_path)
-    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    update_environment(result.episode_path, workspace_root=123)
-
-    with pytest.raises(
-        EpisodeValidationError,
-        match="environment.json workspace_root must be a string",
-    ):
-        validate_episode_package(result.episode_path)
-
-
-def test_package_validator_rejects_environment_workspace_root_mismatch(tmp_path: Path) -> None:
-    task_path = tmp_path / "task.yaml"
-    write_task(task_path)
-    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    update_environment(result.episode_path, workspace_root=str(tmp_path / "other"))
-
-    with pytest.raises(
-        EpisodeValidationError,
-        match="environment.json workspace_root does not match episode.json workspace_root",
-    ):
+    with pytest.raises(EpisodeValidationError, match=message):
         validate_episode_package(result.episode_path)
 
 

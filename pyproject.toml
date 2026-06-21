@@ -23,5 +23,13 @@ build-backend = "hatchling.build"
 packages = ["src/haagent"]
 
 [tool.pytest.ini_options]
+addopts = ["--strict-markers"]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "unit: pure logic tests with narrow scope",
+    "contract: schema, trace, package, provider payload, or CLI output contract tests",
+    "workflow: cross-module runtime or CLI workflow tests",
+    "slow: timeout or intentionally slower tests",
+    "smoke: smoke-style tests that should be easy to deselect during fast local runs",
+]

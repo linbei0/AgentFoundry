@@ -1,0 +1,293 @@
+"""
+haagent/cli_inspect.py - episode inspect 摘要渲染
+
+提供 CLI inspect 子命令使用的人类可读 episode package 摘要格式化逻辑。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from haagent.runtime.episode_validator import (
+    EpisodeValidationError,
+    load_inspect_episode_package,
+)
+
+
+class EpisodeInspectError(RuntimeError):
+    """Raised when an episode package cannot be inspected safely."""
+
+
+def render_episode_summary(episode_path: Path) -> str:
+    """读取 episode package，并生成面向人的审计摘要。"""
+    try:
+        package_view = load_inspect_episode_package(episode_path)
+    except EpisodeValidationError as error:
+        raise EpisodeInspectError(str(error)) from error
+    episode_metadata = package_view.episode_metadata
+    context_manifest = package_view.context_manifest
+    plan = package_view.plan
+    transcript = package_view.transcript
+    tool_calls = package_view.tool_calls
+    verification = package_view.verification_commands
+    verification_reached = package_view.verification_reached
+    failure_record = package_view.failure_record
+    sandbox = package_view.sandbox
+
+    failure_attribution = (episode_path / "failure-attribution.md").read_text(encoding="utf-8").strip()
+
+    state_flow = [
+        record["status"]
+        for record in transcript
+        if record.get("event") == "state_transition"
+    ]
+    final_status = state_flow[-1] if state_flow else "unknown"
+    final_status = episode_metadata.get("status", final_status)
+    model_calls = [
+        record
+        for record in transcript
+        if record.get("event") == "model_call"
+    ]
+
+    lines = [
+        "Run Summary",
+        f"- episode_path: {episode_path}",
+        f"- episode_version: {episode_metadata.get('episode_version', 'unknown')}",
+        f"- status: {final_status}",
+        f"- provider: {_summary_provider(episode_metadata)}",
+        f"- context_count: {context_manifest.get('context_count', 0)}",
+        "",
+        "State Flow",
+        f"- {' -> '.join(state_flow) if state_flow else 'none'}",
+        "",
+        "Contexts",
+    ]
+    lines.extend(_format_contexts(context_manifest.get("contexts", [])))
+    lines.extend(["", "Plan"])
+    lines.extend(_format_plan(plan))
+    lines.extend(["", "Sandbox"])
+    lines.extend(_format_sandbox(sandbox))
+    lines.extend(["", "Next Actions"])
+    lines.extend(_format_next_actions(episode_path, context_manifest.get("contexts", [])))
+    lines.extend(["", "Model Calls"])
+    lines.extend(_format_model_calls(model_calls))
+    lines.extend(["", "Final Response"])
+    lines.extend(_format_final_response(transcript))
+    lines.extend(["", "Tool Calls"])
+    lines.extend(_format_tool_calls(tool_calls))
+    lines.extend(["", "Approval Summary"])
+    lines.extend(_format_approval_summary(tool_calls))
+    lines.extend(["", "Tool Argument Errors"])
+    lines.extend(_format_tool_argument_errors(tool_calls))
+    lines.extend(["", "Verification"])
+    lines.extend(_format_verification(verification, verification_reached))
+    lines.extend(["", "Structured Failure"])
+    lines.extend(_format_failure_record(failure_record))
+    lines.extend(["", "Failure Attribution", failure_attribution])
+    return "\n".join(lines)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _summary_provider(episode_metadata: dict[str, Any]) -> str:
+    return str(episode_metadata.get("provider", "unknown"))
+
+
+def _format_contexts(contexts: list[dict[str, Any]]) -> list[str]:
+    if not contexts:
+        return ["- none"]
+    return [
+        (
+            f"- {context['context_id']}: "
+            f"{context['model_input_path']} | {context['manifest_path']}"
+        )
+        for context in contexts
+    ]
+
+
+def _format_plan(plan: dict[str, Any]) -> list[str]:
+    planned_steps = plan.get("planned_steps", [])
+    if not planned_steps:
+        return ["- none"]
+    return [f"- {step}" for step in planned_steps]
+
+
+def _format_sandbox(sandbox: dict[str, Any]) -> list[str]:
+    resource_limits = sandbox.get("resource_limits", {})
+    if not isinstance(resource_limits, dict):
+        resource_limits = {}
+    return [
+        f"- filesystem_boundary: {sandbox.get('filesystem_boundary', 'unknown')}",
+        f"- network_policy: {sandbox.get('network_policy', 'unknown')}",
+        f"- process_policy: {sandbox.get('process_policy', 'unknown')}",
+        f"- credential_policy: {sandbox.get('credential_policy', 'unknown')}",
+        (
+            "- command_timeout_seconds: "
+            f"{resource_limits.get('command_timeout_seconds', 'unknown')}"
+        ),
+    ]
+
+
+def _format_next_actions(episode_path: Path, contexts: list[dict[str, Any]]) -> list[str]:
+    if not contexts:
+        return ["- none"]
+    lines = []
+    for context in contexts:
+        context_id = str(context.get("context_id", "unknown"))
+        next_action = _read_context_next_action(episode_path / str(context["manifest_path"]))
+        tool_name = next_action.get("based_on_tool_name")
+        based_on_tool_name = str(tool_name) if tool_name is not None else "none"
+        lines.append(
+            (
+                f"- {context_id}: status={next_action.get('status', 'unknown')} "
+                f"based_on_tool_name={based_on_tool_name} "
+                f"reason={next_action.get('reason', '')}"
+            ),
+        )
+    return lines
+
+
+def _read_context_next_action(path: Path) -> dict[str, Any]:
+    context_manifest = _read_json(path)
+    next_action = context_manifest.get("next_action")
+    if not isinstance(next_action, dict):
+        raise EpisodeInspectError(f"{path.name} next_action must be an object")
+    return next_action
+
+
+def _format_model_calls(model_calls: list[dict[str, Any]]) -> list[str]:
+    if not model_calls:
+        return ["- none"]
+    return [
+        (
+            f"- provider={call.get('provider', 'unknown')} "
+            f"context_id={call.get('context_id', 'unknown')}"
+        )
+        for call in model_calls
+    ]
+
+
+def _format_final_response(transcript: list[dict[str, Any]]) -> list[str]:
+    response = _last_model_response(transcript)
+    if response is None:
+        return ["- none"]
+    tool_calls = response.get("tool_calls", [])
+    tool_call_count = len(tool_calls) if isinstance(tool_calls, list) else 0
+    content = str(response.get("content", ""))
+    return [
+        (
+            f"- provider={response.get('provider', 'unknown')} "
+            f"turn={response.get('turn', 'unknown')} "
+            f"tool_call_count={tool_call_count}"
+        ),
+        f"- content: {_excerpt(content)}",
+    ]
+
+
+def _last_model_response(transcript: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for record in reversed(transcript):
+        if record.get("event") == "model_response":
+            return record
+    return None
+
+
+def _excerpt(content: str, limit: int = 500) -> str:
+    if len(content) <= limit:
+        return content
+    return content[:limit] + "... [truncated]"
+
+
+def _format_tool_calls(tool_calls: list[dict[str, Any]]) -> list[str]:
+    if not tool_calls:
+        return ["- none"]
+    return [
+        f"- {call.get('tool_name', 'unknown')}: {call.get('status', 'unknown')}"
+        for call in tool_calls
+    ]
+
+
+def _format_approval_summary(tool_calls: list[dict[str, Any]]) -> list[str]:
+    if not tool_calls:
+        return ["- none"]
+    lines = []
+    for call in tool_calls:
+        tool_name = call.get("tool_name", "unknown")
+        policy = call.get("policy")
+        if policy is None and _policy_not_evaluated(call):
+            error = call.get("error") if isinstance(call.get("error"), dict) else {}
+            lines.append(f"- {tool_name}: policy=not_evaluated reason={error.get('message', '')}")
+            continue
+        approval = policy["approval"]
+        required = "true" if approval.get("required") is True else "false"
+        lines.append(
+            (
+                f"- {tool_name}: action={policy['action']} "
+                f"approval.required={required} "
+                f"approval.status={approval['status']} "
+                f"approval.reason={approval['reason']}"
+            ),
+        )
+    return lines
+
+
+def _policy_not_evaluated(call: dict[str, Any]) -> bool:
+    error = call.get("error")
+    return (
+        call.get("status") == "error"
+        and isinstance(error, dict)
+        and error.get("type") in {"tool_not_allowed", "unknown_tool"}
+    )
+
+
+def _format_tool_argument_errors(tool_calls: list[dict[str, Any]]) -> list[str]:
+    errors = []
+    for call in tool_calls:
+        error = call.get("error")
+        if isinstance(error, dict) and error.get("type") == "tool_argument_invalid":
+            errors.append(
+                f"- {call.get('tool_name', 'unknown')}: {error.get('message', '')}",
+            )
+    if not errors:
+        return ["- none"]
+    return errors
+
+
+def _format_verification(
+    commands: list[dict[str, Any]],
+    verification_reached: bool = True,
+) -> list[str]:
+    if not verification_reached:
+        return ["- not reached"]
+    if not commands:
+        return ["- none"]
+    lines = []
+    for command in commands:
+        lines.append(
+            (
+                f"- {command.get('command', '')}: {command.get('status', 'unknown')} "
+                f"(exit_code={command.get('exit_code')})"
+            ),
+        )
+        if command.get("timeout"):
+            lines.append("  timeout: true")
+        if command.get("stdout_excerpt"):
+            lines.append(f"  stdout: {command['stdout_excerpt']}")
+        if command.get("stderr_excerpt"):
+            lines.append(f"  stderr: {command['stderr_excerpt']}")
+    return lines
+
+
+def _format_failure_record(record: dict[str, Any]) -> list[str]:
+    if record.get("status") == "success":
+        return ["- status: success"]
+    failure = record.get("failure") or {}
+    return [
+        f"- status: {record.get('status', 'unknown')}",
+        f"- category: {failure.get('category', 'unknown')}",
+        f"- stage: {failure.get('stage', 'unknown')}",
+        f"- evidence: {failure.get('evidence', '')}",
+    ]
