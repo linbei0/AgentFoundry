@@ -644,8 +644,18 @@ def test_orchestrator_attributes_agents_md_read_failure_as_context_failure(
 
 def test_orchestrator_attributes_context_budget_failure_as_context_failure(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
-    write_task(task_path, ["fake_tool"])
-    (tmp_path / "AGENTS.md").write_text("x" * 13000, encoding="utf-8")
+    task_path.write_text(
+        f"""
+goal: {"x" * 13000}
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - Run reaches terminal state
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
 
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
 
@@ -758,8 +768,12 @@ def test_orchestrator_completes_after_two_tool_rounds(tmp_path: Path) -> None:
         context_manifest = json.loads(
             (result.episode_path / "contexts" / f"{context_id}.json").read_text(encoding="utf-8"),
         )
-        assert all(source["budget"]["included_in_model_input"] is True for source in context_manifest["sources"])
-        assert all(isinstance(source["budget"]["char_count"], int) for source in context_manifest["sources"])
+        assert all(isinstance(source["budget"]["raw_char_count"], int) for source in context_manifest["sources"])
+        assert all(
+            isinstance(source["budget"]["model_input_char_count"], int)
+            for source in context_manifest["sources"]
+        )
+        assert all(isinstance(source["budget"]["truncated"], bool) for source in context_manifest["sources"])
         assert all(source["budget"]["inclusion_reason"] for source in context_manifest["sources"])
     assert [context["budget"]["context_id"] for context in run_manifest["contexts"]] == [
         "0001",

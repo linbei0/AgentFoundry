@@ -800,12 +800,12 @@ def test_package_validator_rejects_source_budget_field_type_error(tmp_path: Path
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
     context_path = first_context_json_path(result.episode_path)
     context_json = read_json(context_path)
-    context_json["sources"][0]["budget"]["char_count"] = "6"
+    context_json["sources"][0]["budget"]["raw_char_count"] = "6"
     write_json(context_path, context_json)
 
     with pytest.raises(
         EpisodeValidationError,
-        match="contexts/0001.json sources\\[0\\].budget.char_count must be an int",
+        match="contexts/0001.json sources\\[0\\].budget.raw_char_count must be an int",
     ):
         validate_episode_package(result.episode_path)
 

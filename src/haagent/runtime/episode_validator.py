@@ -429,15 +429,26 @@ def _validate_context_source(label: str, source_index: int, source: Any) -> None
     budget = source.get("budget")
     if not isinstance(budget, dict):
         raise EpisodeValidationError(f"{label} sources[{source_index}].budget must be an object")
-    if not isinstance(budget.get("char_count"), int):
-        raise EpisodeValidationError(f"{label} sources[{source_index}].budget.char_count must be an int")
+    for field_name in ["raw_char_count", "model_input_char_count"]:
+        if not isinstance(budget.get(field_name), int):
+            raise EpisodeValidationError(
+                f"{label} sources[{source_index}].budget.{field_name} must be an int",
+            )
     if not isinstance(budget.get("included_in_model_input"), bool):
         raise EpisodeValidationError(
             f"{label} sources[{source_index}].budget.included_in_model_input must be a bool",
         )
+    if not isinstance(budget.get("truncated"), bool):
+        raise EpisodeValidationError(
+            f"{label} sources[{source_index}].budget.truncated must be a bool",
+        )
     if not _non_empty_string(budget.get("inclusion_reason")):
         raise EpisodeValidationError(
             f"{label} sources[{source_index}].budget.inclusion_reason must be a non-empty string",
+        )
+    if not budget["included_in_model_input"] and not _non_empty_string(budget.get("exclusion_reason")):
+        raise EpisodeValidationError(
+            f"{label} sources[{source_index}].budget.exclusion_reason must be a non-empty string when excluded",
         )
 
 

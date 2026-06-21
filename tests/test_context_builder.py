@@ -72,13 +72,14 @@ def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> No
     goal_source = next(
         source for source in context_manifest["sources"] if source["source_type"] == "task" and source["name"] == "goal"
     )
-    assert goal_source["budget"] == {
-        "char_count": len("goal: Build context"),
-        "included_in_model_input": True,
-        "inclusion_reason": "The model needs the task goal.",
-    }
+    _assert_budget(
+        goal_source["budget"],
+        raw_char_count=len("goal: Build context"),
+        model_input_char_count=len("goal: Build context"),
+        inclusion_reason="The model needs the task goal.",
+    )
     assert all("budget" in source for source in context_manifest["sources"])
-    assert all(source["budget"]["inclusion_reason"] for source in context_manifest["sources"])
+    assert all(_has_complete_budget(source) for source in context_manifest["sources"])
     manifest = json.loads((writer.path / "context-manifest.json").read_text(encoding="utf-8"))
     assert manifest["version"] == "1.2"
     assert manifest["generated_at"]
@@ -95,7 +96,11 @@ def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> No
             "max_chars": 12000,
             "status": "within_limit",
             "source_count": len(context_manifest["sources"]),
-            "included_source_count": len(context_manifest["sources"]),
+            "included_source_count": sum(
+                1
+                for source in context_manifest["sources"]
+                if source["budget"]["included_in_model_input"]
+            ),
         },
     }
 
@@ -149,11 +154,12 @@ def test_context_builder_includes_plan_source_and_budget(tmp_path: Path) -> None
     assert plan_source["name"] == "plan.json"
     assert plan_source["description"]
     assert plan_source["inclusion_reason"]
-    assert plan_source["budget"] == {
-        "char_count": len(injected_plan),
-        "included_in_model_input": True,
-        "inclusion_reason": plan_source["inclusion_reason"],
-    }
+    _assert_budget(
+        plan_source["budget"],
+        raw_char_count=len(injected_plan),
+        model_input_char_count=len(injected_plan),
+        inclusion_reason=plan_source["inclusion_reason"],
+    )
 
 
 def test_context_builder_includes_pending_next_step_none_source_and_budget(tmp_path: Path) -> None:
@@ -183,11 +189,12 @@ def test_context_builder_includes_pending_next_step_none_source_and_budget(tmp_p
     assert pending_source["name"] == "pending_next_step"
     assert pending_source["description"]
     assert pending_source["inclusion_reason"]
-    assert pending_source["budget"] == {
-        "char_count": len(injected_pending_next_step),
-        "included_in_model_input": True,
-        "inclusion_reason": pending_source["inclusion_reason"],
-    }
+    _assert_budget(
+        pending_source["budget"],
+        raw_char_count=len(injected_pending_next_step),
+        model_input_char_count=len(injected_pending_next_step),
+        inclusion_reason=pending_source["inclusion_reason"],
+    )
 
 
 def test_context_builder_includes_project_instructions_when_agents_md_exists(tmp_path: Path) -> None:
@@ -218,6 +225,40 @@ def test_context_builder_includes_project_instructions_when_agents_md_exists(tmp
     assert project_sources[0]["status"] == "present"
     assert project_sources[0]["inclusion_reason"] == "Workspace AGENTS.md is the project instruction source for this run."
     assert project_sources[0]["budget"]["included_in_model_input"] is True
+    _assert_budget(
+        project_sources[0]["budget"],
+        raw_char_count=len("Use concise Chinese comments."),
+        model_input_char_count=len("Use concise Chinese comments."),
+        inclusion_reason=project_sources[0]["inclusion_reason"],
+    )
+
+
+def test_context_builder_truncates_long_project_instructions(tmp_path: Path) -> None:
+    content = "BEGIN-" + ("x" * 5000) + "-TAIL"
+    (tmp_path / "AGENTS.md").write_text(content, encoding="utf-8")
+    writer = make_writer(tmp_path)
+    builder = ContextBuilder(
+        task=make_task(),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
+    source = next(
+        source
+        for source in context_manifest["sources"]
+        if source["source_type"] == "project_instructions"
+    )
+    assert "BEGIN-" in model_input
+    assert "-TAIL" not in model_input
+    assert content not in model_input
+    assert source["budget"]["raw_char_count"] == len(content)
+    assert source["budget"]["model_input_char_count"] < source["budget"]["raw_char_count"]
+    assert source["budget"]["truncated"] is True
 
 
 def test_context_builder_records_absent_project_instructions(tmp_path: Path) -> None:
@@ -244,6 +285,74 @@ def test_context_builder_records_absent_project_instructions(tmp_path: Path) -> 
     assert project_sources[0]["status"] == "absent"
     assert project_sources[0]["inclusion_reason"] == "Absence is recorded so audits can see no project instructions were loaded."
     assert project_sources[0]["budget"]["included_in_model_input"] is True
+    _assert_budget(
+        project_sources[0]["budget"],
+        raw_char_count=0,
+        model_input_char_count=len("- none"),
+        inclusion_reason=project_sources[0]["inclusion_reason"],
+    )
+
+
+def test_context_builder_excludes_episode_audit_sources_from_model_input(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    writer.append_transcript({"event": "trace_sentinel", "content": "TRACE_SENTINEL"})
+    writer.append_tool_call(
+        {
+            "tool_name": "fake_tool",
+            "status": "success",
+            "result": {"content": "TOOL_CALL_SENTINEL"},
+            "policy": {"reason": "POLICY_SENTINEL"},
+        },
+    )
+    verification_dir = writer.path / "verification"
+    verification_dir.mkdir()
+    (verification_dir / "commands.jsonl").write_text(
+        json.dumps({"stdout": "VERIFICATION_SENTINEL"}) + "\n",
+        encoding="utf-8",
+    )
+    (writer.path / "failure.json").write_text(
+        json.dumps({"evidence": "FAILURE_SENTINEL"}),
+        encoding="utf-8",
+    )
+    (writer.path / "eval-case.json").write_text(
+        json.dumps({"input": "EVAL_SENTINEL"}),
+        encoding="utf-8",
+    )
+    builder = ContextBuilder(
+        task=make_task(),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
+    for sentinel in [
+        "TRACE_SENTINEL",
+        "TOOL_CALL_SENTINEL",
+        "POLICY_SENTINEL",
+        "VERIFICATION_SENTINEL",
+        "FAILURE_SENTINEL",
+        "EVAL_SENTINEL",
+    ]:
+        assert sentinel not in model_input
+    audit_sources = [
+        source
+        for source in context_manifest["sources"]
+        if source["source_type"].startswith("audit_")
+    ]
+    assert {source["name"] for source in audit_sources} == {
+        "transcript.jsonl",
+        "tool-calls.jsonl",
+        "verification/commands.jsonl",
+        "failure.json",
+        "eval export",
+    }
+    assert all(source["budget"]["included_in_model_input"] is False for source in audit_sources)
+    assert all(source["budget"]["model_input_char_count"] == 0 for source in audit_sources)
+    assert all(source["budget"]["exclusion_reason"] for source in audit_sources)
 
 
 def test_context_builder_model_input_contains_observation_summary(tmp_path: Path) -> None:
@@ -301,6 +410,7 @@ def test_context_builder_model_input_contains_observation_summary(tmp_path: Path
     assert observation_sources[0]["description"] == "Tool observation from previous turn"
     assert observation_sources[0]["inclusion_reason"] == "Previous tool result is needed for the next model turn."
     assert observation_sources[0]["budget"]["included_in_model_input"] is True
+    assert _has_complete_budget(observation_sources[0])
 
 
 def test_context_builder_compacts_long_file_read_observation(tmp_path: Path) -> None:
@@ -341,7 +451,8 @@ def test_context_builder_compacts_long_file_read_observation(tmp_path: Path) -> 
     assert "line-000-" in observation_line
     assert "line-079-" not in model_input
     assert long_content not in model_input
-    assert observation_source["budget"]["char_count"] == len(observation_line)
+    assert observation_source["budget"]["model_input_char_count"] == len(observation_line)
+    assert observation_source["budget"]["raw_char_count"] > len(observation_line)
 
 
 def test_context_builder_compacts_long_shell_observation(tmp_path: Path) -> None:
@@ -560,9 +671,10 @@ def test_context_builder_sources_include_inclusion_reason(tmp_path: Path) -> Non
     source_types = {source["source_type"] for source in context_manifest["sources"]}
     assert {"task", "tool_catalog", "observation", "project_instructions", "plan", "pending_next_step"} <= source_types
     assert all(source["inclusion_reason"] for source in context_manifest["sources"])
+    assert all(_has_complete_budget(source) for source in context_manifest["sources"])
 
 
-def test_context_builder_rejects_context_over_character_limit(tmp_path: Path) -> None:
+def test_context_builder_allows_long_agents_md_after_truncation(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("x" * 13000, encoding="utf-8")
     writer = make_writer(tmp_path)
     builder = ContextBuilder(
@@ -572,8 +684,9 @@ def test_context_builder_rejects_context_over_character_limit(tmp_path: Path) ->
         episode_writer=writer,
     )
 
-    with pytest.raises(ContextBuildError, match="context character budget exceeded"):
-        builder.build()
+    result = builder.build()
+
+    assert len(result.model_input) <= 12000
 
 
 def test_context_builder_rejects_unknown_allowed_tool(tmp_path: Path) -> None:
@@ -607,3 +720,32 @@ def _single_observation_source(context_manifest: dict[str, object]) -> dict[str,
     ]
     assert len(sources) == 1
     return sources[0]
+
+
+def _assert_budget(
+    budget: dict[str, object],
+    raw_char_count: int,
+    model_input_char_count: int,
+    inclusion_reason: str,
+    truncated: bool = False,
+) -> None:
+    assert budget == {
+        "raw_char_count": raw_char_count,
+        "model_input_char_count": model_input_char_count,
+        "included_in_model_input": True,
+        "truncated": truncated,
+        "inclusion_reason": inclusion_reason,
+        "exclusion_reason": None,
+    }
+
+
+def _has_complete_budget(source: dict[str, object]) -> bool:
+    budget = source["budget"]
+    return {
+        "raw_char_count",
+        "model_input_char_count",
+        "included_in_model_input",
+        "truncated",
+        "inclusion_reason",
+        "exclusion_reason",
+    } <= set(budget)

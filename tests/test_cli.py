@@ -770,9 +770,12 @@ verification_commands: []
                         "description": "测试任务事实",
                         "inclusion_reason": "inspect fixture",
                         "budget": {
-                            "char_count": 11,
+                            "raw_char_count": 11,
+                            "model_input_char_count": 11,
                             "included_in_model_input": True,
+                            "truncated": False,
                             "inclusion_reason": "inspect fixture",
+                            "exclusion_reason": None,
                         },
                     },
                 ],

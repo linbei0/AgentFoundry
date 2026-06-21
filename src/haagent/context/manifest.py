@@ -12,15 +12,21 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ContextSourceBudget:
-    char_count: int
+    raw_char_count: int
+    model_input_char_count: int
     included_in_model_input: bool
+    truncated: bool
     inclusion_reason: str
+    exclusion_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "char_count": self.char_count,
+            "raw_char_count": self.raw_char_count,
+            "model_input_char_count": self.model_input_char_count,
             "included_in_model_input": self.included_in_model_input,
+            "truncated": self.truncated,
             "inclusion_reason": self.inclusion_reason,
+            "exclusion_reason": self.exclusion_reason,
         }
 
 
