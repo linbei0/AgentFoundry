@@ -6,4 +6,4 @@ app.py - edit smoke 示例模块
 
 
 def add(a, b):
-    return a + b
+    return a - b

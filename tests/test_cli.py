@@ -1310,6 +1310,72 @@ def test_cli_inspect_new_episode_missing_required_file_uses_validator(tmp_path: 
     assert "episode package missing required file: environment.json" in output
 
 
+def test_cli_inspect_failed_episode_before_verifying_allows_missing_verification_commands(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Fail before verification
+constraints: []
+allowed_tools:
+  - file_read
+acceptance_criteria: []
+verification_commands:
+  - python -c "print('not reached')"
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=OneShotGateway(),
+    ).run(task_path)
+
+    commands_path = result.episode_path / "verification" / "commands.jsonl"
+    assert result.status is RunStatus.FAILED
+    assert not commands_path.exists()
+
+    exit_code = cli.main(["inspect", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Verification" in output
+    assert "- not reached" in output
+    assert "Tool Calls" in output
+    assert "file_read: error" in output
+    assert "Final Response" in output
+    assert "provider=one-shot turn=1 tool_call_count=1" in output
+    assert "Failure Attribution" in output
+    assert "missing required argument: path" in output
+
+
+def test_cli_inspect_completed_episode_missing_verification_commands_still_fails(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Completed package must stay strict
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    (result.episode_path / "verification" / "commands.jsonl").unlink()
+
+    exit_code = cli.main(["inspect", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "episode package missing required file: verification/commands.jsonl" in output
+
+
 def test_cli_export_eval_outputs_valid_json_for_episode(tmp_path: Path, capsys) -> None:
     task_path = tmp_path / "task.yaml"
     task_path.write_text(
@@ -1735,7 +1801,7 @@ def test_cli_inspect_new_episode_uses_package_view(tmp_path: Path, monkeypatch, 
     def fail_if_jsonl_is_read(path: Path):
         raise AssertionError(f"unexpected JSONL read: {path}")
 
-    monkeypatch.setattr(cli, "load_validated_episode_package", lambda path: package_view)
+    monkeypatch.setattr(cli, "load_inspect_episode_package", lambda path: package_view)
     monkeypatch.setattr(cli, "_read_jsonl", fail_if_jsonl_is_read)
 
     exit_code = cli.main(["inspect", str(episode_path)])

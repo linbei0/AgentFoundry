@@ -15,7 +15,7 @@ from typing import Any
 from agentfoundry.models.gateway import OpenAIChatCompletionsGateway, OpenAIResponsesGateway
 from agentfoundry.runtime.episode_validator import (
     EpisodeValidationError,
-    load_validated_episode_package,
+    load_inspect_episode_package,
     read_episode_metadata,
     read_failure_record,
 )
@@ -242,13 +242,14 @@ def render_episode_summary(episode_path: Path) -> str:
     try:
         episode_metadata, warnings = read_episode_metadata(episode_path)
         if episode_metadata is not None:
-            package_view = load_validated_episode_package(episode_path)
+            package_view = load_inspect_episode_package(episode_path)
             episode_metadata = package_view.episode_metadata
             context_manifest = package_view.context_manifest
             plan = package_view.plan
             transcript = package_view.transcript
             tool_calls = package_view.tool_calls
             verification = package_view.verification_commands
+            verification_reached = package_view.verification_reached
             failure_record = package_view.failure_record
             sandbox = _read_optional_json(episode_path / "sandbox.json")
         else:
@@ -258,6 +259,7 @@ def render_episode_summary(episode_path: Path) -> str:
             transcript = _read_jsonl(episode_path / "transcript.jsonl")
             tool_calls = _read_jsonl(episode_path / "tool-calls.jsonl")
             verification = _read_jsonl(episode_path / "verification" / "commands.jsonl")
+            verification_reached = True
             failure_record = read_failure_record(episode_path)
             sandbox = _read_optional_json(episode_path / "sandbox.json")
     except EpisodeValidationError as error:
@@ -311,7 +313,7 @@ def render_episode_summary(episode_path: Path) -> str:
     lines.extend(["", "Tool Argument Errors"])
     lines.extend(_format_tool_argument_errors(tool_calls))
     lines.extend(["", "Verification"])
-    lines.extend(_format_verification(verification))
+    lines.extend(_format_verification(verification, verification_reached))
     lines.extend(["", "Structured Failure"])
     lines.extend(_format_failure_record(failure_record))
     lines.extend(["", "Failure Attribution", failure_attribution])
@@ -519,7 +521,12 @@ def _format_tool_argument_errors(tool_calls: list[dict[str, Any]]) -> list[str]:
     return errors
 
 
-def _format_verification(commands: list[dict[str, Any]]) -> list[str]:
+def _format_verification(
+    commands: list[dict[str, Any]],
+    verification_reached: bool = True,
+) -> list[str]:
+    if not verification_reached:
+        return ["- not reached"]
     if not commands:
         return ["- none"]
     lines = []

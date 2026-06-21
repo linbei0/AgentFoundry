@@ -30,6 +30,7 @@ REQUIRED_PACKAGE_FILES = [
     "environment.json",
     "sandbox.json",
 ]
+VERIFICATION_COMMANDS_FILE = "verification/commands.jsonl"
 
 
 class EpisodeValidationError(RuntimeError):
@@ -46,6 +47,7 @@ class EpisodePackageView:
     verification_commands: list[dict[str, Any]]
     plan: dict[str, Any] = field(default_factory=dict)
     sandbox: dict[str, Any] = field(default_factory=dict)
+    verification_reached: bool = True
 
 
 def validate_episode_package(episode_path: Path) -> None:
@@ -58,9 +60,25 @@ def load_validated_episode_package(episode_path: Path) -> EpisodePackageView:
     return _read_validated_episode_package(episode_path)
 
 
-def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
+def load_inspect_episode_package(episode_path: Path) -> EpisodePackageView:
+    """读取 inspect 用 package view；允许 verifying 前失败的 episode 缺少 verification trace。"""
+    return _read_validated_episode_package(
+        episode_path,
+        allow_missing_pre_verification=True,
+    )
+
+
+def _read_validated_episode_package(
+    episode_path: Path,
+    allow_missing_pre_verification: bool = False,
+) -> EpisodePackageView:
     """读取、校验并组装 package view；保持 validate 入口只负责触发该流程。"""
-    for relative_path in REQUIRED_PACKAGE_FILES:
+    required_files = (
+        [path for path in REQUIRED_PACKAGE_FILES if path != VERIFICATION_COMMANDS_FILE]
+        if allow_missing_pre_verification
+        else REQUIRED_PACKAGE_FILES
+    )
+    for relative_path in required_files:
         path = episode_path / relative_path
         if not path.exists():
             raise EpisodeValidationError(f"episode package missing required file: {relative_path}")
@@ -74,13 +92,26 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
 
     transcript = _validate_jsonl_fields(episode_path / "transcript.jsonl", "transcript.jsonl", ["event"])
     tool_calls = _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
-    verification_commands = _validate_jsonl_fields(
-        episode_path / "verification" / "commands.jsonl",
-        "verification/commands.jsonl",
-        ["command", "status"],
-    )
     if episode_metadata is None or failure_record is None:
         raise EpisodeValidationError("episode package must contain v1 episode.json and failure.json")
+    verification_path = episode_path / VERIFICATION_COMMANDS_FILE
+    verification_reached = True
+    if verification_path.exists():
+        verification_commands = _validate_jsonl_fields(
+            verification_path,
+            VERIFICATION_COMMANDS_FILE,
+            ["command", "status"],
+        )
+    elif (
+        allow_missing_pre_verification
+        and _can_omit_verification_commands(episode_metadata, transcript)
+    ):
+        verification_commands = []
+        verification_reached = False
+    else:
+        raise EpisodeValidationError(
+            f"episode package missing required file: {VERIFICATION_COMMANDS_FILE}",
+        )
     _validate_environment(environment)
     _validate_sandbox(sandbox)
     _validate_plan(plan)
@@ -104,7 +135,22 @@ def _read_validated_episode_package(episode_path: Path) -> EpisodePackageView:
         tool_calls=tool_calls,
         verification_commands=verification_commands,
         sandbox=sandbox,
+        verification_reached=verification_reached,
     )
+
+
+def _can_omit_verification_commands(
+    episode_metadata: dict[str, Any],
+    transcript: list[dict[str, Any]],
+) -> bool:
+    if episode_metadata.get("status") != RunStatus.FAILED.value:
+        return False
+    states = [
+        record.get("status")
+        for record in transcript
+        if record.get("event") == "state_transition"
+    ]
+    return RunStatus.VERIFYING.value not in states
 
 
 def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any] | None, list[str]]:
