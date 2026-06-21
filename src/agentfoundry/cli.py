@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         help="OpenAI-compatible Responses API base URL; only used when --provider openai",
     )
+    run_parser.add_argument(
+        "--max-turns",
+        type=_positive_int,
+        default=3,
+        help="maximum model/tool turns before failing the run (default: 3)",
+    )
 
     inspect_parser = subparsers.add_parser("inspect", help="inspect an episode package")
     inspect_parser.add_argument("episode_path", type=Path, help="path to an episode directory")
@@ -94,9 +100,13 @@ def main(argv: list[str] | None = None) -> int:
             result = RunOrchestrator(
                 runs_root=args.runs_root,
                 model_gateway=model_gateway,
+                max_turns=args.max_turns,
             ).run(args.task_yaml)
         else:
-            result = RunOrchestrator(runs_root=args.runs_root).run(args.task_yaml)
+            result = RunOrchestrator(
+                runs_root=args.runs_root,
+                max_turns=args.max_turns,
+            ).run(args.task_yaml)
         print(f"status={result.status.value}")
         print(f"episode_path={result.episode_path}")
         return 0 if result.status.value == "completed" else 1
@@ -114,6 +124,13 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("--max-turns must be a positive integer")
+    return parsed
 
 
 class EpisodeInspectError(RuntimeError):

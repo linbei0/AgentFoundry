@@ -1,0 +1,27 @@
+goal: Read app.py, fix the add function, run verification, and explain the edit and verification result.
+workspace_root: ../workspaces/edit_smoke
+constraints:
+  - This task is for manual OpenAI-compatible chat provider edit-and-verify smoke testing.
+  - First read app.py with file_read.
+  - Fix add(a, b) so it returns the sum of a and b.
+  - Use apply_patch for the edit.
+  - Run the verification command after editing.
+  - Final answer must summarize the code change and verification result.
+allowed_tools:
+  - file_read
+  - apply_patch
+  - shell
+acceptance_criteria:
+  - Run reaches completed state.
+  - The episode records file_read, apply_patch, and shell tool success.
+  - Verification command passes locally.
+  - Final model response explains the modification and verification result.
+verification_commands:
+  - uv run pytest test_app.py -q
+policy:
+  approval_allowed_tools:
+    - apply_patch
+    - shell
+  approved_tools:
+    - apply_patch
+    - shell

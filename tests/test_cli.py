@@ -8,6 +8,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from agentfoundry import cli
 from agentfoundry.models.gateway import ModelResponse, ToolCall
 from agentfoundry.runtime.episode_validator import EpisodePackageView
@@ -135,7 +137,7 @@ def test_cli_run_uses_default_runs_root_and_prints_result(
     calls = {}
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path) -> None:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
             calls["runs_root"] = runs_root
 
         def run(self, received_task_path: Path) -> FakeResult:
@@ -154,6 +156,60 @@ def test_cli_run_uses_default_runs_root_and_prints_result(
     assert f"episode_path={tmp_path / '.runs' / 'episode-1'}" in output
 
 
+def test_cli_run_uses_default_max_turns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: x\n", encoding="utf-8")
+    calls = {}
+
+    class FakeOrchestrator:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
+            calls["runs_root"] = runs_root
+            calls["max_turns"] = max_turns
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            calls["task_path"] = received_task_path
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(["run", str(task_path)])
+
+    assert exit_code == 0
+    assert calls == {
+        "runs_root": Path(".runs"),
+        "max_turns": 3,
+        "task_path": task_path,
+    }
+
+
+def test_cli_run_passes_custom_max_turns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: x\n", encoding="utf-8")
+    calls = {}
+
+    class FakeOrchestrator:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
+            calls["runs_root"] = runs_root
+            calls["max_turns"] = max_turns
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            calls["task_path"] = received_task_path
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(["run", str(task_path), "--max-turns", "12"])
+
+    assert exit_code == 0
+    assert calls["max_turns"] == 12
+
+
 def test_cli_run_accepts_custom_runs_root(tmp_path: Path, monkeypatch) -> None:
     task_path = tmp_path / "task.yaml"
     task_path.write_text("goal: x\n", encoding="utf-8")
@@ -161,7 +217,7 @@ def test_cli_run_accepts_custom_runs_root(tmp_path: Path, monkeypatch) -> None:
     calls = {}
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path) -> None:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
             calls["runs_root"] = runs_root
 
         def run(self, received_task_path: Path) -> FakeResult:
@@ -185,7 +241,7 @@ def test_cli_run_explicit_fake_provider_keeps_default_gateway_path(
     calls = {}
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path) -> None:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
             calls["runs_root"] = runs_root
 
         def run(self, received_task_path: Path) -> FakeResult:
@@ -209,7 +265,7 @@ def test_cli_run_fake_provider_ignores_base_url(
     calls = {}
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path) -> None:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
             calls["runs_root"] = runs_root
 
         def run(self, received_task_path: Path) -> FakeResult:
@@ -248,7 +304,12 @@ def test_cli_run_openai_provider_passes_gateway_to_orchestrator(
             calls["model"] = model
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path, model_gateway=None) -> None:
+        def __init__(
+            self,
+            runs_root: Path,
+            model_gateway=None,
+            max_turns: int = 3,
+        ) -> None:
             calls["runs_root"] = runs_root
             calls["model_gateway"] = model_gateway
 
@@ -290,7 +351,12 @@ def test_cli_run_openai_provider_passes_base_url_to_gateway(
             calls["base_url"] = base_url
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path, model_gateway=None) -> None:
+        def __init__(
+            self,
+            runs_root: Path,
+            model_gateway=None,
+            max_turns: int = 3,
+        ) -> None:
             calls["runs_root"] = runs_root
             calls["model_gateway"] = model_gateway
 
@@ -340,7 +406,12 @@ def test_cli_run_base_url_argument_takes_priority_over_environment(
             calls["base_url"] = base_url
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path, model_gateway=None) -> None:
+        def __init__(
+            self,
+            runs_root: Path,
+            model_gateway=None,
+            max_turns: int = 3,
+        ) -> None:
             calls["model_gateway"] = model_gateway
 
         def run(self, received_task_path: Path) -> FakeResult:
@@ -384,7 +455,12 @@ def test_cli_run_openai_chat_provider_passes_gateway_to_orchestrator(
             calls["base_url"] = base_url
 
     class FakeOrchestrator:
-        def __init__(self, runs_root: Path, model_gateway=None) -> None:
+        def __init__(
+            self,
+            runs_root: Path,
+            model_gateway=None,
+            max_turns: int = 3,
+        ) -> None:
             calls["runs_root"] = runs_root
             calls["model_gateway"] = model_gateway
 
@@ -414,6 +490,66 @@ def test_cli_run_openai_chat_provider_passes_gateway_to_orchestrator(
     assert calls["model"] == "deepseek-chat"
     assert calls["base_url"] == "https://api.deepseek.com/v1"
     assert isinstance(calls["model_gateway"], FakeOpenAIChatGateway)
+
+
+def test_cli_run_openai_chat_provider_passes_custom_max_turns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: x\n", encoding="utf-8")
+    calls = {}
+
+    class FakeOpenAIChatGateway:
+        provider_name = "openai-chat"
+
+        def __init__(self, model: str = "gpt-4.1-mini") -> None:
+            calls["model"] = model
+
+    class FakeOrchestrator:
+        def __init__(
+            self,
+            runs_root: Path,
+            model_gateway=None,
+            max_turns: int = 3,
+        ) -> None:
+            calls["runs_root"] = runs_root
+            calls["model_gateway"] = model_gateway
+            calls["max_turns"] = max_turns
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            calls["task_path"] = received_task_path
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FakeOpenAIChatGateway)
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(
+        [
+            "run",
+            str(task_path),
+            "--provider",
+            "openai-chat",
+            "--model",
+            "deepseek-chat",
+            "--max-turns",
+            "12",
+        ],
+    )
+
+    assert exit_code == 0
+    assert calls["model"] == "deepseek-chat"
+    assert calls["max_turns"] == 12
+    assert isinstance(calls["model_gateway"], FakeOpenAIChatGateway)
+
+
+def test_cli_run_rejects_non_positive_max_turns(capsys) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["run", "task.yaml", "--max-turns", "0"])
+
+    output = capsys.readouterr().err
+    assert error.value.code == 2
+    assert "--max-turns must be a positive integer" in output
 
 
 def test_cli_run_openai_missing_api_key_fails_without_network(

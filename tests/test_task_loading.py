@@ -277,3 +277,19 @@ def test_openai_chat_file_read_smoke_task_loads_with_existing_workspace() -> Non
     assert (workspace_root / "notes.txt").read_text(encoding="utf-8").strip() == (
         "AgentFoundry file_read smoke phrase: harness reads workspace notes."
     )
+
+
+def test_openai_chat_edit_smoke_task_loads_with_existing_workspace_and_verification() -> None:
+    task_path = Path("examples/tasks/openai_chat_edit_smoke.yaml")
+    task = load_task(task_path)
+    workspace_root = resolve_workspace_root(task, task_path)
+
+    assert task.workspace_root == "../workspaces/edit_smoke"
+    assert task.allowed_tools == ["file_read", "apply_patch", "shell"]
+    assert task.verification_commands
+    assert task.policy == {
+        "approval_allowed_tools": ["apply_patch", "shell"],
+        "approved_tools": ["apply_patch", "shell"],
+    }
+    assert workspace_root.is_dir()
+    assert "return a - b" in (workspace_root / "app.py").read_text(encoding="utf-8")
