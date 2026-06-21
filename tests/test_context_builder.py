@@ -416,6 +416,12 @@ def test_context_builder_model_input_contains_observation_summary(tmp_path: Path
 def test_context_builder_compacts_long_file_read_observation(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     long_content = "\n".join([f"line-{index:03d}-" + ("x" * 20) for index in range(80)])
+    ContextBuilder(
+        task=make_task(),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
     builder = ContextBuilder(
         task=make_task(),
         workspace_root=tmp_path,
@@ -438,8 +444,8 @@ def test_context_builder_compacts_long_file_read_observation(tmp_path: Path) -> 
 
     builder.build()
 
-    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
-    context_manifest = json.loads((writer.path / "contexts" / "0001.json").read_text(encoding="utf-8"))
+    model_input = (writer.path / "contexts" / "0002.txt").read_text(encoding="utf-8")
+    context_manifest = json.loads((writer.path / "contexts" / "0002.json").read_text(encoding="utf-8"))
     observation_line = _single_observation_line(model_input)
     observation_source = _single_observation_source(context_manifest)
     assert '"path": "big.txt"' in observation_line
@@ -455,10 +461,60 @@ def test_context_builder_compacts_long_file_read_observation(tmp_path: Path) -> 
     assert observation_source["budget"]["raw_char_count"] > len(observation_line)
 
 
+def test_context_builder_compacts_long_file_search_observation(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    matches = [
+        {
+            "path": str(tmp_path / "notes.txt"),
+            "line": index + 1,
+            "column": 1,
+            "text": f"needle match {index:03d} " + ("m" * 40),
+        }
+        for index in range(30)
+    ]
+    ContextBuilder(
+        task=make_task(["file_search"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
+    builder = ContextBuilder(
+        task=make_task(["file_search"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "file_search",
+                "args": {"query": "needle", "root": "."},
+                "result": {"status": "success", "matches": matches},
+            },
+        ],
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0002.txt").read_text(encoding="utf-8")
+    observation_line = _single_observation_line(model_input)
+    assert '"query": "needle"' in observation_line
+    assert '"match_count": 30' in observation_line
+    assert '"excerpt":' in observation_line
+    assert '"truncated": true' in observation_line
+    assert "needle match 000" in observation_line
+    assert "needle match 029" not in model_input
+    assert json.dumps(matches, ensure_ascii=False) not in model_input
+
+
 def test_context_builder_compacts_long_shell_observation(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     stdout = "stdout-start-" + ("o" * 600) + "-stdout-end"
     stderr = "stderr-start-" + ("e" * 600) + "-stderr-end"
+    ContextBuilder(
+        task=make_task(["shell"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
     builder = ContextBuilder(
         task=make_task(["shell"]),
         workspace_root=tmp_path,
@@ -480,7 +536,7 @@ def test_context_builder_compacts_long_shell_observation(tmp_path: Path) -> None
 
     builder.build()
 
-    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    model_input = (writer.path / "contexts" / "0002.txt").read_text(encoding="utf-8")
     observation_line = _single_observation_line(model_input)
     assert '"command": "pytest -q"' in observation_line
     assert '"cwd": "src"' in observation_line
