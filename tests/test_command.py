@@ -6,7 +6,7 @@ tests/test_command.py - CommandRunner 测试
 
 from pathlib import Path
 
-from agentfoundry.runtime.command import run_command
+from haagent.runtime.command import run_command
 
 
 def test_run_command_records_success(tmp_path: Path) -> None:

@@ -4,8 +4,8 @@ tests/test_policy.py - Policy Engine 行为测试
 验证工具风险等级会映射为稳定的 allow/deny 决策。
 """
 
-from agentfoundry.runtime.policy import evaluate_tool_call
-from agentfoundry.tools.registry import ToolDefinition
+from haagent.runtime.policy import evaluate_tool_call
+from haagent.tools.registry import ToolDefinition
 
 
 def make_tool(risk_level: str) -> ToolDefinition:

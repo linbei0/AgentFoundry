@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from agentfoundry.models.gateway import ModelResponse, ToolCall
-from agentfoundry.runtime.episode_validator import (
+from haagent.models.gateway import ModelResponse, ToolCall
+from haagent.runtime.episode_validator import (
     EpisodeValidationError,
     EpisodePackageView,
     load_validated_episode_package,
@@ -18,8 +18,8 @@ from agentfoundry.runtime.episode_validator import (
     read_failure_record,
     validate_episode_package,
 )
-from agentfoundry.runtime.orchestrator import RunOrchestrator
-from agentfoundry.runtime.state import RunStatus
+from haagent.runtime.orchestrator import RunOrchestrator
+from haagent.runtime.state import RunStatus
 
 
 def valid_episode_json(tmp_path: Path, status: str = "completed") -> dict[str, object]:

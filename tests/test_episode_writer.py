@@ -6,7 +6,7 @@ tests/test_episode_writer.py - EpisodeWriter 文件产物测试
 
 from pathlib import Path
 
-from agentfoundry.runtime.episode import EpisodeWriter
+from haagent.runtime.episode import EpisodeWriter
 
 
 def test_episode_writer_creates_required_files(tmp_path: Path) -> None:

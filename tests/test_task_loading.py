@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agentfoundry.runtime.task_contract import (
+from haagent.runtime.task_contract import (
     TaskLoadError,
     TaskSpec,
     load_task,
@@ -275,7 +275,7 @@ def test_openai_chat_file_read_smoke_task_loads_with_existing_workspace() -> Non
     assert task.verification_commands == []
     assert workspace_root.is_dir()
     assert (workspace_root / "notes.txt").read_text(encoding="utf-8").strip() == (
-        "AgentFoundry file_read smoke phrase: harness reads workspace notes."
+        "HaAgent file_read smoke phrase: harness reads workspace notes."
     )
 
 

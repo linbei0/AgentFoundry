@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from agentfoundry.models.fake import FakeModelGateway
-from agentfoundry.models.gateway import (
+from haagent.models.fake import FakeModelGateway
+from haagent.models.gateway import (
     DEFAULT_CHAT_COMPLETIONS_ENDPOINT,
     DEFAULT_RESPONSES_ENDPOINT,
     ModelCallError,
@@ -19,8 +19,8 @@ from agentfoundry.models.gateway import (
     OpenAIResponsesGateway,
     ToolCall,
 )
-from agentfoundry.runtime.episode import EpisodeWriter
-from agentfoundry.runtime.task_contract import TaskSpec
+from haagent.runtime.episode import EpisodeWriter
+from haagent.runtime.task_contract import TaskSpec
 
 
 def make_task() -> TaskSpec:
@@ -480,7 +480,7 @@ def test_openai_gateway_failure_is_explicit() -> None:
 
 
 def test_model_call_is_written_to_transcript_by_orchestrator(tmp_path: Path) -> None:
-    from agentfoundry.runtime.orchestrator import RunOrchestrator
+    from haagent.runtime.orchestrator import RunOrchestrator
 
     task_path = tmp_path / "task.yaml"
     task_path.write_text(

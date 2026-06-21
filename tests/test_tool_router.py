@@ -7,9 +7,9 @@ tests/test_tool_router.py - ToolRouter 本地工具行为测试
 import json
 from pathlib import Path
 
-from agentfoundry.runtime.episode import EpisodeWriter
-from agentfoundry.tools.registry import TOOL_REGISTRY
-from agentfoundry.tools.router import ToolRouter
+from haagent.runtime.episode import EpisodeWriter
+from haagent.tools.registry import TOOL_REGISTRY
+from haagent.tools.router import ToolRouter
 
 
 def make_writer(tmp_path: Path) -> EpisodeWriter:

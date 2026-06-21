@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from agentfoundry.context.builder import ContextBuildError, ContextBuilder
-from agentfoundry.runtime.episode import EpisodeWriter
-from agentfoundry.runtime.plan import build_plan
-from agentfoundry.runtime.task_contract import TaskSpec
+from haagent.context.builder import ContextBuildError, ContextBuilder
+from haagent.runtime.episode import EpisodeWriter
+from haagent.runtime.plan import build_plan
+from haagent.runtime.task_contract import TaskSpec
 
 
 def make_task(allowed_tools: list[str] | None = None) -> TaskSpec:

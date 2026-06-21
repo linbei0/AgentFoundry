@@ -6,7 +6,7 @@ tests/test_tool_registry.py - Tool Registry v1 测试
 
 import pytest
 
-from agentfoundry.tools.registry import (
+from haagent.tools.registry import (
     TOOL_REGISTRY,
     ToolDefinition,
     allowed_tool_definitions,

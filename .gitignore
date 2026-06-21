@@ -14,7 +14,7 @@ build/
 dist/
 *.egg-info/
 
-# AgentFoundry runtime output
+# HaAgent runtime output
 .runs/
 .smoke-runs/
 

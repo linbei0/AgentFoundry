@@ -1,5 +1,5 @@
 """
-tests/test_cli.py - AgentFoundry CLI 测试
+tests/test_cli.py - HaAgent CLI 测试
 
 验证 run/inspect 子命令参数解析、runs-root 传递和 stdout 输出。
 """
@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from agentfoundry import cli
-from agentfoundry.models.gateway import ModelResponse, ToolCall
-from agentfoundry.runtime.episode_validator import EpisodePackageView
-from agentfoundry.runtime.orchestrator import RunOrchestrator
-from agentfoundry.runtime.state import RunStatus
+from haagent import cli
+from haagent.models.gateway import ModelResponse, ToolCall
+from haagent.runtime.episode_validator import EpisodePackageView
+from haagent.runtime.orchestrator import RunOrchestrator
+from haagent.runtime.state import RunStatus
 
 
 class FakeResult:
@@ -1101,7 +1101,7 @@ policy:
     def approved_shell(args, workspace_root):
         return {"status": "success", "stdout": "ok\n", "stderr": ""}
 
-    monkeypatch.setattr("agentfoundry.tools.router.shell", approved_shell)
+    monkeypatch.setattr("haagent.tools.router.shell", approved_shell)
     result = RunOrchestrator(
         runs_root=tmp_path / ".runs",
         model_gateway=ShellOnceGateway(),

@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from agentfoundry.models.gateway import ModelResponse, ToolCall
-from agentfoundry.runtime import eval_export
-from agentfoundry.runtime.episode_validator import EpisodePackageView, EpisodeValidationError
-from agentfoundry.runtime.eval_export import EVAL_CASE_VERSION, export_eval_case
-from agentfoundry.runtime.orchestrator import RunOrchestrator
-from agentfoundry.runtime.state import RunStatus
+from haagent.models.gateway import ModelResponse, ToolCall
+from haagent.runtime import eval_export
+from haagent.runtime.episode_validator import EpisodePackageView, EpisodeValidationError
+from haagent.runtime.eval_export import EVAL_CASE_VERSION, export_eval_case
+from haagent.runtime.orchestrator import RunOrchestrator
+from haagent.runtime.state import RunStatus
 
 
 class BadArgsGateway:
@@ -253,7 +253,7 @@ policy:
     def approved_shell(args, workspace_root):
         return {"status": "success", "stdout": "ok\n", "stderr": ""}
 
-    monkeypatch.setattr("agentfoundry.tools.router.shell", approved_shell)
+    monkeypatch.setattr("haagent.tools.router.shell", approved_shell)
     result = RunOrchestrator(
         runs_root=tmp_path / ".runs",
         model_gateway=ShellOnceGateway(),

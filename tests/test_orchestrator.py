@@ -7,13 +7,13 @@ tests/test_orchestrator.py - RunOrchestrator 状态流转测试
 import json
 from pathlib import Path
 
-from agentfoundry.models.gateway import ModelCallError
-from agentfoundry.models.gateway import ModelResponse, ToolCall
-from agentfoundry.models.gateway import OpenAIChatCompletionsGateway
-from agentfoundry.models.gateway import OpenAIResponsesGateway
-from agentfoundry.runtime.orchestrator import RunOrchestrator
-from agentfoundry.runtime.state import RunStatus
-from agentfoundry.verification.engine import VerificationResult
+from haagent.models.gateway import ModelCallError
+from haagent.models.gateway import ModelResponse, ToolCall
+from haagent.models.gateway import OpenAIChatCompletionsGateway
+from haagent.models.gateway import OpenAIResponsesGateway
+from haagent.runtime.orchestrator import RunOrchestrator
+from haagent.runtime.state import RunStatus
+from haagent.verification.engine import VerificationResult
 
 
 class FailingGateway:
@@ -431,7 +431,7 @@ policy:
     def approved_shell(args, workspace_root):
         return {"status": "success", "stdout": "approved\n", "stderr": "", "args": args}
 
-    monkeypatch.setattr("agentfoundry.tools.router.shell", approved_shell)
+    monkeypatch.setattr("haagent.tools.router.shell", approved_shell)
 
     result = RunOrchestrator(runs_root=runs_dir, model_gateway=gateway).run(task_path)
 
@@ -676,7 +676,7 @@ def test_orchestrator_failure_attribution_includes_verification_timeout(
             )
 
     monkeypatch.setattr(
-        "agentfoundry.runtime.orchestrator.VerificationEngine",
+        "haagent.runtime.orchestrator.VerificationEngine",
         TimeoutVerificationEngine,
     )
 
@@ -836,7 +836,7 @@ def test_orchestrator_passes_model_input_and_tool_schemas_to_gateway(tmp_path: P
 
     assert result.status is RunStatus.COMPLETED
     assert gateway.model_inputs_seen[0] is not None
-    assert "AgentFoundry Context v1" in gateway.model_inputs_seen[0]
+    assert "HaAgent Context v1" in gateway.model_inputs_seen[0]
     assert [schema["name"] for schema in gateway.tool_schemas_seen[0]] == [
         "fake_tool",
         "file_read",

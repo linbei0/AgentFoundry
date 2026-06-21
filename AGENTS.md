@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-AgentFoundry is a harness-first Agent Runtime MVP written in Python.
+HaAgent is a harness-first Agent Runtime MVP written in Python.
 The current runtime loads `task.yaml`, runs a small orchestrator state machine, routes local tools, records model/tool traces, and writes episode packages.
 
 ## Setup Commands
@@ -14,7 +14,7 @@ The current runtime loads `task.yaml`, runs a small orchestrator state machine, 
 ## Development Workflow
 
 - Use `uv` for virtual environment and dependency management.
-- Keep the package in `src/agentfoundry`.
+- Keep the package in `src/haagent`.
 - Keep tests in `tests`.
 - Prefer `apply_patch` for file edits to avoid PowerShell encoding issues.
 - Do not add UI, browser automation, multi-agent behavior, or long-term memory unless explicitly requested.
@@ -34,7 +34,7 @@ The current runtime loads `task.yaml`, runs a small orchestrator state machine, 
   """
   path/to/file.py - 简短职责说明
 
-  说明该文件在 AgentFoundry 中负责什么。
+  说明该文件在 HaAgent 中负责什么。
   """
   ```
 

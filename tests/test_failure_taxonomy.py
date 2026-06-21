@@ -4,7 +4,7 @@ tests/test_failure_taxonomy.py - Failure Taxonomy 测试
 验证当前 run failure category 集中定义且覆盖 MVP 分类。
 """
 
-from agentfoundry.runtime.failure import FailureCategory
+from haagent.runtime.failure import FailureCategory
 
 
 def test_failure_taxonomy_contains_current_categories() -> None:

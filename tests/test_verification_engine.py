@@ -7,8 +7,8 @@ tests/test_verification_engine.py - VerificationEngine 验证命令测试
 import json
 from pathlib import Path
 
-from agentfoundry.runtime.episode import EpisodeWriter
-from agentfoundry.verification.engine import EXCERPT_LIMIT, VerificationEngine
+from haagent.runtime.episode import EpisodeWriter
+from haagent.verification.engine import EXCERPT_LIMIT, VerificationEngine
 
 
 def make_writer(tmp_path: Path) -> EpisodeWriter:
