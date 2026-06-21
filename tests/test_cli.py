@@ -188,6 +188,43 @@ def test_cli_run_uses_default_runs_root_and_prints_result(
     assert f"episode_path={tmp_path / '.runs' / 'episode-1'}" in output
 
 
+def test_cli_run_success_outputs_provider_and_final_response_excerpt(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Run fake summary smoke
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria:
+  - Fake model finishes.
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "run",
+            str(task_path),
+            "--provider",
+            "fake",
+            "--runs-root",
+            str(tmp_path / ".runs"),
+        ],
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "status=completed" in output
+    assert "episode_path=" in output
+    assert "provider=fake" in output
+    assert "final_response=Fake model observed tool results." in output
+
+
 def test_cli_run_uses_default_max_turns(
     tmp_path: Path,
     monkeypatch,
@@ -847,6 +884,10 @@ verification_commands: []
     failure_text = (episode_path / "failure.json").read_text(encoding="utf-8")
     assert exit_code == 1
     assert "status=failed" in output
+    assert "provider=openai" in output
+    assert "failed_stage=planning" in output
+    assert "failure_category=Model Failure" in output
+    assert "reason=OPENAI_API_KEY is required for OpenAIResponsesGateway" in output
     assert "OPENAI_API_KEY is required for OpenAIResponsesGateway" in failure_text
 
 

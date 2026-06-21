@@ -104,8 +104,7 @@ def main(argv: list[str] | None = None) -> int:
                 runs_root=args.runs_root,
                 max_turns=args.max_turns,
             ).run(args.task_yaml)
-        print(f"status={result.status.value}")
-        print(f"episode_path={result.episode_path}")
+        _print_run_summary(result)
         return 0 if result.status.value == "completed" else 1
 
     if args.command == "inspect":
@@ -157,6 +156,43 @@ def _gateway_from_profile(profile: ProviderProfile):
     if profile.provider == "openai-chat":
         return OpenAIChatCompletionsGateway(**gateway_kwargs)
     raise ProviderProfileError(f"unsupported provider in profile: {profile.provider}")
+
+
+def _print_run_summary(result) -> None:
+    """输出短 run 摘要；完整复盘仍交给 inspect。"""
+    print(f"status={result.status.value}")
+    print(f"episode_path={result.episode_path}")
+    try:
+        package_view = load_inspect_episode_package(result.episode_path)
+    except EpisodeValidationError as error:
+        print(f"summary_error={_summary_value(str(error))}")
+        return
+
+    print(f"provider={_summary_provider(package_view.episode_metadata)}")
+    if result.status.value == "completed":
+        print(f"final_response={_summary_value(_run_final_response(package_view.transcript))}")
+        return
+
+    failure = package_view.failure_record.get("failure")
+    if not isinstance(failure, dict):
+        failure = {}
+    print(f"failed_stage={_summary_value(str(failure.get('stage', 'unknown')))}")
+    print(f"failure_category={_summary_value(str(failure.get('category', 'unknown')))}")
+    print(f"reason={_summary_value(str(failure.get('evidence', '')))}")
+
+
+def _run_final_response(transcript: list[dict[str, Any]]) -> str:
+    response = _last_model_response(transcript)
+    if response is None:
+        return "none"
+    return str(response.get("content", ""))
+
+
+def _summary_value(value: str, limit: int = 300) -> str:
+    normalized = " ".join(value.split())
+    if not normalized:
+        normalized = "none"
+    return _excerpt(normalized, limit)
 
 
 def _positive_int(value: str) -> int:
