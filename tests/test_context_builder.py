@@ -582,7 +582,8 @@ def test_context_builder_compacts_apply_patch_observation(tmp_path: Path) -> Non
     assert '"status": "success"' in observation_line
     assert '"old_text_length": 9' in observation_line
     assert '"new_text_length": 26' in observation_line
-    assert "new value with more detail" not in model_input
+    assert '"old_text_excerpt": "old value"' in observation_line
+    assert '"new_text_excerpt": "new value with more detail"' in observation_line
 
 
 def test_tool_call_trace_keeps_full_result_when_context_compacts_observation(

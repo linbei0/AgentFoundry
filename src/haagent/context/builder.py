@@ -53,12 +53,14 @@ class ContextBuilder:
         provider_name: str,
         episode_writer: EpisodeWriter,
         observations: list[dict[str, object]] | None = None,
+        final_response_requested: bool = False,
     ) -> None:
         self._task = task
         self._workspace_root = workspace_root
         self._provider_name = provider_name
         self._episode_writer = episode_writer
         self._observations = list(observations or [])
+        self._final_response_requested = final_response_requested
         self._project_instructions: str | None = None
         self._plan: dict[str, object] | None = None
 
@@ -291,6 +293,16 @@ class ContextBuilder:
             }
         observation_index = len(self._observations) - 1
         latest_observation = self._observations[observation_index]
+        if self._final_response_requested:
+            return {
+                "status": "continue",
+                "reason": (
+                    "Declared verification commands have passed through tool execution. "
+                    "Produce the final answer now; do not call tools again."
+                ),
+                "based_on_observation_index": observation_index,
+                "based_on_tool_name": observation_tool_name(latest_observation),
+            }
         latest_result = self._observations[-1].get("result", {})
         status = latest_result.get("status") if isinstance(latest_result, dict) else None
         if status == "success":

@@ -85,7 +85,10 @@ class RunOrchestrator:
                 approved_tools=task.policy["approved_tools"],
             )
             observations: list[dict[str, object]] = []
+            completion_observations: list[dict[str, object]] = []
             has_entered_executing = False
+            passed_verification_commands: set[str] = set()
+            final_response_requested = False
             for turn in range(1, self._max_turns + 1):
                 context = ContextBuilder(
                     task=task,
@@ -93,8 +96,9 @@ class RunOrchestrator:
                     provider_name=self._model_gateway.provider_name,
                     episode_writer=writer,
                     observations=observations,
+                    final_response_requested=final_response_requested,
                 ).build()
-                tool_schemas = export_tool_schemas(task.allowed_tools)
+                tool_schemas = [] if final_response_requested else export_tool_schemas(task.allowed_tools)
                 # 每一轮模型调用都绑定独立 context_id，便于复盘工具观察如何进入下一轮。
                 writer.append_transcript(
                     {
@@ -124,6 +128,17 @@ class RunOrchestrator:
                     },
                 )
 
+                if final_response_requested and model_response.tool_calls:
+                    transition(RunStatus.FAILED)
+                    writer.write_failure_attribution(
+                        {
+                            "stage": "executing",
+                            "category": FailureCategory.MODEL.value,
+                            "evidence": "model returned tool calls during final response turn",
+                        },
+                    )
+                    return _finish_run(writer, RunStatus.FAILED, state_history)
+
                 if not model_response.tool_calls:
                     break
 
@@ -142,6 +157,10 @@ class RunOrchestrator:
                         "result": tool_result,
                     }
                     observations.append(observation)
+                    if tool_call.name == "apply_patch":
+                        completion_observations = [observation]
+                    else:
+                        completion_observations.append(observation)
                     writer.append_transcript(
                         {
                             "event": "tool_observation",
@@ -149,6 +168,19 @@ class RunOrchestrator:
                             **observation,
                         },
                     )
+                    _update_in_band_verification_progress(
+                        tool_call.name,
+                        tool_call.args,
+                        tool_result,
+                        task.verification_commands,
+                        passed_verification_commands,
+                    )
+                if _all_declared_verification_commands_passed(
+                    task.verification_commands,
+                    passed_verification_commands,
+                ):
+                    observations = list(completion_observations)
+                    final_response_requested = True
             else:
                 transition(RunStatus.FAILED)
                 writer.write_failure_attribution(
@@ -244,6 +276,34 @@ def _verification_evidence(verification_result) -> str:
     if verification_result.stderr_excerpt:
         lines.append(f"stderr: {verification_result.stderr_excerpt}")
     return "\n".join(lines)
+
+
+def _update_in_band_verification_progress(
+    tool_name: str,
+    tool_args: dict[str, object],
+    tool_result: dict[str, object],
+    verification_commands: list[str],
+    passed_verification_commands: set[str],
+) -> None:
+    # 修改文件后，之前通过的验证不再证明当前工作区状态。
+    if tool_name == "apply_patch":
+        passed_verification_commands.clear()
+        return
+    if tool_name != "shell":
+        return
+    command = tool_args.get("command")
+    if not isinstance(command, str) or command not in verification_commands:
+        return
+    if tool_result.get("status") == "success" and tool_result.get("exit_code") == 0:
+        passed_verification_commands.add(command)
+
+
+def _all_declared_verification_commands_passed(
+    verification_commands: list[str],
+    passed_verification_commands: set[str],
+) -> bool:
+    expected_commands = set(verification_commands)
+    return bool(expected_commands) and expected_commands.issubset(passed_verification_commands)
 
 
 def _finish_run(

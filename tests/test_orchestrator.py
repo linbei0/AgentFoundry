@@ -50,6 +50,42 @@ class SequenceGateway:
         return self._responses.pop(0)
 
 
+class ToolHungryGateway:
+    provider_name = "tool-hungry"
+
+    def __init__(self, verification_command: str) -> None:
+        self._verification_command = verification_command
+        self.tool_schemas_seen = []
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        self.tool_schemas_seen.append(list(tool_schemas))
+        if len(self.tool_schemas_seen) == 1:
+            return ModelResponse(
+                "fix add",
+                [
+                    ToolCall(
+                        "apply_patch",
+                        {
+                            "path": "app.py",
+                            "old_text": "return a - b",
+                            "new_text": "return a + b",
+                        },
+                    ),
+                ],
+            )
+        if len(self.tool_schemas_seen) == 2:
+            return ModelResponse(
+                "run declared verification",
+                [ToolCall("shell", {"command": self._verification_command, "cwd": "."})],
+            )
+        if tool_schemas:
+            return ModelResponse(
+                "tools are still available, so I will keep checking",
+                [ToolCall("shell", {"command": self._verification_command, "cwd": "."})],
+            )
+        return ModelResponse("Changed add to return a + b and verification passed.", [])
+
+
 def write_task(
     path: Path,
     allowed_tools: list[str],
@@ -844,6 +880,122 @@ def test_orchestrator_fails_when_loop_exceeds_max_turns(tmp_path: Path) -> None:
     assert result.state_history[-1] is RunStatus.FAILED
     failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
     assert "Loop Limit Failure" in failure_text
+
+
+def test_orchestrator_disables_tools_for_final_response_after_in_band_verification(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    verification_command = "python -c \"print('ok')\""
+    (tmp_path / "app.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    write_task(
+        task_path,
+        ["apply_patch", "shell"],
+        verification_commands=[verification_command],
+        policy_block="""
+policy:
+  approval_allowed_tools:
+    - apply_patch
+    - shell
+  approved_tools:
+    - apply_patch
+    - shell
+""".strip(),
+    )
+    gateway = ToolHungryGateway(verification_command)
+
+    def successful_shell(args, workspace_root):
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr("haagent.tools.router.shell", successful_shell)
+
+    result = RunOrchestrator(
+        runs_root=runs_dir,
+        model_gateway=gateway,
+        max_turns=3,
+    ).run(task_path)
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.state_history == [
+        RunStatus.CREATED,
+        RunStatus.PLANNING,
+        RunStatus.EXECUTING,
+        RunStatus.VERIFYING,
+        RunStatus.COMPLETED,
+    ]
+    assert [schema["name"] for schema in gateway.tool_schemas_seen[0]] == ["apply_patch", "shell"]
+    assert gateway.tool_schemas_seen[2] == []
+    transcript = _read_transcript(result.episode_path)
+    model_responses = [record for record in transcript if record.get("event") == "model_response"]
+    assert model_responses[-1]["content"] == "Changed add to return a + b and verification passed."
+    tool_calls = [
+        json.loads(line)
+        for line in (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["tool_name"] for record in tool_calls] == ["apply_patch", "shell"]
+    final_context = json.loads(
+        (result.episode_path / "contexts" / "0003.json").read_text(encoding="utf-8"),
+    )
+    final_model_input = (result.episode_path / "contexts" / "0003.txt").read_text(encoding="utf-8")
+    assert final_context["next_action"]["status"] == "continue"
+    assert "Produce the final answer now" in final_context["next_action"]["reason"]
+    assert "apply_patch" in final_model_input
+    assert "shell" in final_model_input
+    assert "return a - b" in final_model_input
+    assert "return a + b" in final_model_input
+
+
+def test_orchestrator_does_not_finalize_after_unmatched_shell_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    verification_command = "python -c \"print('verify')\""
+    write_task(
+        task_path,
+        ["shell"],
+        verification_commands=[verification_command],
+        policy_block="""
+policy:
+  approval_allowed_tools:
+    - shell
+  approved_tools:
+    - shell
+""".strip(),
+    )
+    gateway = SequenceGateway(
+        [
+            ModelResponse("probe", [ToolCall("shell", {"command": "python -c \"print('probe')\""})]),
+            ModelResponse("done", []),
+        ],
+    )
+
+    def successful_shell(args, workspace_root):
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "stdout": "probe\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr("haagent.tools.router.shell", successful_shell)
+
+    result = RunOrchestrator(runs_root=runs_dir, model_gateway=gateway).run(task_path)
+
+    assert result.status is RunStatus.COMPLETED
+    assert [schema["name"] for schema in gateway.tool_schemas_seen[1]] == ["shell"]
+    second_context = json.loads(
+        (result.episode_path / "contexts" / "0002.json").read_text(encoding="utf-8"),
+    )
+    assert second_context["next_action"]["status"] == "continue"
 
 
 def test_orchestrator_model_call_has_context_id_each_turn(tmp_path: Path) -> None:

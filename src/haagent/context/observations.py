@@ -98,13 +98,17 @@ def _apply_patch_observation_summary(
 ) -> dict[str, object]:
     old_text = _string_value(args.get("old_text"))
     new_text = _string_value(args.get("new_text"))
+    old_text_excerpt, old_text_truncated = _compact_excerpt(old_text)
+    new_text_excerpt, new_text_truncated = _compact_excerpt(new_text)
     return {
         "status": _string_value(result.get("status")),
         "path": _first_present_string(args.get("path"), result.get("path")),
+        "old_text_excerpt": old_text_excerpt,
+        "new_text_excerpt": new_text_excerpt,
         "old_text_length": len(old_text),
         "new_text_length": len(new_text),
         "replacements": result.get("replacements"),
-        "truncated": False,
+        "truncated": old_text_truncated or new_text_truncated,
     }
 
 
