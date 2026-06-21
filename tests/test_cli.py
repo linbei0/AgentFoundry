@@ -1391,6 +1391,63 @@ verification_commands:
     assert "missing required argument: path" in output
 
 
+def test_cli_inspect_task_loading_failure_outputs_failure_summary_without_later_files(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: []\n", encoding="utf-8")
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+
+    assert result.status is RunStatus.FAILED
+    assert not (result.episode_path / "plan.json").exists()
+    assert not (result.episode_path / "context-manifest.json").exists()
+    assert not (result.episode_path / "verification" / "commands.jsonl").exists()
+
+    exit_code = cli.main(["inspect", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert f"episode_path: {result.episode_path}" in output
+    assert "status: failed" in output
+    assert "provider: unknown" in output
+    assert "created -> failed" in output
+    assert "Verification" in output
+    assert "- not reached" in output
+    assert "Structured Failure" in output
+    assert "category: Task Spec Failure" in output
+    assert "stage: created" in output
+    assert "goal must be a string" in output
+
+
+def test_cli_inspect_failed_episode_after_verifying_missing_verification_commands_fails(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Verification reached package must stay strict
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands:
+  - python -c "import sys; sys.exit(7)"
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    (result.episode_path / "verification" / "commands.jsonl").unlink()
+
+    exit_code = cli.main(["inspect", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert result.status is RunStatus.FAILED
+    assert exit_code == 1
+    assert "episode package missing required file: verification/commands.jsonl" in output
+
+
 def test_cli_inspect_completed_episode_missing_verification_commands_still_fails(
     tmp_path: Path,
     capsys,

@@ -31,6 +31,14 @@ REQUIRED_PACKAGE_FILES = [
     "sandbox.json",
 ]
 VERIFICATION_COMMANDS_FILE = "verification/commands.jsonl"
+INSPECT_PRE_VERIFICATION_CORE_FILES = [
+    "episode.json",
+    "task.yaml",
+    "transcript.jsonl",
+    "tool-calls.jsonl",
+    "failure-attribution.md",
+    "failure.json",
+]
 
 
 class EpisodeValidationError(RuntimeError):
@@ -62,10 +70,7 @@ def load_validated_episode_package(episode_path: Path) -> EpisodePackageView:
 
 def load_inspect_episode_package(episode_path: Path) -> EpisodePackageView:
     """读取 inspect 用 package view；允许 verifying 前失败的 episode 缺少 verification trace。"""
-    return _read_validated_episode_package(
-        episode_path,
-        allow_missing_pre_verification=True,
-    )
+    return _read_inspect_episode_package(episode_path)
 
 
 def _read_validated_episode_package(
@@ -137,6 +142,83 @@ def _read_validated_episode_package(
     )
 
 
+def _read_inspect_episode_package(episode_path: Path) -> EpisodePackageView:
+    """读取 inspect 视图；仅对当前 run 的 verifying 前失败放宽后续阶段文件要求。"""
+    for relative_path in INSPECT_PRE_VERIFICATION_CORE_FILES:
+        path = episode_path / relative_path
+        if not path.exists():
+            raise EpisodeValidationError(f"episode package missing required file: {relative_path}")
+
+    episode_metadata, _warnings = read_episode_metadata(
+        episode_path,
+        allow_nullable_runtime_fields=True,
+    )
+    failure_record = read_failure_record(episode_path)
+    transcript = _validate_jsonl_fields(episode_path / "transcript.jsonl", "transcript.jsonl", ["event"])
+    tool_calls = _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
+
+    if not _can_omit_verification_commands(episode_metadata, transcript):
+        _validate_episode_metadata(episode_metadata)
+        return _read_validated_episode_package(
+            episode_path,
+            allow_missing_pre_verification=True,
+        )
+
+    _validate_tool_calls(tool_calls)
+    verification_path = episode_path / VERIFICATION_COMMANDS_FILE
+    if verification_path.exists():
+        verification_commands = _validate_jsonl_fields(
+            verification_path,
+            VERIFICATION_COMMANDS_FILE,
+            ["command", "status"],
+        )
+        verification_reached = True
+    else:
+        verification_commands = []
+        verification_reached = False
+    _validate_verification_commands(verification_commands)
+
+    plan = _read_optional_json(episode_path / "plan.json")
+    if plan is not None:
+        _validate_plan(plan)
+    context_manifest = _read_optional_json(episode_path / "context-manifest.json")
+    if context_manifest is None:
+        context_manifest = {"context_count": 0, "contexts": []}
+    else:
+        _validate_context_manifest_for_inspect(episode_path, context_manifest)
+    environment = _read_optional_json(episode_path / "environment.json")
+    if environment is not None:
+        _validate_environment(environment)
+    sandbox = _read_optional_json(episode_path / "sandbox.json")
+    if sandbox is not None:
+        _validate_sandbox(sandbox)
+
+    _validate_pre_verification_failure_consistency(
+        episode_metadata,
+        failure_record,
+        transcript,
+        environment,
+        sandbox,
+    )
+    inspect_metadata = dict(episode_metadata)
+    if inspect_metadata.get("provider") is None:
+        inspect_metadata["provider"] = "unknown"
+    if inspect_metadata.get("workspace_root") is None:
+        inspect_metadata["workspace_root"] = "unknown"
+
+    return EpisodePackageView(
+        episode_metadata=inspect_metadata,
+        failure_record=failure_record,
+        plan=plan or {},
+        context_manifest=context_manifest,
+        transcript=transcript,
+        tool_calls=tool_calls,
+        verification_commands=verification_commands,
+        sandbox=sandbox or {},
+        verification_reached=verification_reached,
+    )
+
+
 def _can_omit_verification_commands(
     episode_metadata: dict[str, Any],
     transcript: list[dict[str, Any]],
@@ -151,7 +233,11 @@ def _can_omit_verification_commands(
     return RunStatus.VERIFYING.value not in states
 
 
-def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any], list[str]]:
+def read_episode_metadata(
+    episode_path: Path,
+    *,
+    allow_nullable_runtime_fields: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
     """读取并校验 episode.json；缺失即视为损坏 package。"""
     metadata_path = episode_path / "episode.json"
     if not metadata_path.exists():
@@ -162,7 +248,10 @@ def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any], list[str]
     if version != EPISODE_VERSION:
         raise EpisodeValidationError(f"unsupported episode_version: {version}")
 
-    _validate_episode_metadata(metadata)
+    _validate_episode_metadata(
+        metadata,
+        allow_nullable_runtime_fields=allow_nullable_runtime_fields,
+    )
     return metadata, []
 
 
@@ -185,6 +274,12 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise EpisodeValidationError(f"{path.name} must contain a JSON object")
     return value
+
+
+def _read_optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return _read_json(path)
 
 
 def _validate_jsonl_fields(path: Path, label: str, required_fields: list[str]) -> list[dict[str, Any]]:
@@ -420,6 +515,68 @@ def _validate_cross_file_consistency(
     _validate_context_items(episode_path, contexts)
 
 
+def _validate_context_manifest_for_inspect(
+    episode_path: Path,
+    context_manifest: dict[str, Any],
+) -> None:
+    contexts = context_manifest.get("contexts")
+    context_count = context_manifest.get("context_count")
+    if not isinstance(contexts, list):
+        raise EpisodeValidationError("context-manifest.json contexts must be a list")
+    if not isinstance(context_count, int):
+        raise EpisodeValidationError("context-manifest.json context_count must be an integer")
+    if context_count != len(contexts):
+        raise EpisodeValidationError(
+            f"context-manifest.json context_count {context_count} does not match contexts length {len(contexts)}",
+        )
+    _validate_context_items(episode_path, contexts)
+
+
+def _validate_pre_verification_failure_consistency(
+    episode_metadata: dict[str, Any],
+    failure_record: dict[str, Any],
+    transcript: list[dict[str, Any]],
+    environment: dict[str, Any] | None,
+    sandbox: dict[str, Any] | None,
+) -> None:
+    state_transitions = [
+        record
+        for record in transcript
+        if record.get("event") == "state_transition"
+    ]
+    if not state_transitions:
+        raise EpisodeValidationError("transcript.jsonl missing state_transition")
+
+    episode_status = str(episode_metadata["status"])
+    final_status = str(state_transitions[-1].get("status"))
+    if episode_status != final_status:
+        raise EpisodeValidationError(
+            f"episode status {episode_status} does not match transcript final status {final_status}",
+        )
+    if episode_status != RunStatus.FAILED.value:
+        raise EpisodeValidationError("pre-verification inspect view requires failed episode status")
+    if failure_record["status"] != "failed":
+        raise EpisodeValidationError("failure.json status failed requires episode status failed")
+
+    workspace_root = episode_metadata.get("workspace_root")
+    if (
+        environment is not None
+        and environment.get("workspace_root") is not None
+        and environment.get("workspace_root") != workspace_root
+    ):
+        raise EpisodeValidationError(
+            "environment.json workspace_root does not match episode.json workspace_root",
+        )
+    if (
+        sandbox is not None
+        and workspace_root is not None
+        and sandbox["workspace_root"] != workspace_root
+    ):
+        raise EpisodeValidationError(
+            "sandbox.json workspace_root does not match episode.json workspace_root",
+        )
+
+
 def _validate_context_items(episode_path: Path, contexts: list[Any]) -> None:
     """校验 context-manifest contexts 索引项和对应文件存在性。"""
     required_fields = ["context_id", "model_input_path", "manifest_path"]
@@ -577,7 +734,11 @@ def _is_episode_internal_file(episode_path: Path, relative_path: str) -> bool:
     return candidate.is_file()
 
 
-def _validate_episode_metadata(metadata: dict[str, Any]) -> None:
+def _validate_episode_metadata(
+    metadata: dict[str, Any],
+    *,
+    allow_nullable_runtime_fields: bool = False,
+) -> None:
     """校验 episode.json 的 inspect 契约，不扩大现有严格度。"""
     required_fields = [
         "episode_version",
@@ -598,7 +759,13 @@ def _validate_episode_metadata(metadata: dict[str, Any]) -> None:
         raise EpisodeValidationError(f"corrupt episode: episode.json status is invalid: {status}")
 
     _validate_iso_datetime(metadata["created_at"])
-    for field_name in ["task_path", "provider", "workspace_root"]:
+    if not isinstance(metadata["task_path"], str):
+        raise EpisodeValidationError(
+            "corrupt episode: episode.json task_path must be a string",
+        )
+    for field_name in ["provider", "workspace_root"]:
+        if allow_nullable_runtime_fields and metadata[field_name] is None:
+            continue
         if not isinstance(metadata[field_name], str):
             raise EpisodeValidationError(
                 f"corrupt episode: episode.json {field_name} must be a string",
