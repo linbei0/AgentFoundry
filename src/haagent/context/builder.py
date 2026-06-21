@@ -10,7 +10,6 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from haagent.context.manifest import (
     ContextBudget,
@@ -18,6 +17,11 @@ from haagent.context.manifest import (
     ContextManifest,
     ContextSource,
     ContextSourceBudget,
+)
+from haagent.context.observations import (
+    observation_summary,
+    observation_tool_name,
+    raw_observation_summary,
 )
 from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.task_contract import TaskSpec
@@ -27,7 +31,6 @@ from haagent.tools.registry import TOOL_REGISTRY
 CONTEXT_MANIFEST_VERSION = "1.2"
 CONTEXT_CHARACTER_LIMIT = 12000
 PROJECT_INSTRUCTIONS_CHAR_LIMIT = 2000
-OBSERVATION_EXCERPT_CHAR_LIMIT = 240
 AUDIT_SOURCE_EXCLUSION_REASON = "Audit evidence is stored in the episode and is not sent to the model by default."
 
 
@@ -189,7 +192,7 @@ class ContextBuilder:
         sources.extend(
             ContextSource(
                 "observation",
-                _observation_tool_name(observation),
+                observation_tool_name(observation),
                 "Tool observation from previous turn",
                 "Previous tool result is needed for the next model turn.",
             )
@@ -242,10 +245,10 @@ class ContextBuilder:
             return "\n".join(["Pending next step:", *self._format_pending_next_step()])
         if source.source_type == "observation":
             for observation in self._observations:
-                if _observation_tool_name(observation) == source.name:
+                if observation_tool_name(observation) == source.name:
                     return (
-                        f"- {_observation_tool_name(observation)}: "
-                        f"{json.dumps(_observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
+                        f"- {observation_tool_name(observation)}: "
+                        f"{json.dumps(observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
                     )
         return ""
 
@@ -254,10 +257,10 @@ class ContextBuilder:
             return self._project_instructions or ""
         if source.source_type == "observation":
             for observation in self._observations:
-                if _observation_tool_name(observation) == source.name:
+                if observation_tool_name(observation) == source.name:
                     return (
-                        f"- {_observation_tool_name(observation)}: "
-                        f"{json.dumps(_raw_observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
+                        f"- {observation_tool_name(observation)}: "
+                        f"{json.dumps(raw_observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
                     )
         if source.source_type.startswith("audit_"):
             return self._audit_source_raw_content(source.name)
@@ -269,8 +272,8 @@ class ContextBuilder:
             return ["- none"]
         return [
             (
-                f"- {_observation_tool_name(observation)}: "
-                f"{json.dumps(_observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
+                f"- {observation_tool_name(observation)}: "
+                f"{json.dumps(observation_summary(observation), ensure_ascii=False, sort_keys=True)}"
             )
             for observation in self._observations
         ]
@@ -309,7 +312,7 @@ class ContextBuilder:
             "status": next_action_status,
             "reason": reason,
             "based_on_observation_index": observation_index,
-            "based_on_tool_name": _observation_tool_name(latest_observation),
+            "based_on_tool_name": observation_tool_name(latest_observation),
         }
 
     def _read_plan(self) -> dict[str, object]:
@@ -449,160 +452,6 @@ def _format_list(items: list[str]) -> list[str]:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _observation_tool_name(observation: dict[str, object]) -> str:
-    tool_name = observation.get("tool_name", "unknown_tool")
-    return str(tool_name)
-
-
-def _observation_summary(observation: dict[str, object]) -> dict[str, object]:
-    tool_name = _observation_tool_name(observation)
-    args = _dict_or_empty(observation.get("args"))
-    result = _dict_or_empty(observation.get("result"))
-    if tool_name == "file_read":
-        return _file_read_observation_summary(args, result)
-    if tool_name == "file_search":
-        return _file_search_observation_summary(args, result)
-    if tool_name == "shell":
-        return _shell_observation_summary(args, result)
-    if tool_name == "apply_patch":
-        return _apply_patch_observation_summary(args, result)
-    return _generic_observation_summary(args, result)
-
-
-def _raw_observation_summary(observation: dict[str, object]) -> dict[str, object]:
-    return {
-        "args": observation.get("args", {}),
-        "result": observation.get("result", {}),
-    }
-
-
-def _file_read_observation_summary(
-    args: dict[str, Any],
-    result: dict[str, Any],
-) -> dict[str, object]:
-    content = _string_value(result.get("content"))
-    excerpt, truncated = _compact_excerpt(content)
-    return {
-        "status": _string_value(result.get("status")),
-        "path": _first_present_string(args.get("path"), result.get("path")),
-        "offset": _first_present(args.get("offset"), result.get("offset")),
-        "limit": _first_present(args.get("limit"), result.get("limit")),
-        "line_count": len(content.splitlines()),
-        "excerpt": excerpt,
-        "truncated": truncated,
-    }
-
-
-def _file_search_observation_summary(
-    args: dict[str, Any],
-    result: dict[str, Any],
-) -> dict[str, object]:
-    matches = result.get("matches")
-    if not isinstance(matches, list):
-        matches = []
-    excerpt_source = "\n".join(_format_search_match(match) for match in matches)
-    excerpt, truncated = _compact_excerpt(excerpt_source)
-    return {
-        "status": _string_value(result.get("status")),
-        "query": _first_present_string(args.get("query"), args.get("pattern")),
-        "pattern": _first_present_string(args.get("pattern"), args.get("query")),
-        "match_count": len(matches),
-        "excerpt": excerpt,
-        "truncated": truncated,
-    }
-
-
-def _shell_observation_summary(
-    args: dict[str, Any],
-    result: dict[str, Any],
-) -> dict[str, object]:
-    stdout_excerpt, stdout_truncated = _compact_excerpt(_string_value(result.get("stdout")))
-    stderr_excerpt, stderr_truncated = _compact_excerpt(_string_value(result.get("stderr")))
-    return {
-        "status": _string_value(result.get("status")),
-        "command": _string_value(args.get("command")),
-        "cwd": _string_value(args.get("cwd"), default="."),
-        "exit_code": result.get("exit_code"),
-        "stdout_excerpt": stdout_excerpt,
-        "stderr_excerpt": stderr_excerpt,
-        "truncated": stdout_truncated or stderr_truncated,
-    }
-
-
-def _apply_patch_observation_summary(
-    args: dict[str, Any],
-    result: dict[str, Any],
-) -> dict[str, object]:
-    old_text = _string_value(args.get("old_text"))
-    new_text = _string_value(args.get("new_text"))
-    return {
-        "status": _string_value(result.get("status")),
-        "path": _first_present_string(args.get("path"), result.get("path")),
-        "old_text_length": len(old_text),
-        "new_text_length": len(new_text),
-        "replacements": result.get("replacements"),
-        "truncated": False,
-    }
-
-
-def _format_search_match(match: object) -> str:
-    if not isinstance(match, dict):
-        return str(match)
-    path = _string_value(match.get("path"))
-    line = _string_value(match.get("line"))
-    column = _string_value(match.get("column"))
-    text = _string_value(match.get("text"))
-    location = path
-    if line:
-        location = f"{location}:{line}"
-    if column:
-        location = f"{location}:{column}"
-    return f"{location}: {text}"
-
-
-def _generic_observation_summary(
-    args: dict[str, Any],
-    result: dict[str, Any],
-) -> dict[str, object]:
-    return {
-        "status": _string_value(result.get("status")),
-        "args_keys": sorted(str(key) for key in args),
-        "result_keys": sorted(str(key) for key in result),
-        "truncated": False,
-    }
-
-
-def _compact_excerpt(value: str) -> tuple[str, bool]:
-    truncated = len(value) > OBSERVATION_EXCERPT_CHAR_LIMIT
-    return value[:OBSERVATION_EXCERPT_CHAR_LIMIT], truncated
-
-
-def _dict_or_empty(value: object) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    return {}
-
-
-def _string_value(value: object, default: str = "") -> str:
-    if value is None:
-        return default
-    return str(value)
-
-
-def _first_present(*values: object) -> object:
-    for value in values:
-        if value is not None:
-            return value
-    return None
-
-
-def _first_present_string(*values: object) -> str:
-    for value in values:
-        if value is not None:
-            return str(value)
-    return ""
 
 
 def _source_exclusion_reason(source: ContextSource) -> str | None:

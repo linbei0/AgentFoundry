@@ -5,6 +5,27 @@
 HaAgent is a harness-first Agent Runtime MVP written in Python.
 The current runtime loads `task.yaml`, runs a small orchestrator state machine, routes local tools, records model/tool traces, and writes episode packages.
 
+## Project Reference Documents
+
+Before making non-trivial changes, consult the relevant project documents:
+
+- `docs/harness-requirements.md` defines the product direction, current stage, non-goals, and the two baseline constraints:
+  - do not increase user mental burden;
+  - do not increase model input token usage.
+- `docs/unresolved-risks-and-roadmap.md` defines the current unresolved risks and near-term roadmap. It must stay aligned with `docs/harness-requirements.md`; if they conflict, the requirements document wins.
+- `docs/code-governance.md` defines code ownership boundaries, unique runtime entry points, change categories, verification expectations, and refactoring guardrails.
+
+Use these documents as decision inputs, not as permission to expand scope. For small mechanical edits, read only the directly relevant document. For feature, contract, runtime, context, episode, tool, provider, or CLI behavior changes, read the relevant sections before editing.
+
+## Document Precedence
+
+- `AGENTS.md` defines the active working rules for coding agents.
+- `docs/harness-requirements.md` defines product and engineering direction.
+- `docs/code-governance.md` defines code organization and change discipline.
+- `docs/unresolved-risks-and-roadmap.md` defines current priorities and known risks.
+
+If documents disagree, prefer the narrower and more current rule. Do not silently choose one; mention the conflict and update the stale document when the task scope includes documentation.
+
 ## Setup Commands
 
 - Install dependencies: `uv sync`
