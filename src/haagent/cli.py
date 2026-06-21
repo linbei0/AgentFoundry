@@ -16,8 +16,6 @@ from haagent.models.gateway import OpenAIChatCompletionsGateway, OpenAIResponses
 from haagent.runtime.episode_validator import (
     EpisodeValidationError,
     load_inspect_episode_package,
-    read_episode_metadata,
-    read_failure_record,
 )
 from haagent.runtime.eval_export import export_eval_case
 from haagent.runtime.orchestrator import RunOrchestrator
@@ -240,30 +238,18 @@ def _write_eval_dataset_manifest(output_dir: Path, records: list[dict[str, Any]]
 def render_episode_summary(episode_path: Path) -> str:
     """读取 episode package，并生成面向人的审计摘要。"""
     try:
-        episode_metadata, warnings = read_episode_metadata(episode_path)
-        if episode_metadata is not None:
-            package_view = load_inspect_episode_package(episode_path)
-            episode_metadata = package_view.episode_metadata
-            context_manifest = package_view.context_manifest
-            plan = package_view.plan
-            transcript = package_view.transcript
-            tool_calls = package_view.tool_calls
-            verification = package_view.verification_commands
-            verification_reached = package_view.verification_reached
-            failure_record = package_view.failure_record
-            sandbox = _read_optional_json(episode_path / "sandbox.json")
-        else:
-            _ensure_legacy_inspect_files(episode_path)
-            context_manifest = _read_json(episode_path / "context-manifest.json")
-            plan = None
-            transcript = _read_jsonl(episode_path / "transcript.jsonl")
-            tool_calls = _read_jsonl(episode_path / "tool-calls.jsonl")
-            verification = _read_jsonl(episode_path / "verification" / "commands.jsonl")
-            verification_reached = True
-            failure_record = read_failure_record(episode_path)
-            sandbox = _read_optional_json(episode_path / "sandbox.json")
+        package_view = load_inspect_episode_package(episode_path)
     except EpisodeValidationError as error:
         raise EpisodeInspectError(str(error)) from error
+    episode_metadata = package_view.episode_metadata
+    context_manifest = package_view.context_manifest
+    plan = package_view.plan
+    transcript = package_view.transcript
+    tool_calls = package_view.tool_calls
+    verification = package_view.verification_commands
+    verification_reached = package_view.verification_reached
+    failure_record = package_view.failure_record
+    sandbox = package_view.sandbox
 
     failure_attribution = (episode_path / "failure-attribution.md").read_text(encoding="utf-8").strip()
 
@@ -273,8 +259,7 @@ def render_episode_summary(episode_path: Path) -> str:
         if record.get("event") == "state_transition"
     ]
     final_status = state_flow[-1] if state_flow else "unknown"
-    if episode_metadata:
-        final_status = episode_metadata.get("status", final_status)
+    final_status = episode_metadata.get("status", final_status)
     model_calls = [
         record
         for record in transcript
@@ -282,12 +267,11 @@ def render_episode_summary(episode_path: Path) -> str:
     ]
 
     lines = [
-        *warnings,
         "Run Summary",
         f"- episode_path: {episode_path}",
-        f"- episode_version: {episode_metadata.get('episode_version', 'legacy') if episode_metadata else 'legacy'}",
+        f"- episode_version: {episode_metadata.get('episode_version', 'unknown')}",
         f"- status: {final_status}",
-        f"- provider: {_summary_provider(episode_metadata, context_manifest)}",
+        f"- provider: {_summary_provider(episode_metadata)}",
         f"- context_count: {context_manifest.get('context_count', 0)}",
         "",
         "State Flow",
@@ -324,38 +308,8 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _read_optional_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    return _read_json(path)
-
-
-def _ensure_legacy_inspect_files(episode_path: Path) -> None:
-    """legacy episode 没有 v1 根 schema，只校验 inspect 展示必须读取的文件。"""
-    required_files = [
-        "context-manifest.json",
-        "transcript.jsonl",
-        "tool-calls.jsonl",
-        "verification/commands.jsonl",
-        "failure-attribution.md",
-    ]
-    for relative_path in required_files:
-        if not (episode_path / relative_path).exists():
-            raise EpisodeInspectError(f"missing required episode file: {relative_path}")
-
-
-def _summary_provider(
-    episode_metadata: dict[str, Any] | None,
-    context_manifest: dict[str, Any],
-) -> str:
-    if episode_metadata and episode_metadata.get("provider"):
-        return str(episode_metadata["provider"])
-    return str(context_manifest.get("summary", {}).get("provider", "unknown"))
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    text = path.read_text(encoding="utf-8")
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+def _summary_provider(episode_metadata: dict[str, Any]) -> str:
+    return str(episode_metadata.get("provider", "unknown"))
 
 
 def _format_contexts(contexts: list[dict[str, Any]]) -> list[str]:
@@ -370,18 +324,14 @@ def _format_contexts(contexts: list[dict[str, Any]]) -> list[str]:
     ]
 
 
-def _format_plan(plan: dict[str, Any] | None) -> list[str]:
-    if plan is None:
-        return ["- legacy episode without plan.json"]
+def _format_plan(plan: dict[str, Any]) -> list[str]:
     planned_steps = plan.get("planned_steps", [])
     if not planned_steps:
         return ["- none"]
     return [f"- {step}" for step in planned_steps]
 
 
-def _format_sandbox(sandbox: dict[str, Any] | None) -> list[str]:
-    if sandbox is None:
-        return ["- legacy/missing"]
+def _format_sandbox(sandbox: dict[str, Any]) -> list[str]:
     resource_limits = sandbox.get("resource_limits", {})
     if not isinstance(resource_limits, dict):
         resource_limits = {}
@@ -403,14 +353,7 @@ def _format_next_actions(episode_path: Path, contexts: list[dict[str, Any]]) -> 
     lines = []
     for context in contexts:
         context_id = str(context.get("context_id", "unknown"))
-        manifest_path = context.get("manifest_path")
-        if not isinstance(manifest_path, str):
-            lines.append(f"- {context_id}: legacy/missing")
-            continue
-        next_action = _read_context_next_action(episode_path / manifest_path)
-        if next_action is None:
-            lines.append(f"- {context_id}: legacy/missing")
-            continue
+        next_action = _read_context_next_action(episode_path / str(context["manifest_path"]))
         tool_name = next_action.get("based_on_tool_name")
         based_on_tool_name = str(tool_name) if tool_name is not None else "none"
         lines.append(
@@ -423,14 +366,11 @@ def _format_next_actions(episode_path: Path, contexts: list[dict[str, Any]]) -> 
     return lines
 
 
-def _read_context_next_action(path: Path) -> dict[str, Any] | None:
-    try:
-        context_manifest = _read_json(path)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
+def _read_context_next_action(path: Path) -> dict[str, Any]:
+    context_manifest = _read_json(path)
     next_action = context_manifest.get("next_action")
     if not isinstance(next_action, dict):
-        return None
+        raise EpisodeInspectError(f"{path.name} next_action must be an object")
     return next_action
 
 
@@ -492,20 +432,30 @@ def _format_approval_summary(tool_calls: list[dict[str, Any]]) -> list[str]:
     for call in tool_calls:
         tool_name = call.get("tool_name", "unknown")
         policy = call.get("policy")
-        approval = policy.get("approval") if isinstance(policy, dict) else None
-        if not isinstance(policy, dict) or not isinstance(approval, dict):
-            lines.append(f"- {tool_name}: legacy/missing")
+        if policy is None and _policy_not_evaluated(call):
+            error = call.get("error") if isinstance(call.get("error"), dict) else {}
+            lines.append(f"- {tool_name}: policy=not_evaluated reason={error.get('message', '')}")
             continue
+        approval = policy["approval"]
         required = "true" if approval.get("required") is True else "false"
         lines.append(
             (
-                f"- {tool_name}: action={policy.get('action', 'missing')} "
+                f"- {tool_name}: action={policy['action']} "
                 f"approval.required={required} "
-                f"approval.status={approval.get('status', 'missing')} "
-                f"approval.reason={approval.get('reason', 'legacy/missing')}"
+                f"approval.status={approval['status']} "
+                f"approval.reason={approval['reason']}"
             ),
         )
     return lines
+
+
+def _policy_not_evaluated(call: dict[str, Any]) -> bool:
+    error = call.get("error")
+    return (
+        call.get("status") == "error"
+        and isinstance(error, dict)
+        and error.get("type") in {"tool_not_allowed", "unknown_tool"}
+    )
 
 
 def _format_tool_argument_errors(tool_calls: list[dict[str, Any]]) -> list[str]:
@@ -546,9 +496,7 @@ def _format_verification(
     return lines
 
 
-def _format_failure_record(record: dict[str, Any] | None) -> list[str]:
-    if record is None:
-        return ["- legacy episode without failure.json"]
+def _format_failure_record(record: dict[str, Any]) -> list[str]:
     if record.get("status") == "success":
         return ["- status: success"]
     failure = record.get("failure") or {}

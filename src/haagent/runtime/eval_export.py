@@ -62,15 +62,15 @@ def _verification_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]
         {
             "command": record["command"],
             "status": record["status"],
-            "exit_code": record.get("exit_code"),
-            "timeout": bool(record.get("timeout", False)),
-            "stdout_excerpt": str(record.get("stdout_excerpt", "")),
-            "stderr_excerpt": str(record.get("stderr_excerpt", "")),
-            "stdout_truncated": bool(record.get("stdout_truncated", False)),
-            "stderr_truncated": bool(record.get("stderr_truncated", False)),
-            "stdout_original_length": _int_or_default(record.get("stdout_original_length"), 0),
-            "stderr_original_length": _int_or_default(record.get("stderr_original_length"), 0),
-            "redacted": bool(record.get("redacted", False)),
+            "exit_code": record["exit_code"],
+            "timeout": record["timeout"],
+            "stdout_excerpt": record["stdout_excerpt"],
+            "stderr_excerpt": record["stderr_excerpt"],
+            "stdout_truncated": record["stdout_truncated"],
+            "stderr_truncated": record["stderr_truncated"],
+            "stdout_original_length": record["stdout_original_length"],
+            "stderr_original_length": record["stderr_original_length"],
+            "redacted": record["redacted"],
         }
         for record in records
     ]
@@ -86,10 +86,6 @@ def _sandbox_summary(sandbox: dict[str, Any]) -> dict[str, Any]:
         "credential_policy": sandbox["credential_policy"],
         "command_timeout_seconds": resource_limits["command_timeout_seconds"],
     }
-
-
-def _int_or_default(value: Any, default: int) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
 def _tool_names_used(records: list[dict[str, Any]]) -> list[str]:
@@ -116,24 +112,34 @@ def _approval_summary(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _approval_summary_record(record: dict[str, Any]) -> dict[str, Any]:
-    tool_name = str(record.get("tool_name", "unknown"))
+    tool_name = str(record["tool_name"])
     policy = record.get("policy")
-    approval = policy.get("approval") if isinstance(policy, dict) else None
-    if not isinstance(policy, dict) or not isinstance(approval, dict):
+    if policy is None and _policy_not_evaluated(record):
+        error = record.get("error") if isinstance(record.get("error"), dict) else {}
         return {
             "tool_name": tool_name,
-            "action": "missing",
+            "action": "not_evaluated",
             "approval_required": False,
-            "approval_status": "missing",
-            "approval_reason": "legacy/missing",
+            "approval_status": "not_evaluated",
+            "approval_reason": str(error.get("message", "")),
         }
+    approval = policy["approval"]
     return {
         "tool_name": tool_name,
-        "action": str(policy.get("action", "missing")),
-        "approval_required": bool(approval.get("required", False)),
-        "approval_status": str(approval.get("status", "missing")),
-        "approval_reason": str(approval.get("reason", "legacy/missing")),
+        "action": policy["action"],
+        "approval_required": approval["required"],
+        "approval_status": approval["status"],
+        "approval_reason": approval["reason"],
     }
+
+
+def _policy_not_evaluated(record: dict[str, Any]) -> bool:
+    error = record.get("error")
+    return (
+        record.get("status") == "error"
+        and isinstance(error, dict)
+        and error.get("type") in {"tool_not_allowed", "unknown_tool"}
+    )
 
 
 def _final_response_summary(transcript: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -158,46 +164,23 @@ def _last_model_response(transcript: list[dict[str, Any]]) -> dict[str, Any] | N
 
 def _next_actions_summary(episode_path: Path, context_manifest: dict[str, Any]) -> list[dict[str, Any]]:
     contexts = context_manifest.get("contexts", [])
-    if not isinstance(contexts, list):
-        return []
-    return [_next_action_summary(episode_path, context) for context in contexts if isinstance(context, dict)]
+    return [_next_action_summary(episode_path, context) for context in contexts]
 
 
 def _next_action_summary(episode_path: Path, context: dict[str, Any]) -> dict[str, Any]:
-    context_id = str(context.get("context_id", "unknown"))
-    manifest_path = context.get("manifest_path")
-    if not isinstance(manifest_path, str):
-        return _missing_next_action(context_id)
-    next_action = _read_next_action(episode_path / manifest_path)
-    if next_action is None:
-        return _missing_next_action(context_id)
+    context_id = str(context["context_id"])
+    next_action = _read_context_json(episode_path / context["manifest_path"])["next_action"]
     return {
         "context_id": context_id,
-        "status": str(next_action.get("status", "missing")),
-        "reason": str(next_action.get("reason", "legacy/missing")),
-        "based_on_observation_index": next_action.get("based_on_observation_index"),
-        "based_on_tool_name": next_action.get("based_on_tool_name"),
+        "status": next_action["status"],
+        "reason": next_action["reason"],
+        "based_on_observation_index": next_action["based_on_observation_index"],
+        "based_on_tool_name": next_action["based_on_tool_name"],
     }
 
 
-def _read_next_action(path: Path) -> dict[str, Any] | None:
-    try:
-        context = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
+def _read_context_json(path: Path) -> dict[str, Any]:
+    context = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(context, dict):
-        return None
-    next_action = context.get("next_action")
-    if not isinstance(next_action, dict):
-        return None
-    return next_action
-
-
-def _missing_next_action(context_id: str) -> dict[str, Any]:
-    return {
-        "context_id": context_id,
-        "status": "missing",
-        "reason": "legacy/missing",
-        "based_on_observation_index": None,
-        "based_on_tool_name": None,
-    }
+        raise TypeError(f"{path} must contain a JSON object")
+    return context

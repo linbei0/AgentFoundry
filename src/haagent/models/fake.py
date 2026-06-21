@@ -25,16 +25,16 @@ class FakeModelGateway:
     def generate(
         self,
         task: TaskSpec,
-        model_input: str | None = None,
-        tool_schemas: list[dict[str, Any]] | None = None,
-        observations: list[dict[str, Any]] | None = None,
+        model_input: str,
+        tool_schemas: list[dict[str, Any]],
+        observations: list[dict[str, Any]],
     ) -> ModelResponse:
         self.calls.append(
             {
                 "task": task,
                 "model_input": model_input,
-                "tool_schemas": list(tool_schemas or []),
-                "observations": list(observations or []),
+                "tool_schemas": list(tool_schemas),
+                "observations": list(observations),
             },
         )
         if observations and self._response.tool_calls:

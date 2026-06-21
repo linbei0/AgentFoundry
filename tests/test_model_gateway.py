@@ -33,6 +33,21 @@ def make_task() -> TaskSpec:
     )
 
 
+def generate(
+    gateway,
+    *,
+    model_input: str = "standardized context",
+    tool_schemas: list[dict[str, object]] | None = None,
+    observations: list[dict[str, object]] | None = None,
+) -> ModelResponse:
+    return gateway.generate(
+        make_task(),
+        model_input=model_input,
+        tool_schemas=tool_schemas or [],
+        observations=observations or [],
+    )
+
+
 def make_writer(tmp_path: Path) -> EpisodeWriter:
     task_path = tmp_path / "task.yaml"
     task_path.write_text(
@@ -57,7 +72,7 @@ def test_fake_model_gateway_returns_configured_response() -> None:
         ),
     )
 
-    response = gateway.generate(make_task())
+    response = generate(gateway)
 
     assert response.content == "planned"
     assert response.tool_calls == [ToolCall(name="fake_tool", args={"value": 1})]
@@ -66,23 +81,21 @@ def test_fake_model_gateway_returns_configured_response() -> None:
 def test_fake_model_gateway_accepts_optional_observations() -> None:
     gateway = FakeModelGateway()
 
-    response = gateway.generate(make_task(), observations=[{"tool_name": "fake_tool"}])
+    response = generate(gateway, observations=[{"tool_name": "fake_tool"}])
 
     assert response.tool_calls == []
 
 
-def test_fake_model_gateway_keeps_old_usage_and_records_optional_inputs() -> None:
+def test_fake_model_gateway_records_current_inputs() -> None:
     gateway = FakeModelGateway(response=ModelResponse(content="done", tool_calls=[]))
 
-    legacy_response = gateway.generate(make_task())
-    response = gateway.generate(
-        make_task(),
+    response = generate(
+        gateway,
         model_input="context text",
         tool_schemas=[{"name": "fake_tool"}],
         observations=[{"tool_name": "fake_tool"}],
     )
 
-    assert legacy_response.content == "done"
     assert response.content == "done"
     assert gateway.calls[-1]["model_input"] == "context text"
     assert gateway.calls[-1]["tool_schemas"] == [{"name": "fake_tool"}]
@@ -103,14 +116,11 @@ def test_openai_gateway_uses_unified_response_shape() -> None:
         transport=transport,
     )
 
-    response = gateway.generate(make_task())
+    response = generate(gateway)
 
     assert response == ModelResponse(content="provider text", tool_calls=[])
     assert captured["api_key"] == "test-key"
-    assert captured["payload"] == {
-        "model": "gpt-test",
-        "input": "Goal: Exercise model gateway\nConstraints:\n- none\nAcceptance criteria:\n- none",
-    }
+    assert captured["payload"] == {"model": "gpt-test", "input": "standardized context"}
 
 
 def test_openai_gateway_defaults_to_official_responses_endpoint() -> None:
@@ -194,7 +204,7 @@ def test_openai_chat_gateway_text_only_response_uses_messages_payload() -> None:
         transport=transport,
     )
 
-    response = gateway.generate(make_task(), model_input="standardized context")
+    response = generate(gateway, model_input="standardized context")
 
     assert response == ModelResponse(content="chat text", tool_calls=[])
     assert captured["api_key"] == "test-key"
@@ -234,8 +244,8 @@ def test_openai_chat_gateway_normalizes_tool_calls_and_tools_payload() -> None:
         transport=transport,
     )
 
-    response = gateway.generate(
-        make_task(),
+    response = generate(
+        gateway,
         model_input="context with tools",
         tool_schemas=[
             {
@@ -290,7 +300,7 @@ def test_openai_chat_gateway_rejects_invalid_tool_arguments_json() -> None:
     gateway = OpenAIChatCompletionsGateway(api_key="test-key", transport=transport)
 
     with pytest.raises(ModelCallError, match="invalid tool arguments JSON"):
-        gateway.generate(make_task())
+        generate(gateway)
 
 
 def test_openai_chat_gateway_rejects_non_object_tool_arguments() -> None:
@@ -317,7 +327,7 @@ def test_openai_chat_gateway_rejects_non_object_tool_arguments() -> None:
     gateway = OpenAIChatCompletionsGateway(api_key="test-key", transport=transport)
 
     with pytest.raises(ModelCallError, match="tool arguments must be a JSON object"):
-        gateway.generate(make_task())
+        generate(gateway)
 
 
 def test_openai_gateway_payload_uses_model_input_and_tools() -> None:
@@ -333,8 +343,8 @@ def test_openai_gateway_payload_uses_model_input_and_tools() -> None:
         transport=transport,
     )
 
-    gateway.generate(
-        make_task(),
+    generate(
+        gateway,
         model_input="standardized context",
         tool_schemas=[{"name": "fake_tool", "description": "test", "parameters": {}}],
     )
@@ -365,7 +375,7 @@ def test_openai_gateway_normalizes_tool_call_response() -> None:
         transport=transport,
     )
 
-    response = gateway.generate(make_task())
+    response = generate(gateway)
 
     assert response == ModelResponse(
         content="",
@@ -392,7 +402,7 @@ def test_openai_gateway_text_only_response_with_output_message_has_no_tool_calls
         transport=transport,
     )
 
-    response = gateway.generate(make_task())
+    response = generate(gateway)
 
     assert response == ModelResponse(content="provider text", tool_calls=[])
 
@@ -411,7 +421,7 @@ def test_openai_gateway_rejects_unknown_output_type() -> None:
     )
 
     with pytest.raises(ModelCallError, match="unsupported OpenAI output type"):
-        gateway.generate(make_task())
+        generate(gateway)
 
 
 def test_openai_gateway_rejects_invalid_tool_arguments_json() -> None:
@@ -434,7 +444,7 @@ def test_openai_gateway_rejects_invalid_tool_arguments_json() -> None:
     )
 
     with pytest.raises(ModelCallError, match="invalid tool arguments JSON"):
-        gateway.generate(make_task())
+        generate(gateway)
 
 
 def test_openai_gateway_rejects_missing_tool_name_or_arguments() -> None:
@@ -451,18 +461,18 @@ def test_openai_gateway_rejects_missing_tool_name_or_arguments() -> None:
         }
 
     with pytest.raises(ModelCallError, match="missing tool name"):
-        OpenAIResponsesGateway(
+        generate(OpenAIResponsesGateway(
             api_key="test-key",
             model="gpt-test",
             transport=missing_name_transport,
-        ).generate(make_task())
+        ))
 
     with pytest.raises(ModelCallError, match="missing tool arguments"):
-        OpenAIResponsesGateway(
+        generate(OpenAIResponsesGateway(
             api_key="test-key",
             model="gpt-test",
             transport=missing_arguments_transport,
-        ).generate(make_task())
+        ))
 
 
 def test_openai_gateway_failure_is_explicit() -> None:
@@ -476,7 +486,7 @@ def test_openai_gateway_failure_is_explicit() -> None:
     )
 
     with pytest.raises(ModelCallError, match="provider unavailable"):
-        gateway.generate(make_task())
+        generate(gateway)
 
 
 def test_model_call_is_written_to_transcript_by_orchestrator(tmp_path: Path) -> None:

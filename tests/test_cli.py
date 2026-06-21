@@ -27,7 +27,7 @@ class FakeResult:
 class OneShotGateway:
     provider_name = "one-shot"
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+    def generate(self, task, model_input, tool_schemas, observations):
         if observations:
             return ModelResponse("done", [])
         return ModelResponse("bad args", [ToolCall("file_read", {"offset": 1})])
@@ -39,7 +39,7 @@ class ShellOnceGateway:
     def __init__(self) -> None:
         self._called = False
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+    def generate(self, task, model_input, tool_schemas, observations):
         if self._called or observations:
             return ModelResponse("done", [])
         self._called = True
@@ -113,7 +113,7 @@ verification_commands: []
     )
     (episode_path / "tool-calls.jsonl").write_text("", encoding="utf-8")
     (episode_path / "verification" / "commands.jsonl").write_text("", encoding="utf-8")
-    (episode_path / "failure-attribution.md").write_text("legacy", encoding="utf-8")
+    (episode_path / "failure-attribution.md").write_text("current attribution", encoding="utf-8")
 
 
 def valid_episode_json(tmp_path: Path, status: str = "completed") -> dict[str, object]:
@@ -125,6 +125,38 @@ def valid_episode_json(tmp_path: Path, status: str = "completed") -> dict[str, o
         "provider": "fake",
         "workspace_root": str(tmp_path),
     }
+
+
+def valid_policy(tool_name: str = "fake_tool") -> dict[str, object]:
+    return {
+        "tool_name": tool_name,
+        "risk_level": "low",
+        "action": "allow",
+        "reason": f"policy allows low risk tool {tool_name}",
+        "approval": {
+            "required": False,
+            "status": "not_required",
+            "reason": f"approval not required for low risk tool {tool_name}",
+        },
+    }
+
+
+def valid_verification_command(**updates: object) -> dict[str, object]:
+    record = {
+        "command": "uv run pytest",
+        "status": "success",
+        "exit_code": 0,
+        "timeout": False,
+        "stdout_excerpt": "",
+        "stderr_excerpt": "",
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "stdout_original_length": 0,
+        "stderr_original_length": 0,
+        "redacted": False,
+    }
+    record.update(updates)
+    return record
 
 
 def test_cli_run_uses_default_runs_root_and_prints_result(
@@ -709,7 +741,7 @@ verification_commands: []
         encoding="utf-8",
     )
     (episode_path / "verification" / "commands.jsonl").write_text(
-        json.dumps({"command": "uv run pytest", "status": "success", "exit_code": 0}) + "\n",
+        json.dumps(valid_verification_command()) + "\n",
         encoding="utf-8",
     )
     (episode_path / "failure.json").write_text(
@@ -889,14 +921,16 @@ verification_commands: []
     (episode_path / "tool-calls.jsonl").write_text("", encoding="utf-8")
     (episode_path / "verification" / "commands.jsonl").write_text(
         json.dumps(
-            {
-                "command": "python fail.py",
-                "status": "failed",
-                "exit_code": 3,
-                "timeout": False,
-                "stdout_excerpt": "out evidence",
-                "stderr_excerpt": "err evidence",
-            },
+            valid_verification_command(
+                command="python fail.py",
+                status="failed",
+                exit_code=3,
+                timeout=False,
+                stdout_excerpt="out evidence",
+                stderr_excerpt="err evidence",
+                stdout_original_length=len("out evidence"),
+                stderr_original_length=len("err evidence"),
+            ),
         )
         + "\n",
         encoding="utf-8",
@@ -1018,7 +1052,7 @@ def test_cli_inspect_approval_summary_shows_none_without_tool_calls(
     assert "Approval Summary\n- none" in output
 
 
-def test_cli_inspect_approval_summary_handles_legacy_missing(
+def test_cli_inspect_rejects_tool_call_missing_policy(
     tmp_path: Path,
     capsys,
 ) -> None:
@@ -1029,16 +1063,15 @@ def test_cli_inspect_approval_summary_handles_legacy_missing(
         failure_json={"status": "success", "failure": None},
     )
     (episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": "legacy_tool", "status": "success"}) + "\n",
+        json.dumps({"tool_name": "fake_tool", "status": "success"}) + "\n",
         encoding="utf-8",
     )
 
     exit_code = cli.main(["inspect", str(episode_path)])
 
     output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "Approval Summary" in output
-    assert "legacy_tool: legacy/missing" in output
+    assert exit_code == 1
+    assert "tool-calls.jsonl line 1 missing required field: policy" in output
 
 
 def test_cli_inspect_approval_summary_shows_high_risk_missing(
@@ -1148,7 +1181,7 @@ verification_commands:
     assert "OPENAI_API_KEY=[REDACTED]" in output
 
 
-def test_cli_inspect_legacy_episode_without_episode_json_warns(tmp_path: Path, capsys) -> None:
+def test_cli_inspect_missing_episode_json_fails(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
     (episode_path / "verification").mkdir(parents=True)
     (episode_path / "contexts").mkdir(parents=True)
@@ -1168,7 +1201,7 @@ def test_cli_inspect_legacy_episode_without_episode_json_warns(tmp_path: Path, c
         ),
         encoding="utf-8",
     )
-    (episode_path / "contexts" / "0001.txt").write_text("legacy input", encoding="utf-8")
+    (episode_path / "contexts" / "0001.txt").write_text("input", encoding="utf-8")
     (episode_path / "contexts" / "0001.json").write_text(
         json.dumps({"context_id": "0001", "sources": []}),
         encoding="utf-8",
@@ -1179,18 +1212,13 @@ def test_cli_inspect_legacy_episode_without_episode_json_warns(tmp_path: Path, c
     )
     (episode_path / "tool-calls.jsonl").write_text("", encoding="utf-8")
     (episode_path / "verification" / "commands.jsonl").write_text("", encoding="utf-8")
-    (episode_path / "failure-attribution.md").write_text("legacy", encoding="utf-8")
+    (episode_path / "failure-attribution.md").write_text("current attribution", encoding="utf-8")
 
     exit_code = cli.main(["inspect", str(episode_path)])
 
-    assert exit_code == 0
+    assert exit_code == 1
     output = capsys.readouterr().out
-    assert "warning: episode.json missing; inspecting legacy episode" in output
-    assert "Next Actions" in output
-    assert "0001: legacy/missing" in output
-    assert "Final Response" in output
-    assert "Final Response\n- none" in output
-    assert "Approval Summary\n- none" in output
+    assert "episode package missing required file: episode.json" in output
 
 
 def test_cli_inspect_final_response_content_is_truncated() -> None:
@@ -1212,10 +1240,12 @@ def test_cli_inspect_final_response_content_is_truncated() -> None:
 
 def test_cli_inspect_unknown_episode_version_fails(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
-    episode_path.mkdir()
-    (episode_path / "episode.json").write_text(
-        json.dumps({"episode_version": "9.9"}),
-        encoding="utf-8",
+    episode_json = valid_episode_json(tmp_path)
+    episode_json["episode_version"] = "9.9"
+    write_minimal_episode(
+        episode_path,
+        episode_json=episode_json,
+        failure_json={"status": "success", "failure": None},
     )
 
     exit_code = cli.main(["inspect", str(episode_path)])
@@ -1229,7 +1259,11 @@ def test_cli_inspect_fails_when_episode_json_missing_field(tmp_path: Path, capsy
     episode_path = tmp_path / "episode-1"
     episode_json = valid_episode_json(tmp_path)
     del episode_json["workspace_root"]
-    write_minimal_episode(episode_path, episode_json=episode_json)
+    write_minimal_episode(
+        episode_path,
+        episode_json=episode_json,
+        failure_json={"status": "success", "failure": None},
+    )
 
     exit_code = cli.main(["inspect", str(episode_path)])
 
@@ -1240,7 +1274,11 @@ def test_cli_inspect_fails_when_episode_json_missing_field(tmp_path: Path, capsy
 
 def test_cli_inspect_fails_when_episode_json_status_is_invalid(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
-    write_minimal_episode(episode_path, episode_json=valid_episode_json(tmp_path, status="done-ish"))
+    write_minimal_episode(
+        episode_path,
+        episode_json=valid_episode_json(tmp_path, status="done-ish"),
+        failure_json={"status": "success", "failure": None},
+    )
 
     exit_code = cli.main(["inspect", str(episode_path)])
 
@@ -1286,15 +1324,15 @@ def test_cli_inspect_fails_when_success_failure_json_has_failure(tmp_path: Path,
     assert "corrupt episode: failure.json success record must have failure=null" in output
 
 
-def test_cli_inspect_legacy_episode_without_failure_json_still_works(tmp_path: Path, capsys) -> None:
+def test_cli_inspect_missing_failure_json_fails(tmp_path: Path, capsys) -> None:
     episode_path = tmp_path / "episode-1"
-    write_minimal_episode(episode_path)
+    write_minimal_episode(episode_path, episode_json=valid_episode_json(tmp_path))
 
     exit_code = cli.main(["inspect", str(episode_path)])
 
-    assert exit_code == 0
+    assert exit_code == 1
     output = capsys.readouterr().out
-    assert "legacy episode without failure.json" in output
+    assert "episode package missing required file: failure.json" in output
 
 
 def test_cli_inspect_new_episode_missing_required_file_uses_validator(tmp_path: Path, capsys) -> None:
@@ -1797,15 +1835,19 @@ def test_cli_inspect_new_episode_uses_package_view(tmp_path: Path, monkeypatch, 
             {"event": "state_transition", "status": "created"},
             {"event": "state_transition", "status": "completed"},
         ],
-        tool_calls=[{"tool_name": "fake_tool", "status": "success"}],
+        tool_calls=[{"tool_name": "fake_tool", "status": "success", "policy": valid_policy()}],
         verification_commands=[],
+        sandbox={
+            "workspace_root": str(tmp_path),
+            "filesystem_boundary": "workspace_root",
+            "network_policy": "unrestricted",
+            "process_policy": "local_subprocess",
+            "credential_policy": "inherit_environment",
+            "resource_limits": {"command_timeout_seconds": 60},
+        },
     )
 
-    def fail_if_jsonl_is_read(path: Path):
-        raise AssertionError(f"unexpected JSONL read: {path}")
-
     monkeypatch.setattr(cli, "load_inspect_episode_package", lambda path: package_view)
-    monkeypatch.setattr(cli, "_read_jsonl", fail_if_jsonl_is_read)
 
     exit_code = cli.main(["inspect", str(episode_path)])
 
@@ -1824,5 +1866,4 @@ def test_cli_inspect_fails_when_required_file_is_missing(tmp_path: Path, capsys)
 
     assert exit_code == 1
     output = capsys.readouterr().out
-    assert "missing required episode file" in output
-    assert "context-manifest.json" in output
+    assert "episode package missing required file: episode.json" in output

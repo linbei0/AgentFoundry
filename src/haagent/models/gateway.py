@@ -38,9 +38,9 @@ class ModelGateway(Protocol):
     def generate(
         self,
         task: TaskSpec,
-        model_input: str | None = None,
-        tool_schemas: list[dict[str, Any]] | None = None,
-        observations: list[dict[str, Any]] | None = None,
+        model_input: str,
+        tool_schemas: list[dict[str, Any]],
+        observations: list[dict[str, Any]],
     ) -> ModelResponse:
         """Generate a model response for a task."""
 
@@ -84,9 +84,9 @@ class OpenAIResponsesGateway:
     def generate(
         self,
         task: TaskSpec,
-        model_input: str | None = None,
-        tool_schemas: list[dict[str, Any]] | None = None,
-        observations: list[dict[str, Any]] | None = None,
+        model_input: str,
+        tool_schemas: list[dict[str, Any]],
+        observations: list[dict[str, Any]],
     ) -> ModelResponse:
         """调用 OpenAI Responses API，并把 provider 输出收敛成统一 ModelResponse。"""
         if not self._api_key:
@@ -95,9 +95,9 @@ class OpenAIResponsesGateway:
         # provider 失败必须显式暴露给 orchestrator，禁止静默回退到 fake model。
         payload: dict[str, object] = {
             "model": self._model,
-            "input": model_input if model_input is not None else _prompt_for_task(task),
+            "input": model_input,
         }
-        if tool_schemas is not None:
+        if tool_schemas:
             payload["tools"] = tool_schemas
         try:
             response = self._transport(payload, self._api_key)
@@ -139,9 +139,9 @@ class OpenAIChatCompletionsGateway:
     def generate(
         self,
         task: TaskSpec,
-        model_input: str | None = None,
-        tool_schemas: list[dict[str, Any]] | None = None,
-        observations: list[dict[str, Any]] | None = None,
+        model_input: str,
+        tool_schemas: list[dict[str, Any]],
+        observations: list[dict[str, Any]],
     ) -> ModelResponse:
         """调用 OpenAI Chat Completions 兼容 API，并归一化为 ModelResponse。"""
         if not self._api_key:
@@ -154,37 +154,17 @@ class OpenAIChatCompletionsGateway:
             "messages": [
                 {
                     "role": "user",
-                    "content": (
-                        model_input
-                        if model_input is not None
-                        else _prompt_for_task(task)
-                    ),
+                    "content": model_input,
                 },
             ],
         }
-        if tool_schemas is not None:
+        if tool_schemas:
             payload["tools"] = _chat_tool_schemas(tool_schemas)
         try:
             response = self._transport(payload, self._api_key)
         except Exception as error:
             raise ModelCallError(str(error)) from error
         return _parse_chat_completion_response(response)
-
-
-def _prompt_for_task(task: TaskSpec) -> str:
-    constraints = _format_list(task.constraints)
-    criteria = _format_list(task.acceptance_criteria)
-    return (
-        f"Goal: {task.goal}\n"
-        f"Constraints:\n{constraints}\n"
-        f"Acceptance criteria:\n{criteria}"
-    )
-
-
-def _format_list(items: list[str]) -> str:
-    if not items:
-        return "- none"
-    return "\n".join(f"- {item}" for item in items)
 
 
 def _parse_tool_calls(response: dict[str, object]) -> list[ToolCall]:

@@ -299,7 +299,7 @@ class ContextBuilder:
                 "criteria are satisfied, produce the final answer instead of continuing with "
                 "another tool call."
             )
-        elif status in {"error", "failed"}:
+        elif status == "error":
             next_action_status = "handle_error"
             reason = "Use the latest tool error to adjust parameters, or stop and explain the failure explicitly."
         else:

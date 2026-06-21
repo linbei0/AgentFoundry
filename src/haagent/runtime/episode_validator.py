@@ -1,7 +1,7 @@
 """
 haagent/runtime/episode_validator.py - Episode schema 校验模块
 
-集中提供 inspect 读取 episode.json 和 failure.json 时使用的兼容校验逻辑。
+集中提供 inspect、eval export 读取 episode package 时使用的严格 schema 校验逻辑。
 """
 
 from __future__ import annotations
@@ -92,8 +92,6 @@ def _read_validated_episode_package(
 
     transcript = _validate_jsonl_fields(episode_path / "transcript.jsonl", "transcript.jsonl", ["event"])
     tool_calls = _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
-    if episode_metadata is None or failure_record is None:
-        raise EpisodeValidationError("episode package must contain v1 episode.json and failure.json")
     verification_path = episode_path / VERIFICATION_COMMANDS_FILE
     verification_reached = True
     if verification_path.exists():
@@ -153,11 +151,11 @@ def _can_omit_verification_commands(
     return RunStatus.VERIFYING.value not in states
 
 
-def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any] | None, list[str]]:
-    """读取并校验 episode.json；缺失时按 legacy episode 兼容。"""
+def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any], list[str]]:
+    """读取并校验 episode.json；缺失即视为损坏 package。"""
     metadata_path = episode_path / "episode.json"
     if not metadata_path.exists():
-        return None, ["warning: episode.json missing; inspecting legacy episode", ""]
+        raise EpisodeValidationError("episode package missing required file: episode.json")
 
     metadata = _read_json(metadata_path)
     version = metadata.get("episode_version")
@@ -168,11 +166,11 @@ def read_episode_metadata(episode_path: Path) -> tuple[dict[str, Any] | None, li
     return metadata, []
 
 
-def read_failure_record(episode_path: Path) -> dict[str, Any] | None:
-    """读取并校验 failure.json；缺失时按 legacy episode 兼容。"""
+def read_failure_record(episode_path: Path) -> dict[str, Any]:
+    """读取并校验 failure.json；缺失即视为损坏 package。"""
     path = episode_path / "failure.json"
     if not path.exists():
-        return None
+        raise EpisodeValidationError("episode package missing required file: failure.json")
 
     record = _read_json(path)
     _validate_failure_record(record)
@@ -211,16 +209,54 @@ def _validate_jsonl_fields(path: Path, label: str, required_fields: list[str]) -
 
 
 def _validate_tool_calls(records: list[dict[str, Any]]) -> None:
-    """校验 tool-calls.jsonl 的最小字段类型和值域。
-
-    ToolRouter 当前写入 success/error；failed 保留为旧 episode 兼容状态。
-    """
+    """校验 tool-calls.jsonl 的当前字段类型和值域。"""
     for index, record in enumerate(records, start=1):
         if not isinstance(record["tool_name"], str):
             raise EpisodeValidationError(f"tool-calls.jsonl line {index} tool_name must be a string")
         status = record["status"]
-        if status not in {"success", "error", "failed"}:
+        if status not in {"success", "error"}:
             raise EpisodeValidationError(f"tool-calls.jsonl line {index} status is invalid: {status}")
+        if "policy" not in record:
+            raise EpisodeValidationError(
+                f"tool-calls.jsonl line {index} missing required field: policy",
+            )
+        _validate_tool_call_policy(index, record)
+
+
+def _validate_tool_call_policy(index: int, record: dict[str, Any]) -> None:
+    policy = record["policy"]
+    if policy is None and _tool_policy_not_evaluated(record):
+        return
+    if not isinstance(policy, dict):
+        raise EpisodeValidationError(f"tool-calls.jsonl line {index} policy must be an object")
+    for field_name in ["tool_name", "risk_level", "action", "reason"]:
+        if not isinstance(policy.get(field_name), str):
+            raise EpisodeValidationError(
+                f"tool-calls.jsonl line {index} policy.{field_name} must be a string",
+            )
+    approval = policy.get("approval")
+    if not isinstance(approval, dict):
+        raise EpisodeValidationError(
+            f"tool-calls.jsonl line {index} policy.approval must be an object",
+        )
+    if not isinstance(approval.get("required"), bool):
+        raise EpisodeValidationError(
+            f"tool-calls.jsonl line {index} policy.approval.required must be a bool",
+        )
+    for field_name in ["status", "reason"]:
+        if not isinstance(approval.get(field_name), str):
+            raise EpisodeValidationError(
+                f"tool-calls.jsonl line {index} policy.approval.{field_name} must be a string",
+            )
+
+
+def _tool_policy_not_evaluated(record: dict[str, Any]) -> bool:
+    error = record.get("error")
+    return (
+        record.get("status") == "error"
+        and isinstance(error, dict)
+        and error.get("type") in {"tool_not_allowed", "unknown_tool"}
+    )
 
 
 def _validate_verification_commands(records: list[dict[str, Any]]) -> None:
@@ -235,16 +271,44 @@ def _validate_verification_commands(records: list[dict[str, Any]]) -> None:
             raise EpisodeValidationError(
                 f"verification/commands.jsonl line {index} status is invalid: {status}",
             )
-        if "exit_code" in record and not (
-            isinstance(record["exit_code"], int) or record["exit_code"] is None
-        ):
+        for field_name in [
+            "exit_code",
+            "timeout",
+            "stdout_excerpt",
+            "stderr_excerpt",
+            "stdout_truncated",
+            "stderr_truncated",
+            "stdout_original_length",
+            "stderr_original_length",
+            "redacted",
+        ]:
+            if field_name not in record:
+                raise EpisodeValidationError(
+                    f"verification/commands.jsonl line {index} missing required field: {field_name}",
+                )
+        if not (isinstance(record["exit_code"], int) or record["exit_code"] is None):
             raise EpisodeValidationError(
                 f"verification/commands.jsonl line {index} exit_code must be an integer or null",
             )
-        if "timeout" in record and not isinstance(record["timeout"], bool):
+        if not isinstance(record["timeout"], bool):
             raise EpisodeValidationError(
                 f"verification/commands.jsonl line {index} timeout must be a bool",
             )
+        for field_name in ["stdout_excerpt", "stderr_excerpt"]:
+            if not isinstance(record[field_name], str):
+                raise EpisodeValidationError(
+                    f"verification/commands.jsonl line {index} {field_name} must be a string",
+                )
+        for field_name in ["stdout_truncated", "stderr_truncated", "redacted"]:
+            if not isinstance(record[field_name], bool):
+                raise EpisodeValidationError(
+                    f"verification/commands.jsonl line {index} {field_name} must be a bool",
+                )
+        for field_name in ["stdout_original_length", "stderr_original_length"]:
+            if not isinstance(record[field_name], int):
+                raise EpisodeValidationError(
+                    f"verification/commands.jsonl line {index} {field_name} must be an int",
+                )
 
 
 def _validate_environment(environment: dict[str, Any]) -> None:
@@ -401,7 +465,28 @@ def _validate_context_json(index: int, context_index: dict[str, Any], context_js
         raise EpisodeValidationError(f"{label} sources must be a list")
     for source_index, source in enumerate(sources):
         _validate_context_source(label, source_index, source)
+    _validate_next_action(label, context_json.get("next_action"))
     _validate_context_index_budget(index, context_index, sources)
+
+
+def _validate_next_action(label: str, next_action: Any) -> None:
+    if not isinstance(next_action, dict):
+        raise EpisodeValidationError(f"{label} next_action must be an object")
+    status = next_action.get("status")
+    if status not in {"none", "continue", "handle_error", "decide"}:
+        raise EpisodeValidationError(f"{label} next_action.status is invalid: {status}")
+    if not isinstance(next_action.get("reason"), str):
+        raise EpisodeValidationError(f"{label} next_action.reason must be a string")
+    observation_index = next_action.get("based_on_observation_index")
+    if observation_index is not None and not isinstance(observation_index, int):
+        raise EpisodeValidationError(
+            f"{label} next_action.based_on_observation_index must be an integer or null",
+        )
+    tool_name = next_action.get("based_on_tool_name")
+    if tool_name is not None and not isinstance(tool_name, str):
+        raise EpisodeValidationError(
+            f"{label} next_action.based_on_tool_name must be a string or null",
+        )
 
 
 def _validate_context_budget_object(
@@ -521,7 +606,7 @@ def _validate_episode_metadata(metadata: dict[str, Any]) -> None:
 
 
 def _validate_failure_record(record: dict[str, Any]) -> None:
-    """校验 failure.json，区分 legacy 缺失和存在但损坏的结构。"""
+    """校验 failure.json 的当前失败归因结构。"""
     status = record.get("status")
     if status not in {"success", "failed"}:
         raise EpisodeValidationError(f"corrupt episode: failure.json status is invalid: {status}")

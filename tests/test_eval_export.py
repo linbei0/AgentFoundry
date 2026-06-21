@@ -20,7 +20,7 @@ from haagent.runtime.state import RunStatus
 class BadArgsGateway:
     provider_name = "bad-args"
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+    def generate(self, task, model_input, tool_schemas, observations):
         if observations:
             return ModelResponse("done", [])
         return ModelResponse("bad args", [ToolCall("file_read", {"offset": 1})])
@@ -32,7 +32,7 @@ class ShellOnceGateway:
     def __init__(self) -> None:
         self._called = False
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+    def generate(self, task, model_input, tool_schemas, observations):
         if self._called or observations:
             return ModelResponse("done", [])
         self._called = True
@@ -56,6 +56,20 @@ verification_commands:{verification_block}
 """.strip(),
         encoding="utf-8",
     )
+
+
+def valid_policy(tool_name: str = "fake_tool") -> dict[str, object]:
+    return {
+        "tool_name": tool_name,
+        "risk_level": "low",
+        "action": "allow",
+        "reason": "Allowed by test policy",
+        "approval": {
+            "required": False,
+            "status": "not_required",
+            "reason": "low risk",
+        },
+    }
 
 
 def test_completed_episode_can_export_eval_case(tmp_path: Path) -> None:
@@ -273,7 +287,7 @@ policy:
     ]
 
 
-def test_eval_export_defaults_missing_approval_summary_for_legacy_tool_call(
+def test_eval_export_rejects_missing_policy_through_validator(
     tmp_path: Path,
 ) -> None:
     task_path = tmp_path / "task.yaml"
@@ -284,17 +298,11 @@ def test_eval_export_defaults_missing_approval_summary_for_legacy_tool_call(
     record.pop("policy", None)
     tool_calls_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-    eval_case = export_eval_case(result.episode_path)
-
-    assert eval_case["approval_summary"] == [
-        {
-            "tool_name": "fake_tool",
-            "action": "missing",
-            "approval_required": False,
-            "approval_status": "missing",
-            "approval_reason": "legacy/missing",
-        },
-    ]
+    with pytest.raises(
+        EpisodeValidationError,
+        match="tool-calls.jsonl line 1 missing required field: policy",
+    ):
+        export_eval_case(result.episode_path)
 
 
 def test_eval_export_includes_verification_evidence_metadata(tmp_path: Path) -> None:
@@ -380,7 +388,7 @@ def test_eval_export_rejects_damaged_sandbox_through_validator(tmp_path: Path) -
         export_eval_case(result.episode_path)
 
 
-def test_eval_export_defaults_missing_verification_metadata(tmp_path: Path) -> None:
+def test_eval_export_rejects_missing_verification_metadata(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path, verification_commands=["python -c \"import sys; sys.exit(7)\""])
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
@@ -398,15 +406,11 @@ def test_eval_export_defaults_missing_verification_metadata(tmp_path: Path) -> N
         record.pop(field_name, None)
     commands_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-    eval_case = export_eval_case(result.episode_path)
-
-    assert eval_case["verification"][0]["stdout_excerpt"] == ""
-    assert eval_case["verification"][0]["stderr_excerpt"] == ""
-    assert eval_case["verification"][0]["stdout_truncated"] is False
-    assert eval_case["verification"][0]["stderr_truncated"] is False
-    assert eval_case["verification"][0]["stdout_original_length"] == 0
-    assert eval_case["verification"][0]["stderr_original_length"] == 0
-    assert eval_case["verification"][0]["redacted"] is False
+    with pytest.raises(
+        EpisodeValidationError,
+        match="verification/commands.jsonl line 1 missing required field: stdout_excerpt",
+    ):
+        export_eval_case(result.episode_path)
 
 
 def test_invalid_episode_fails_through_validator(tmp_path: Path) -> None:
@@ -432,7 +436,7 @@ def test_exporting_same_episode_is_deterministic(tmp_path: Path) -> None:
     assert first_export["sandbox_summary"] == second_export["sandbox_summary"]
 
 
-def test_export_eval_case_marks_missing_next_action(tmp_path: Path) -> None:
+def test_export_eval_case_rejects_missing_next_action(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
@@ -441,15 +445,11 @@ def test_export_eval_case_marks_missing_next_action(tmp_path: Path) -> None:
     first_context.pop("next_action")
     first_context_path.write_text(json.dumps(first_context), encoding="utf-8")
 
-    eval_case = export_eval_case(result.episode_path)
-
-    assert eval_case["next_actions"][0] == {
-        "context_id": "0001",
-        "status": "missing",
-        "reason": "legacy/missing",
-        "based_on_observation_index": None,
-        "based_on_tool_name": None,
-    }
+    with pytest.raises(
+        EpisodeValidationError,
+        match="contexts/0001.json next_action must be an object",
+    ):
+        export_eval_case(result.episode_path)
 
 
 def test_export_eval_case_uses_package_view(tmp_path: Path, monkeypatch) -> None:
@@ -467,7 +467,7 @@ def test_export_eval_case_uses_package_view(tmp_path: Path, monkeypatch) -> None
         failure_record={"status": "success", "failure": None},
         context_manifest={"context_count": 0, "contexts": []},
         transcript=[],
-        tool_calls=[{"tool_name": "fake_tool", "status": "success"}],
+        tool_calls=[{"tool_name": "fake_tool", "status": "success", "policy": valid_policy()}],
         verification_commands=[],
         sandbox={
             "workspace_root": str(tmp_path),
@@ -498,10 +498,10 @@ def test_export_eval_case_uses_package_view(tmp_path: Path, monkeypatch) -> None
     assert eval_case["approval_summary"] == [
         {
             "tool_name": "fake_tool",
-            "action": "missing",
+            "action": "allow",
             "approval_required": False,
-            "approval_status": "missing",
-            "approval_reason": "legacy/missing",
+            "approval_status": "not_required",
+            "approval_reason": "low risk",
         },
     ]
     assert eval_case["final_response"] is None

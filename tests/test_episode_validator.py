@@ -102,8 +102,67 @@ class OneShotGateway:
     def __init__(self, response: ModelResponse) -> None:
         self._response = response
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+    def generate(self, task, model_input, tool_schemas, observations):
         return self._response
+
+
+def valid_policy(tool_name: str = "fake_tool") -> dict[str, object]:
+    return {
+        "tool_name": tool_name,
+        "risk_level": "low",
+        "action": "allow",
+        "reason": "Allowed by test policy",
+        "approval": {
+            "required": False,
+            "status": "not_required",
+            "reason": "low risk",
+        },
+    }
+
+
+def write_tool_call(
+    episode_path: Path,
+    *,
+    tool_name: object = "fake_tool",
+    status: object = "success",
+    policy: object = None,
+    include_policy: bool = True,
+    error: object | None = None,
+) -> None:
+    record: dict[str, object] = {"tool_name": tool_name, "status": status}
+    if include_policy:
+        record["policy"] = valid_policy(str(tool_name)) if policy is None else policy
+    if error is not None:
+        record["error"] = error
+    (episode_path / "tool-calls.jsonl").write_text(
+        json.dumps(record) + "\n",
+        encoding="utf-8",
+    )
+
+
+def valid_verification_command() -> dict[str, object]:
+    return {
+        "command": "uv run pytest",
+        "status": "success",
+        "exit_code": 0,
+        "timeout": False,
+        "stdout_excerpt": "",
+        "stderr_excerpt": "",
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "stdout_original_length": 0,
+        "stderr_original_length": 0,
+        "redacted": False,
+    }
+
+
+def write_verification_command(episode_path: Path, **updates: object) -> None:
+    record = valid_verification_command()
+    record.update(updates)
+    (episode_path / "verification" / "commands.jsonl").write_text(
+        json.dumps(record) + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_validator_accepts_valid_episode_metadata(tmp_path: Path) -> None:
@@ -160,16 +219,26 @@ def test_validator_rejects_non_string_workspace_root(tmp_path: Path) -> None:
         read_episode_metadata(episode_path)
 
 
-def test_validator_accepts_legacy_missing_episode_and_failure_json(tmp_path: Path) -> None:
+def test_validator_rejects_missing_episode_json(tmp_path: Path) -> None:
     episode_path = tmp_path / "episode-1"
     episode_path.mkdir()
 
-    metadata, warnings = read_episode_metadata(episode_path)
-    failure_record = read_failure_record(episode_path)
+    with pytest.raises(
+        EpisodeValidationError,
+        match="episode package missing required file: episode.json",
+    ):
+        read_episode_metadata(episode_path)
 
-    assert metadata is None
-    assert warnings == ["warning: episode.json missing; inspecting legacy episode", ""]
-    assert failure_record is None
+
+def test_validator_rejects_missing_failure_json(tmp_path: Path) -> None:
+    episode_path = tmp_path / "episode-1"
+    episode_path.mkdir()
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="episode package missing required file: failure.json",
+    ):
+        read_failure_record(episode_path)
 
 
 def test_validator_rejects_failure_unknown_category(tmp_path: Path) -> None:
@@ -406,10 +475,10 @@ def test_package_validator_rejects_tool_call_missing_status(tmp_path: Path) -> N
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": "fake_tool"}) + "\n",
-        encoding="utf-8",
-    )
+    write_tool_call(result.episode_path, include_policy=True)
+    record = json.loads((result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8"))
+    record.pop("status")
+    (result.episode_path / "tool-calls.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
 
     with pytest.raises(
         EpisodeValidationError,
@@ -422,10 +491,7 @@ def test_package_validator_rejects_tool_name_non_string(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": 123, "status": "success"}) + "\n",
-        encoding="utf-8",
-    )
+    write_tool_call(result.episode_path, tool_name=123, policy=valid_policy("fake_tool"))
 
     with pytest.raises(
         EpisodeValidationError,
@@ -438,10 +504,7 @@ def test_package_validator_rejects_tool_status_invalid(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": "fake_tool", "status": "timeout"}) + "\n",
-        encoding="utf-8",
-    )
+    write_tool_call(result.episode_path, status="timeout")
 
     with pytest.raises(
         EpisodeValidationError,
@@ -454,24 +517,68 @@ def test_package_validator_accepts_tool_status_error(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": "fake_tool", "status": "error"}) + "\n",
-        encoding="utf-8",
-    )
+    write_tool_call(result.episode_path, status="error")
 
     validate_episode_package(result.episode_path)
 
 
-def test_package_validator_accepts_legacy_tool_status_failed(tmp_path: Path) -> None:
+def test_package_validator_rejects_tool_call_missing_policy(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": "fake_tool", "status": "failed"}) + "\n",
-        encoding="utf-8",
+    write_tool_call(result.episode_path, include_policy=False)
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="tool-calls.jsonl line 1 missing required field: policy",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_tool_call_missing_approval(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    policy = valid_policy()
+    policy.pop("approval")
+    write_tool_call(result.episode_path, policy=policy)
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="tool-calls.jsonl line 1 policy.approval must be an object",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+@pytest.mark.parametrize("error_type", ["tool_not_allowed", "unknown_tool"])
+def test_package_validator_allows_policy_none_for_policy_not_evaluated_errors(
+    tmp_path: Path,
+    error_type: str,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    write_tool_call(
+        result.episode_path,
+        status="error",
+        policy=None,
+        error={"type": error_type, "message": "policy not evaluated"},
     )
 
     validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_tool_status_failed(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    write_tool_call(result.episode_path, status="failed")
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="tool-calls.jsonl line 1 status is invalid: failed",
+    ):
+        validate_episode_package(result.episode_path)
 
 
 @pytest.mark.parametrize("status", ["timeout", "skipped"])
@@ -479,10 +586,7 @@ def test_package_validator_rejects_unknown_tool_status(tmp_path: Path, status: s
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "tool-calls.jsonl").write_text(
-        json.dumps({"tool_name": "fake_tool", "status": status}) + "\n",
-        encoding="utf-8",
-    )
+    write_tool_call(result.episode_path, status=status)
 
     with pytest.raises(
         EpisodeValidationError,
@@ -515,10 +619,10 @@ def test_package_validator_rejects_verification_command_missing_command(tmp_path
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "verification" / "commands.jsonl").write_text(
-        json.dumps({"status": "success"}) + "\n",
-        encoding="utf-8",
-    )
+    write_verification_command(result.episode_path)
+    record = json.loads((result.episode_path / "verification" / "commands.jsonl").read_text(encoding="utf-8"))
+    record.pop("command")
+    (result.episode_path / "verification" / "commands.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
 
     with pytest.raises(
         EpisodeValidationError,
@@ -531,10 +635,7 @@ def test_package_validator_rejects_verification_command_non_string(tmp_path: Pat
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "verification" / "commands.jsonl").write_text(
-        json.dumps({"command": 123, "status": "success"}) + "\n",
-        encoding="utf-8",
-    )
+    write_verification_command(result.episode_path, command=123)
 
     with pytest.raises(
         EpisodeValidationError,
@@ -547,10 +648,7 @@ def test_package_validator_rejects_verification_status_invalid(tmp_path: Path) -
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "verification" / "commands.jsonl").write_text(
-        json.dumps({"command": "uv run pytest", "status": "skipped"}) + "\n",
-        encoding="utf-8",
-    )
+    write_verification_command(result.episode_path, status="skipped")
 
     with pytest.raises(
         EpisodeValidationError,
@@ -563,10 +661,7 @@ def test_package_validator_rejects_verification_exit_code_invalid(tmp_path: Path
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "verification" / "commands.jsonl").write_text(
-        json.dumps({"command": "uv run pytest", "status": "success", "exit_code": "0"}) + "\n",
-        encoding="utf-8",
-    )
+    write_verification_command(result.episode_path, exit_code="0")
 
     with pytest.raises(
         EpisodeValidationError,
@@ -579,14 +674,28 @@ def test_package_validator_rejects_verification_timeout_invalid(tmp_path: Path) 
     task_path = tmp_path / "task.yaml"
     write_task(task_path)
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
-    (result.episode_path / "verification" / "commands.jsonl").write_text(
-        json.dumps({"command": "uv run pytest", "status": "success", "timeout": "false"}) + "\n",
-        encoding="utf-8",
-    )
+    write_verification_command(result.episode_path, timeout="false")
 
     with pytest.raises(
         EpisodeValidationError,
         match="verification/commands.jsonl line 1 timeout must be a bool",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_missing_verification_metadata(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    write_verification_command(result.episode_path)
+    commands_path = result.episode_path / "verification" / "commands.jsonl"
+    record = json.loads(commands_path.read_text(encoding="utf-8"))
+    record.pop("stdout_excerpt")
+    commands_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="verification/commands.jsonl line 1 missing required field: stdout_excerpt",
     ):
         validate_episode_package(result.episode_path)
 
@@ -758,6 +867,22 @@ def test_package_validator_rejects_missing_context_index_budget(tmp_path: Path) 
     with pytest.raises(
         EpisodeValidationError,
         match="context-manifest.json contexts\\[0\\].budget must be an object",
+    ):
+        validate_episode_package(result.episode_path)
+
+
+def test_package_validator_rejects_missing_context_next_action(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path)
+    result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
+    context_path = first_context_json_path(result.episode_path)
+    context_json = read_json(context_path)
+    context_json.pop("next_action")
+    write_json(context_path, context_json)
+
+    with pytest.raises(
+        EpisodeValidationError,
+        match="contexts/0001.json next_action must be an object",
     ):
         validate_episode_package(result.episode_path)
 

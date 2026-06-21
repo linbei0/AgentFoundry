@@ -19,7 +19,7 @@ from haagent.verification.engine import VerificationResult
 class FailingGateway:
     provider_name = "failing"
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+    def generate(self, task, model_input, tool_schemas, observations):
         raise ModelCallError("model exploded")
 
 
@@ -29,7 +29,7 @@ class TypeErrorGateway:
     def __init__(self) -> None:
         self.call_count = 0
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
+    def generate(self, task, model_input, tool_schemas, observations):
         self.call_count += 1
         raise TypeError("internal provider type error mentioning model_input")
 
@@ -43,10 +43,10 @@ class SequenceGateway:
         self.model_inputs_seen = []
         self.tool_schemas_seen = []
 
-    def generate(self, task, model_input=None, tool_schemas=None, observations=None):
-        self.observations_seen.append(list(observations or []))
+    def generate(self, task, model_input, tool_schemas, observations):
+        self.observations_seen.append(list(observations))
         self.model_inputs_seen.append(model_input)
-        self.tool_schemas_seen.append(list(tool_schemas or []))
+        self.tool_schemas_seen.append(list(tool_schemas))
         return self._responses.pop(0)
 
 

@@ -19,6 +19,18 @@ The current runtime loads `task.yaml`, runs a small orchestrator state machine, 
 - Prefer `apply_patch` for file edits to avoid PowerShell encoding issues.
 - Do not add UI, browser automation, multi-agent behavior, or long-term memory unless explicitly requested.
 
+## Compatibility Policy
+
+- HaAgent is currently a pre-user, pre-1.0 development project.
+- Do not preserve compatibility for historical `.runs`, old episode schemas, old context manifests, old eval cases, or old internal test interfaces unless explicitly requested.
+- Do not add legacy paths, fallback behavior, old-field support, old-status support, or silent degradation just to keep development artifacts readable.
+- Schema and trace format changes may break old local run artifacts; new runs must remain explicit, validated, inspectable, and covered by tests.
+- Compatibility is allowed only for current real needs:
+  - external provider differences, such as OpenAI Responses and OpenAI-compatible Chat Completions;
+  - task authoring ergonomics, such as omitted `policy` or `workspace_root`;
+  - real partial-failure states, such as a run failing before verification files are written.
+- If compatibility seems necessary, state who depends on it, what real failure it prevents, and why fail-fast behavior is not better.
+
 ## Testing Instructions
 
 - Add or update pytest coverage for every behavior change.

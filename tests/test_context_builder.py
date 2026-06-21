@@ -598,7 +598,11 @@ def test_context_builder_pending_next_step_handles_tool_error(tmp_path: Path) ->
     assert pending_source["budget"]["inclusion_reason"]
 
 
-def test_context_builder_next_action_handles_unknown_tool_status(tmp_path: Path) -> None:
+@pytest.mark.parametrize("latest_status", ["unknown", "failed"])
+def test_context_builder_next_action_handles_unknown_tool_status(
+    tmp_path: Path,
+    latest_status: str,
+) -> None:
     writer = make_writer(tmp_path)
     builder = ContextBuilder(
         task=make_task(),
@@ -614,7 +618,7 @@ def test_context_builder_next_action_handles_unknown_tool_status(tmp_path: Path)
             {
                 "tool_name": "file_read",
                 "args": {"path": "notes.txt"},
-                "result": {"status": "unknown"},
+                "result": {"status": latest_status},
             },
         ],
     )
