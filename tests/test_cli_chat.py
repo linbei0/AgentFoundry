@@ -99,6 +99,23 @@ def test_cli_chat_repl_runs_one_prompt_then_quits(
     assert task.workspace_root == str(tmp_path.resolve())
 
 
+def test_cli_chat_default_tools_include_real_task_tool_pack(tmp_path: Path, capsys) -> None:
+    exit_code = cli.main(["chat", "Check tools", "--workspace-root", str(tmp_path), "--provider", "fake"])
+
+    output = capsys.readouterr().out
+    episode_path = Path(
+        next(line.split("=", 1)[1] for line in output.splitlines() if line.startswith("episode_path=")),
+    )
+    task = load_task(episode_path / "task.yaml")
+    assert exit_code == 0
+    assert "file_write" in task.allowed_tools
+    assert "code_run" in task.allowed_tools
+    assert "file_write" in task.policy["approval_allowed_tools"]
+    assert "code_run" in task.policy["approval_allowed_tools"]
+    assert "file_write" in task.policy["approved_tools"]
+    assert "code_run" in task.policy["approved_tools"]
+
+
 def test_cli_chat_single_prompt_accepts_explicit_workspace_root(
     tmp_path: Path,
     capsys,

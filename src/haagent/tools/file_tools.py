@@ -1,7 +1,7 @@
 """
 haagent/tools/file_tools.py - 文件类本地工具
 
-实现 file_list、file_search、file_read 和 apply_patch，并限制路径在 workspace 内。
+实现 file_list、file_search、file_read、file_write 和 apply_patch，并限制路径在 workspace 内。
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -125,7 +126,9 @@ def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     if path is None:
         return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
     if not path.exists():
-        return tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
+        result = tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
+        result["suggestions"] = _similar_workspace_paths(path_arg, workspace_root)
+        return result
     if not path.is_file():
         return tool_error("tool_argument_invalid", f"path must be a file: {path_arg}; {PATH_GUIDANCE}")
 
@@ -134,14 +137,75 @@ def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     if offset < 0 or limit < 0:
         return tool_error("tool_argument_invalid", "offset and limit must be non-negative")
 
+    keyword = args.get("keyword")
+    if keyword is not None and (not isinstance(keyword, str) or not keyword):
+        return tool_error("tool_argument_invalid", "keyword must be a non-empty string")
+
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    selected = lines[offset : offset + limit]
+    total_lines = len(lines)
+    if keyword is None:
+        start_index = offset
+    else:
+        match_index = _first_keyword_line(lines, keyword)
+        if match_index is None:
+            return tool_error("keyword_not_found", f"keyword not found in {path_arg}: {keyword}")
+        start_index = max(0, match_index - (limit // 2))
+        if start_index + limit > total_lines:
+            start_index = max(0, total_lines - limit)
+
+    end_index = min(start_index + limit, total_lines)
+    selected = lines[start_index:end_index]
     return {
         "status": "success",
         "path": str(path),
         "offset": offset,
         "limit": limit,
+        "keyword": keyword,
+        "start_line": start_index + 1 if selected else start_index,
+        "end_line": end_index,
+        "line_count": total_lines,
         "content": "".join(selected),
+        "truncated": start_index > 0 or end_index < total_lines,
+    }
+
+
+def file_write(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+    path_arg = args.get("path")
+    content = args.get("content")
+    mode = args.get("mode")
+    if not all(isinstance(value, str) for value in (path_arg, content, mode)):
+        return tool_error("tool_argument_invalid", "path, content, and mode must be strings")
+    if mode not in {"create", "overwrite", "append"}:
+        return tool_error("tool_argument_invalid", "mode must be create, overwrite, or append")
+
+    path = resolve_workspace_path(path_arg, workspace_root)
+    if path is None:
+        return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    if not path.parent.exists():
+        return tool_error("tool_argument_invalid", f"parent directory does not exist: {path_arg}; {PATH_GUIDANCE}")
+    if not path.parent.is_dir():
+        return tool_error("tool_argument_invalid", f"parent path must be a directory: {path_arg}; {PATH_GUIDANCE}")
+    if path.exists() and not path.is_file():
+        return tool_error("tool_argument_invalid", f"path must be a file: {path_arg}; {PATH_GUIDANCE}")
+
+    existed = path.exists()
+    if mode == "create" and existed:
+        return tool_error("file_exists", f"path already exists: {path_arg}")
+    if mode == "append" and not existed:
+        return tool_error("file_not_found", f"path does not exist for append: {path_arg}")
+
+    if mode == "append":
+        with path.open("a", encoding="utf-8") as file:
+            file.write(content)
+    else:
+        path.write_text(content, encoding="utf-8")
+
+    return {
+        "status": "success",
+        "path": str(path),
+        "mode": mode,
+        "bytes_written": len(content.encode("utf-8")),
+        "created": not existed,
     }
 
 
@@ -218,6 +282,32 @@ def _collect_file_tree(
 def _relative_tree_path(path: Path, root: Path) -> str:
     suffix = "/" if path.is_dir() else ""
     return path.relative_to(root).as_posix() + suffix
+
+
+def _first_keyword_line(lines: list[str], keyword: str) -> int | None:
+    for index, line in enumerate(lines):
+        if keyword in line:
+            return index
+    return None
+
+
+def _similar_workspace_paths(path_arg: str, workspace_root: Path) -> list[str]:
+    root = workspace_root.resolve()
+    candidates: list[tuple[float, str]] = []
+    for path in root.rglob("*"):
+        relative_parts = path.relative_to(root).parts
+        if any(part in NOISE_DIRECTORIES for part in relative_parts):
+            continue
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        score = max(
+            SequenceMatcher(None, path_arg, relative).ratio(),
+            SequenceMatcher(None, Path(path_arg).name, path.name).ratio(),
+        )
+        if score >= 0.45:
+            candidates.append((score, relative))
+    return [relative for _, relative in sorted(candidates, key=lambda item: (-item[0], item[1]))[:5]]
 
 
 def _parse_rg_json(output: str) -> list[dict[str, Any]]:

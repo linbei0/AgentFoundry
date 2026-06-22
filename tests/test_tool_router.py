@@ -185,19 +185,49 @@ def test_file_read_supports_offset_and_limit(tmp_path: Path) -> None:
     assert result["content"] == "one\ntwo\n"
     assert result["offset"] == 1
     assert result["limit"] == 2
+    assert result["start_line"] == 2
+    assert result["end_line"] == 3
+    assert result["line_count"] == 4
 
 
-def test_file_read_missing_path_returns_short_argument_error(tmp_path: Path) -> None:
+def test_file_read_keyword_reads_near_first_match(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("zero\none\nneedle here\nthree\nfour\n", encoding="utf-8")
     writer = make_writer(tmp_path)
     router = ToolRouter(allowed_tools=["file_read"], episode_writer=writer, workspace_root=tmp_path)
 
-    result = router.dispatch("file_read", {"path": "missing.txt"})
+    result = router.dispatch("file_read", {"path": "notes.txt", "keyword": "needle", "limit": 3})
+
+    assert result["status"] == "success"
+    assert result["keyword"] == "needle"
+    assert result["start_line"] == 2
+    assert result["end_line"] == 4
+    assert result["content"] == "one\nneedle here\nthree\n"
+
+
+def test_file_read_keyword_miss_returns_structured_error(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_read"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_read", {"path": "notes.txt", "keyword": "needle"})
 
     assert result["status"] == "error"
-    assert result["error"] == {
-        "type": "tool_argument_invalid",
-        "message": "path does not exist: missing.txt; path is relative to workspace_root",
-    }
+    assert result["error"]["type"] == "keyword_not_found"
+    assert "needle" in result["error"]["message"]
+
+
+def test_file_read_missing_path_returns_short_argument_error(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_read"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_read", {"path": "note.txt"})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "tool_argument_invalid"
+    assert result["error"]["message"] == "path does not exist: note.txt; path is relative to workspace_root"
+    assert result["suggestions"] == ["notes.txt"]
     assert str(tmp_path) not in result["error"]["message"]
 
 
@@ -395,6 +425,152 @@ def test_apply_patch_missing_path_returns_short_argument_error(tmp_path: Path) -
         "message": "path does not exist: missing.txt; path is relative to workspace_root",
     }
     assert str(tmp_path) not in result["error"]["message"]
+
+
+def test_file_write_create_overwrite_and_append(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    created = router.dispatch("file_write", {"path": "notes.txt", "content": "hello\n", "mode": "create"})
+    create_existing = router.dispatch("file_write", {"path": "notes.txt", "content": "nope", "mode": "create"})
+    overwritten = router.dispatch("file_write", {"path": "notes.txt", "content": "new", "mode": "overwrite"})
+    appended = router.dispatch("file_write", {"path": "notes.txt", "content": "\nmore", "mode": "append"})
+
+    assert created["status"] == "success"
+    assert created["created"] is True
+    assert created["bytes_written"] == len("hello\n".encode("utf-8"))
+    assert create_existing["status"] == "error"
+    assert create_existing["error"]["type"] == "file_exists"
+    assert overwritten["status"] == "success"
+    assert overwritten["created"] is False
+    assert appended["status"] == "success"
+    assert appended["created"] is False
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "new\nmore"
+    trace_lines = (writer.path / "tool-calls.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["tool_name"] for line in trace_lines] == ["file_write"] * 4
+
+
+def test_file_write_rejects_workspace_escape_and_missing_parent(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    escaped = router.dispatch("file_write", {"path": "../file_write_outside.txt", "content": "x", "mode": "create"})
+    missing_parent = router.dispatch("file_write", {"path": "missing/notes.txt", "content": "x", "mode": "create"})
+
+    assert escaped["status"] == "error"
+    assert escaped["error"]["type"] == "tool_argument_invalid"
+    assert missing_parent["status"] == "error"
+    assert missing_parent["error"]["type"] == "tool_argument_invalid"
+    assert not (tmp_path.parent / "file_write_outside.txt").exists()
+
+
+def test_file_write_append_requires_existing_file(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch("file_write", {"path": "notes.txt", "content": "x", "mode": "append"})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "file_not_found"
+
+
+def test_file_write_denied_before_handler(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_write"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_write", {"path": "notes.txt", "content": "x", "mode": "create"})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "policy_denied"
+    assert not (tmp_path / "notes.txt").exists()
+    record = _read_single_tool_call(writer)
+    assert record["policy"]["action"] == "deny"
+    assert record["policy"]["approval"]["reason"] == "approval not allowed for high risk tool file_write"
+
+
+def test_code_run_success_nonzero_timeout_and_truncation(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["code_run"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["code_run"],
+        approved_tools=["code_run"],
+    )
+
+    success = router.dispatch("code_run", {"code": "print('ok')", "timeout_seconds": 5})
+    failed = router.dispatch("code_run", {"code": "import sys\nprint('bad')\nsys.exit(7)", "timeout_seconds": 5})
+    timeout = router.dispatch("code_run", {"code": "import time\ntime.sleep(2)", "timeout_seconds": 0.1})
+    long_output = router.dispatch("code_run", {"code": "print('x' * 5000)", "timeout_seconds": 5})
+
+    assert success["status"] == "success"
+    assert success["exit_code"] == 0
+    assert success["stdout_excerpt"] == "ok\n"
+    assert success["script_path"].startswith(".haagent-tmp/")
+    assert failed["status"] == "error"
+    assert failed["exit_code"] == 7
+    assert failed["error"]["type"] == "code_run_failed"
+    assert timeout["status"] == "error"
+    assert timeout["exit_code"] is None
+    assert timeout["error"]["type"] == "timeout"
+    assert long_output["status"] == "success"
+    assert long_output["truncated"] is True
+    assert len(long_output["stdout_excerpt"]) < 5000
+
+
+def test_code_run_cwd_is_workspace_bound(tmp_path: Path) -> None:
+    subdir = tmp_path / "pkg"
+    subdir.mkdir()
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["code_run"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["code_run"],
+        approved_tools=["code_run"],
+    )
+
+    success = router.dispatch(
+        "code_run",
+        {"code": "from pathlib import Path\nprint(Path.cwd().name)", "cwd": "pkg", "timeout_seconds": 5},
+    )
+    escaped = router.dispatch("code_run", {"code": "print('x')", "cwd": "..", "timeout_seconds": 5})
+
+    assert success["status"] == "success"
+    assert success["stdout_excerpt"].strip() == "pkg"
+    assert escaped["status"] == "error"
+    assert escaped["error"]["type"] == "tool_argument_invalid"
+
+
+def test_code_run_denied_before_handler(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["code_run"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("code_run", {"code": "print('x')", "timeout_seconds": 5})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "policy_denied"
+    assert not (tmp_path / ".haagent-tmp").exists()
+    record = _read_single_tool_call(writer)
+    assert record["policy"]["approval"]["reason"] == "approval not allowed for high risk tool code_run"
 
 
 def test_shell_policy_denial_writes_tool_call_error(tmp_path: Path) -> None:

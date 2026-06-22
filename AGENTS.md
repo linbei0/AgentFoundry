@@ -24,6 +24,7 @@ The current priority is real Agent capability and experience:
 - Keep `task.yaml` for advanced reproducibility, batch tasks, smoke cases, and eval construction; do not treat it as the ordinary user entry point.
 - Do not block real task execution on harness completeness. Build the direct Agent experience first, keep harness constraints and traces intact, and fill in missing harness engineering after the experience proves useful.
 - Chat should default to the current working directory as workspace root, allow explicit `--workspace-root`, and keep file/shell tools bounded by that root.
+- The real task tool pack includes `file_read`, `file_write`, `apply_patch`, `shell`, and `code_run`; keep these tools atomic and workspace-bound.
 - Tasks may be analysis-only, documentation-only, code-changing, or verification-oriented. Do not assume every task must modify code or have a verification command.
 
 ## Document Precedence
@@ -94,7 +95,7 @@ If documents disagree, prefer the narrower and more current rule. Do not silentl
 - Every tool call must append a record to `tool-calls.jsonl`.
 - Model calls and responses must append records to `transcript.jsonl`.
 - Failures must be explicit and structured; do not add silent fallbacks or simulated success paths.
-- Path-mutating tools must stay inside the configured workspace root.
+- Path-mutating and execution tools must stay inside the configured workspace root and must not bypass ToolRouter policy or approval decisions.
 - Chat/natural-language entry points must not bypass the runtime contracts. If they generate temporary task contracts internally, those contracts must be recorded in the episode for later inspection.
 - REPL chat may carry only bounded session summaries into the next model input; it must not copy full history, full episode traces, or full tool outputs.
 - Harness audit data should not be copied wholesale into model input. Use compact observations and bounded source budgets.

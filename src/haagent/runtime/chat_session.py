@@ -22,8 +22,16 @@ from haagent.runtime.episode_validator import (
 from haagent.runtime.orchestrator import RunOrchestrator
 
 
-CHAT_ALLOWED_TOOLS = ["file_list", "file_search", "file_read", "apply_patch", "shell"]
-CHAT_APPROVED_TOOLS = ["apply_patch", "shell"]
+CHAT_ALLOWED_TOOLS = [
+    "file_list",
+    "file_search",
+    "file_read",
+    "file_write",
+    "code_run",
+    "apply_patch",
+    "shell",
+]
+CHAT_APPROVED_TOOLS = ["file_write", "code_run", "apply_patch", "shell"]
 CHAT_MAX_TURNS = 20
 SESSION_SUMMARY_CHAR_LIMIT = 1000
 

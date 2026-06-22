@@ -25,8 +25,12 @@ def observation_summary(observation: dict[str, object]) -> dict[str, object]:
         return _file_list_observation_summary(args, result)
     if tool_name == "file_read":
         return _file_read_observation_summary(args, result)
+    if tool_name == "file_write":
+        return _file_write_observation_summary(args, result)
     if tool_name == "file_search":
         return _file_search_observation_summary(args, result)
+    if tool_name == "code_run":
+        return _code_run_observation_summary(args, result)
     if tool_name == "shell":
         return _shell_observation_summary(args, result)
     if tool_name == "apply_patch":
@@ -49,14 +53,39 @@ def _file_read_observation_summary(
 ) -> dict[str, object]:
     content = _string_value(result.get("content"))
     excerpt, truncated = _compact_excerpt(content)
+    selected_line_count = len(content.splitlines())
+    offset = _first_present(args.get("offset"), result.get("offset"))
+    start_line = result.get("start_line")
+    if start_line is None and isinstance(offset, int) and selected_line_count:
+        start_line = offset + 1
+    end_line = result.get("end_line")
+    if end_line is None and isinstance(start_line, int) and selected_line_count:
+        end_line = start_line + selected_line_count - 1
     return {
         "status": _string_value(result.get("status")),
         "path": _first_present_string(args.get("path"), result.get("path")),
-        "offset": _first_present(args.get("offset"), result.get("offset")),
+        "offset": offset,
         "limit": _first_present(args.get("limit"), result.get("limit")),
-        "line_count": len(content.splitlines()),
+        "keyword": _first_present(args.get("keyword"), result.get("keyword")),
+        "start_line": start_line,
+        "end_line": end_line,
+        "line_count": _first_present(result.get("line_count"), selected_line_count),
         "excerpt": excerpt,
-        "truncated": truncated,
+        "truncated": bool(result.get("truncated")) or truncated,
+    }
+
+
+def _file_write_observation_summary(
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, object]:
+    return {
+        "status": _string_value(result.get("status")),
+        "path": _first_present_string(args.get("path"), result.get("path")),
+        "mode": _first_present_string(args.get("mode"), result.get("mode")),
+        "bytes_written": result.get("bytes_written"),
+        "created": result.get("created"),
+        "truncated": False,
     }
 
 
@@ -110,6 +139,22 @@ def _shell_observation_summary(
         "stdout_excerpt": stdout_excerpt,
         "stderr_excerpt": stderr_excerpt,
         "truncated": stdout_truncated or stderr_truncated,
+    }
+
+
+def _code_run_observation_summary(
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, object]:
+    stdout_excerpt, stdout_truncated = _compact_excerpt(_string_value(result.get("stdout_excerpt")))
+    stderr_excerpt, stderr_truncated = _compact_excerpt(_string_value(result.get("stderr_excerpt")))
+    return {
+        "status": _string_value(result.get("status")),
+        "exit_code": result.get("exit_code"),
+        "stdout_excerpt": stdout_excerpt,
+        "stderr_excerpt": stderr_excerpt,
+        "script_path": _string_value(result.get("script_path")),
+        "truncated": bool(result.get("truncated")) or stdout_truncated or stderr_truncated,
     }
 
 

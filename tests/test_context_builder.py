@@ -119,7 +119,7 @@ def test_context_builder_model_input_contains_tool_usage(tmp_path: Path) -> None
     model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
     assert "goal: Build context" in model_input
     assert "fake_tool: deterministic test tool" in model_input
-    assert "file_read: read a workspace text file with offset and limit" in model_input
+    assert "file_read: read a workspace text file with offset, limit, or keyword context" in model_input
     assert "verification_commands:" in model_input
     assert "Plan:" in model_input
     assert "Observations:" in model_input
@@ -451,6 +451,8 @@ def test_context_builder_compacts_long_file_read_observation(tmp_path: Path) -> 
     assert '"path": "big.txt"' in observation_line
     assert '"offset": 10' in observation_line
     assert '"limit": 80' in observation_line
+    assert '"start_line": 11' in observation_line
+    assert '"end_line": 90' in observation_line
     assert '"line_count": 80' in observation_line
     assert '"excerpt":' in observation_line
     assert '"truncated": true' in observation_line
@@ -629,6 +631,85 @@ def test_context_builder_compacts_apply_patch_observation(tmp_path: Path) -> Non
     assert '"new_text_length": 26' in observation_line
     assert '"old_text_excerpt": "old value"' in observation_line
     assert '"new_text_excerpt": "new value with more detail"' in observation_line
+
+
+def test_context_builder_compacts_file_write_observation_without_content(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    secret_content = "FULL_FILE_CONTENT_SHOULD_NOT_ENTER_MODEL"
+    builder = ContextBuilder(
+        task=make_task(["file_write"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "file_write",
+                "args": {
+                    "path": "notes.txt",
+                    "content": secret_content,
+                    "mode": "overwrite",
+                },
+                "result": {
+                    "status": "success",
+                    "path": str(tmp_path / "notes.txt"),
+                    "mode": "overwrite",
+                    "bytes_written": len(secret_content.encode("utf-8")),
+                    "created": False,
+                },
+            },
+        ],
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    observation_line = _single_observation_line(model_input)
+    assert '"path": "notes.txt"' in observation_line
+    assert '"mode": "overwrite"' in observation_line
+    assert '"bytes_written": 40' in observation_line
+    assert '"created": false' in observation_line
+    assert secret_content not in model_input
+
+
+def test_context_builder_compacts_code_run_observation_without_full_output_or_code(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    code = "print('CODE_SHOULD_NOT_ENTER_MODEL')"
+    stdout = "stdout-start-" + ("o" * 600) + "-stdout-end"
+    stderr = "stderr-start-" + ("e" * 600) + "-stderr-end"
+    builder = ContextBuilder(
+        task=make_task(["code_run"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "code_run",
+                "args": {"code": code, "timeout_seconds": 5},
+                "result": {
+                    "status": "error",
+                    "exit_code": 2,
+                    "stdout_excerpt": stdout[:240],
+                    "stderr_excerpt": stderr[:240],
+                    "truncated": True,
+                    "script_path": ".haagent-tmp/code-run-test.py",
+                    "error": {"type": "code_run_failed", "message": "python exited with code 2"},
+                },
+            },
+        ],
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    observation_line = _single_observation_line(model_input)
+    assert '"exit_code": 2' in observation_line
+    assert '"script_path": ".haagent-tmp/code-run-test.py"' in observation_line
+    assert '"stdout_excerpt": "stdout-start-' in observation_line
+    assert '"stderr_excerpt": "stderr-start-' in observation_line
+    assert '"truncated": true' in observation_line
+    assert "CODE_SHOULD_NOT_ENTER_MODEL" not in model_input
+    assert "-stdout-end" not in model_input
+    assert "-stderr-end" not in model_input
 
 
 def test_tool_call_trace_keeps_full_result_when_context_compacts_observation(

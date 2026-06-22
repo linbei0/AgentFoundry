@@ -22,6 +22,8 @@ def test_tool_registry_contains_mvp_tools() -> None:
         "file_list",
         "file_search",
         "file_read",
+        "file_write",
+        "code_run",
         "apply_patch",
         "shell",
     }
@@ -83,6 +85,31 @@ def test_export_shell_schema_describes_cwd_relative_to_workspace_root() -> None:
     assert "omit" in cwd_description
 
 
+def test_file_read_schema_supports_keyword() -> None:
+    schemas = export_tool_schemas(["file_read"])
+    schema = schemas[0]
+
+    assert "keyword" in schema["parameters"]["properties"]
+    assert schema["parameters"]["properties"]["keyword"]["type"] == "string"
+
+
+def test_file_write_schema_describes_modes() -> None:
+    schemas = export_tool_schemas(["file_write"])
+    mode_schema = schemas[0]["parameters"]["properties"]["mode"]
+
+    assert mode_schema["enum"] == ["create", "overwrite", "append"]
+    assert schemas[0]["parameters"]["required"] == ["path", "content", "mode"]
+
+
+def test_code_run_schema_describes_timeout_and_cwd() -> None:
+    schemas = export_tool_schemas(["code_run"])
+    properties = schemas[0]["parameters"]["properties"]
+
+    assert "timeout_seconds" in properties
+    assert "cwd" in properties
+    assert "workspace_root" in properties["cwd"]["description"]
+
+
 def test_tool_registry_rejects_unknown_tool() -> None:
     with pytest.raises(KeyError, match="unknown tool: mystery_tool"):
         get_tool_definition("mystery_tool")
@@ -94,6 +121,8 @@ def test_tool_registry_rejects_unknown_tool() -> None:
 def test_mutating_tools_are_high_risk() -> None:
     assert TOOL_REGISTRY["apply_patch"].risk_level == "high"
     assert TOOL_REGISTRY["shell"].risk_level == "high"
+    assert TOOL_REGISTRY["file_write"].risk_level == "high"
+    assert TOOL_REGISTRY["code_run"].risk_level == "high"
 
 
 def test_current_tool_registry_self_check_passes() -> None:

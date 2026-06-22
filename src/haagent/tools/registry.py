@@ -88,7 +88,7 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "file_read": ToolDefinition(
         name="file_read",
-        description="read a workspace text file with offset and limit",
+        description="read a workspace text file with offset, limit, or keyword context",
         risk_level="low",
         parameters={
             "type": "object",
@@ -105,8 +105,64 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
                     "type": "integer",
                     "description": "optional maximum number of lines",
                 },
+                "keyword": {
+                    "type": "string",
+                    "description": "optional keyword; read lines near the first match",
+                },
             },
             "required": ["path"],
+            "additionalProperties": False,
+        },
+    ),
+    "file_write": ToolDefinition(
+        name="file_write",
+        description="create, overwrite, or append a workspace text file",
+        risk_level="high",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "workspace-relative file path",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "text content to write",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["create", "overwrite", "append"],
+                    "description": "write mode: create, overwrite, or append",
+                },
+            },
+            "required": ["path", "content", "mode"],
+            "additionalProperties": False,
+        },
+    ),
+    "code_run": ToolDefinition(
+        name="code_run",
+        description="run a multiline Python script from a temporary workspace file",
+        risk_level="high",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to write to a temporary script and execute",
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": "optional timeout in seconds",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": (
+                        'working directory relative to workspace_root; use "." or omit '
+                        "for workspace root"
+                    ),
+                },
+            },
+            "required": ["code"],
             "additionalProperties": False,
         },
     ),
