@@ -1,0 +1,33 @@
+"""
+tests/test_cli.py - HaAgent CLI 聚合入口测试
+
+验证用户文档中的 tests/test_cli.py 验收入口至少覆盖 run 子命令的新 authoring 参数。
+"""
+
+from pathlib import Path
+
+from haagent import cli
+
+
+def test_cli_run_parser_accepts_goal_authoring_arguments() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "run",
+            "--goal",
+            "Fix a small bug.",
+            "--workspace-root",
+            "examples/workspaces/hello",
+            "--verify",
+            "uv run pytest",
+            "--provider",
+            "fake",
+        ],
+    )
+
+    assert args.task_yaml is None
+    assert args.goal == "Fix a small bug."
+    assert args.workspace_root == Path("examples/workspaces/hello")
+    assert args.verify == "uv run pytest"
+    assert args.provider == "fake"

@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from haagent.cli_inspect import EpisodeInspectError, render_episode_summary
 from haagent.models.gateway import OpenAIChatCompletionsGateway, OpenAIResponsesGateway
@@ -25,6 +28,8 @@ from haagent.runtime.orchestrator import RunOrchestrator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+AUTHORING_ALLOWED_TOOLS = ["file_read", "file_search", "apply_patch", "shell"]
+AUTHORING_APPROVED_TOOLS = ["apply_patch", "shell"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,7 +37,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="run a task.yaml file")
-    run_parser.add_argument("task_yaml", type=Path, help="path to task.yaml")
+    run_parser.add_argument("task_yaml", nargs="?", type=Path, help="path to task.yaml")
+    run_parser.add_argument(
+        "--goal",
+        help="task goal used when task_yaml is omitted",
+    )
+    run_parser.add_argument(
+        "--workspace-root",
+        type=Path,
+        help="workspace root used when task_yaml is omitted",
+    )
+    run_parser.add_argument(
+        "--verify",
+        help="verification command used when task_yaml is omitted",
+    )
     run_parser.add_argument(
         "--runs-root",
         type=Path,
@@ -114,24 +132,33 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
+        generated_task_dir: tempfile.TemporaryDirectory[str] | None = None
         try:
             model_gateway = _build_run_model_gateway(args)
+            task_path, generated_task_dir = _run_task_path(args)
         except ProviderProfileError as error:
             print(f"error: {error}")
             return 1
-        if model_gateway is not None:
-            result = RunOrchestrator(
-                runs_root=args.runs_root,
-                model_gateway=model_gateway,
-                max_turns=args.max_turns,
-            ).run(args.task_yaml)
-        else:
-            result = RunOrchestrator(
-                runs_root=args.runs_root,
-                max_turns=args.max_turns,
-            ).run(args.task_yaml)
-        _print_run_summary(result)
-        return 0 if result.status.value == "completed" else 1
+        except ValueError as error:
+            print(f"error: {error}")
+            return 2
+        try:
+            if model_gateway is not None:
+                result = RunOrchestrator(
+                    runs_root=args.runs_root,
+                    model_gateway=model_gateway,
+                    max_turns=args.max_turns,
+                ).run(task_path)
+            else:
+                result = RunOrchestrator(
+                    runs_root=args.runs_root,
+                    max_turns=args.max_turns,
+                ).run(task_path)
+            _print_run_summary(result)
+            return 0 if result.status.value == "completed" else 1
+        finally:
+            if generated_task_dir is not None:
+                generated_task_dir.cleanup()
 
     if args.command == "smoke":
         return _handle_smoke(args)
@@ -185,6 +212,55 @@ SMOKE_DEFINITIONS = [
         requires_profile=True,
     ),
 ]
+
+
+def _run_task_path(
+    args: argparse.Namespace,
+) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
+    if args.task_yaml is not None:
+        return args.task_yaml, None
+
+    for field_name, option_name in [
+        ("goal", "--goal"),
+        ("workspace_root", "--workspace-root"),
+        ("verify", "--verify"),
+    ]:
+        if getattr(args, field_name) is None:
+            raise ValueError(f"{option_name} is required when task_yaml is omitted")
+
+    generated_task_dir: tempfile.TemporaryDirectory[str] = tempfile.TemporaryDirectory(
+        prefix="haagent-task-",
+    )
+    task_path = Path(generated_task_dir.name) / "task.yaml"
+    _write_authoring_task_yaml(
+        task_path,
+        goal=str(args.goal),
+        workspace_root=args.workspace_root,
+        verification_command=str(args.verify),
+    )
+    return task_path, generated_task_dir
+
+
+def _write_authoring_task_yaml(
+    path: Path,
+    *,
+    goal: str,
+    workspace_root: Path,
+    verification_command: str,
+) -> None:
+    task = {
+        "goal": goal,
+        "workspace_root": str(workspace_root.resolve()),
+        "constraints": [],
+        "allowed_tools": list(AUTHORING_ALLOWED_TOOLS),
+        "acceptance_criteria": ["Complete the requested goal and pass verification."],
+        "verification_commands": [verification_command],
+        "policy": {
+            "approval_allowed_tools": list(AUTHORING_APPROVED_TOOLS),
+            "approved_tools": list(AUTHORING_APPROVED_TOOLS),
+        },
+    }
+    path.write_text(yaml.safe_dump(task, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def _handle_smoke(args: argparse.Namespace) -> int:

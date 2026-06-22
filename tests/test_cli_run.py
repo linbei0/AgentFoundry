@@ -15,6 +15,7 @@ from haagent.models.gateway import ModelResponse, ToolCall
 from haagent.runtime.episode_validator import EpisodePackageView
 from haagent.runtime.orchestrator import RunOrchestrator
 from haagent.runtime.state import RunStatus
+from haagent.runtime.task_contract import load_task
 
 
 class FakeResult:
@@ -222,6 +223,165 @@ verification_commands: []
     assert "episode_path=" in output
     assert "provider=fake" in output
     assert "final_response=Fake model observed tool results." in output
+
+
+def test_cli_run_goal_entry_starts_fake_provider_task(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--goal",
+            "Run the generated task smoke.",
+            "--workspace-root",
+            str(workspace_root),
+            "--verify",
+            "python -c \"print('ok')\"",
+            "--provider",
+            "fake",
+            "--runs-root",
+            str(tmp_path / ".runs"),
+        ],
+    )
+
+    output = capsys.readouterr().out
+    episode_path = Path(
+        next(line.split("=", 1)[1] for line in output.splitlines() if line.startswith("episode_path=")),
+    )
+    task_text = (episode_path / "task.yaml").read_text(encoding="utf-8")
+    first_model_input = (episode_path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "status=completed" in output
+    assert "provider=fake" in output
+    assert "goal: Run the generated task smoke." in task_text
+    assert f"workspace_root: {workspace_root}" in task_text
+    assert "- file_read" in task_text
+    assert "- file_search" in task_text
+    assert "- apply_patch" in task_text
+    assert "- shell" in task_text
+    assert "&id" not in task_text
+    assert "Task Authoring Ergonomics" not in first_model_input
+    assert "This task was generated" not in first_model_input
+
+
+def test_cli_run_goal_entry_generates_current_task_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    calls = {}
+
+    class FakeOrchestrator:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
+            calls["runs_root"] = runs_root
+            calls["max_turns"] = max_turns
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            task = load_task(received_task_path)
+            calls["task_path_name"] = received_task_path.name
+            calls["task"] = task
+            calls["task_text"] = received_task_path.read_text(encoding="utf-8")
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--goal",
+            "Fix a small bug.",
+            "--workspace-root",
+            str(workspace_root),
+            "--verify",
+            "uv run pytest",
+            "--max-turns",
+            "9",
+        ],
+    )
+
+    task = calls["task"]
+    assert exit_code == 0
+    assert calls["runs_root"] == Path(".runs")
+    assert calls["max_turns"] == 9
+    assert calls["task_path_name"] == "task.yaml"
+    assert task.goal == "Fix a small bug."
+    assert task.workspace_root == str(workspace_root)
+    assert task.allowed_tools == ["file_read", "file_search", "apply_patch", "shell"]
+    assert task.verification_commands == ["uv run pytest"]
+    assert task.policy == {
+        "approval_allowed_tools": ["apply_patch", "shell"],
+        "approved_tools": ["apply_patch", "shell"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (
+            ["run", "--workspace-root", ".", "--verify", "uv run pytest"],
+            "error: --goal is required when task_yaml is omitted",
+        ),
+        (
+            ["run", "--goal", "Fix it", "--verify", "uv run pytest"],
+            "error: --workspace-root is required when task_yaml is omitted",
+        ),
+        (
+            ["run", "--goal", "Fix it", "--workspace-root", "."],
+            "error: --verify is required when task_yaml is omitted",
+        ),
+    ],
+)
+def test_cli_run_goal_entry_reports_missing_required_arguments(
+    argv: list[str],
+    expected: str,
+    capsys,
+) -> None:
+    exit_code = cli.main(argv)
+
+    output = capsys.readouterr().out
+    assert exit_code == 2
+    assert expected in output
+
+
+def test_cli_run_task_yaml_entry_still_ignores_goal_entry_arguments(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text("goal: x\n", encoding="utf-8")
+    calls = {}
+
+    class FakeOrchestrator:
+        def __init__(self, runs_root: Path, max_turns: int = 3) -> None:
+            calls["runs_root"] = runs_root
+
+        def run(self, received_task_path: Path) -> FakeResult:
+            calls["task_path"] = received_task_path
+            return FakeResult(tmp_path / ".runs" / "episode-1")
+
+    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+
+    exit_code = cli.main(
+        [
+            "run",
+            str(task_path),
+            "--goal",
+            "ignored",
+            "--workspace-root",
+            str(tmp_path),
+            "--verify",
+            "ignored",
+        ],
+    )
+
+    assert exit_code == 0
+    assert calls == {"runs_root": Path(".runs"), "task_path": task_path}
 
 
 def test_cli_run_uses_default_max_turns(

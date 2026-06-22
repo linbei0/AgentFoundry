@@ -87,6 +87,15 @@ def test_fake_model_gateway_accepts_optional_observations() -> None:
     assert response.tool_calls == []
 
 
+def test_fake_model_gateway_finishes_when_fake_tool_is_not_available() -> None:
+    gateway = FakeModelGateway()
+
+    response = generate(gateway, tool_schemas=[{"name": "file_read"}])
+
+    assert response.tool_calls == []
+    assert response.content == "Fake model has no fake_tool available; relying on verification."
+
+
 def test_fake_model_gateway_records_current_inputs() -> None:
     gateway = FakeModelGateway(response=ModelResponse(content="done", tool_calls=[]))
 
