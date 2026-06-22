@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from haagent.context.builder import ContextBuildError, ContextBuilder
 from haagent.models.fake import FakeModelGateway
@@ -38,11 +39,17 @@ class RunOrchestrator:
         model_gateway: ModelGateway | None = None,
         max_turns: int = 3,
         session_summary: str | None = None,
+        event_sink: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self._runs_root = runs_root
         self._model_gateway = model_gateway or FakeModelGateway()
         self._max_turns = max_turns
         self._session_summary = session_summary
+        self._event_sink = event_sink
+
+    def _emit_event(self, event: dict[str, object]) -> None:
+        if self._event_sink is not None:
+            self._event_sink(event)
 
     def run(self, task_path: Path) -> RunResult:
         """执行一次 run，并把所有阶段变化写入 transcript.jsonl。"""
@@ -146,6 +153,13 @@ class RunOrchestrator:
                     return _finish_run(writer, RunStatus.FAILED, state_history)
 
                 if not model_response.tool_calls:
+                    self._emit_event(
+                        {
+                            "event_type": "assistant_message",
+                            "turn": turn,
+                            "content": model_response.content,
+                        },
+                    )
                     transition(RunStatus.VERIFYING)
                     if verification_engine is None:
                         verification_engine = VerificationEngine(writer, workspace_root)
@@ -178,8 +192,36 @@ class RunOrchestrator:
                 observations = []
                 # 工具失败以结构化结果返回；orchestrator 在这里显式转换成 failed run。
                 for tool_call in model_response.tool_calls:
+                    self._emit_event(
+                        {
+                            "event_type": "tool_started",
+                            "turn": turn,
+                            "tool_name": tool_call.name,
+                            "args": tool_call.args,
+                        },
+                    )
                     tool_result = router.dispatch(tool_call.name, tool_call.args)
+                    if tool_result.get("status") == "error":
+                        error = tool_result.get("error") or {}
+                        self._emit_event(
+                            {
+                                "event_type": "tool_failed",
+                                "turn": turn,
+                                "tool_name": tool_call.name,
+                                "args": tool_call.args,
+                                "error": error,
+                            },
+                        )
                     router.raise_for_error(tool_result)
+                    self._emit_event(
+                        {
+                            "event_type": "tool_finished",
+                            "turn": turn,
+                            "tool_name": tool_call.name,
+                            "args": tool_call.args,
+                            "result": tool_result,
+                        },
+                    )
                     observation = {
                         "tool_name": tool_call.name,
                         "args": tool_call.args,

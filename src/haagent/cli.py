@@ -19,7 +19,7 @@ import yaml
 from haagent.cli_inspect import EpisodeInspectError, render_episode_summary
 from haagent.models.gateway import OpenAIChatCompletionsGateway, OpenAIResponsesGateway
 from haagent.models.provider_profile import ProviderProfile, ProviderProfileError, load_provider_profile
-from haagent.runtime.chat_session import AgentSession, CHAT_MAX_TURNS, ChatTurnResult
+from haagent.runtime.chat_session import AgentSession, CHAT_MAX_TURNS, ChatEvent, ChatTurnResult
 from haagent.runtime.episode_validator import (
     EpisodeValidationError,
     load_inspect_episode_package,
@@ -205,7 +205,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.request is None:
             return _run_chat_repl(session)
-        result = session.run_prompt(str(args.request))
+        result = session.run_prompt_events(
+            str(args.request),
+            event_sink=_print_chat_event,
+            include_session_events=True,
+        )
         _print_chat_turn_result(result)
         return 0 if result.status == "completed" else 1
 
@@ -445,17 +449,20 @@ def _print_run_summary(result) -> None:
 
 
 def _run_chat_repl(session: AgentSession) -> int:
+    _print_chat_event(session.session_started_event())
     _print_session_status(session)
     while True:
         try:
             raw_prompt = input("haagent> ")
         except EOFError:
+            _print_chat_event(session.session_finished_event())
             print("bye")
             return 0
         prompt = raw_prompt.strip()
         if not prompt:
             continue
         if prompt in {":quit", ":exit"}:
+            _print_chat_event(session.session_finished_event())
             print("bye")
             return 0
         if prompt == ":status":
@@ -466,7 +473,7 @@ def _run_chat_repl(session: AgentSession) -> int:
             print("session reset")
             continue
 
-        result = session.run_prompt(prompt)
+        result = session.run_prompt_events(prompt, event_sink=_print_chat_event)
         _print_chat_turn_result(result)
 
 
@@ -481,6 +488,58 @@ def _print_session_status(session: AgentSession) -> None:
 def _print_chat_turn_result(result: ChatTurnResult) -> None:
     for line in result.output_lines():
         print(line)
+
+
+def _print_chat_event(event: ChatEvent) -> None:
+    pieces = [f"event={event.event_type}"]
+    if event.event_type in {"tool_started", "tool_finished", "tool_failed"}:
+        tool_name = event.payload.get("tool_name")
+        if tool_name is not None:
+            pieces.append(f"tool={tool_name}")
+    if event.event_type == "tool_started":
+        pieces.append(f"args={_format_event_mapping(event.payload.get('args_summary'))}")
+    elif event.event_type == "tool_finished":
+        status = event.payload.get("status")
+        if status is not None:
+            pieces.append(f"status={status}")
+        pieces.append(f"result={_format_event_mapping(event.payload.get('result_summary'))}")
+    elif event.event_type == "tool_failed":
+        error_type = event.payload.get("error_type")
+        if error_type is not None:
+            pieces.append(f"error={error_type}")
+        message = event.payload.get("message")
+        if message:
+            pieces.append(f"message={_shell_token(str(message))}")
+    elif event.event_type == "assistant_message":
+        content = event.payload.get("content")
+        if content:
+            pieces.append(f"message={_shell_token(str(content))}")
+    elif event.event_type in {"turn_started", "turn_finished", "session_started", "session_finished"}:
+        status = event.payload.get("status")
+        if status is not None:
+            pieces.append(f"status={status}")
+    print(" ".join(pieces))
+
+
+def _format_event_mapping(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none"
+    parts = []
+    for key in sorted(value):
+        item = value[key]
+        if item is None or item == "":
+            continue
+        parts.append(f"{key}={_shell_token(str(item))}")
+    return ",".join(parts) if parts else "none"
+
+
+def _shell_token(value: str) -> str:
+    compact = _summary_value(" ".join(value.split()), 160)
+    if not compact:
+        return "none"
+    if any(character.isspace() or character in {",", "="} for character in compact):
+        return json.dumps(compact, ensure_ascii=False)
+    return compact
 
 
 def _run_final_response(transcript: list[dict[str, Any]]) -> str:

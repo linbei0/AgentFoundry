@@ -10,7 +10,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -34,6 +34,24 @@ CHAT_ALLOWED_TOOLS = [
 CHAT_APPROVED_TOOLS = ["file_write", "code_run", "apply_patch", "shell"]
 CHAT_MAX_TURNS = 20
 SESSION_SUMMARY_CHAR_LIMIT = 1000
+
+
+@dataclass(frozen=True)
+class ChatEvent:
+    event_type: str
+    session_id: str
+    turn_index: int
+    message: str
+    payload: dict[str, object]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "event_type": self.event_type,
+            "session_id": self.session_id,
+            "turn_index": self.turn_index,
+            "message": self.message,
+            "payload": self.payload,
+        }
 
 
 @dataclass(frozen=True)
@@ -96,9 +114,39 @@ class AgentSession:
         return self.model_gateway.provider_name
 
     def run_prompt(self, prompt: str) -> ChatTurnResult:
+        return self.run_prompt_events(prompt)
+
+    def run_prompt_events(
+        self,
+        prompt: str,
+        event_sink: Callable[[ChatEvent], None] | None = None,
+        include_session_events: bool = False,
+    ) -> ChatTurnResult:
         clean_prompt = prompt.strip()
         if not clean_prompt:
             raise ValueError("prompt must be non-empty")
+
+        turn_index = self.turn_count + 1
+        if include_session_events:
+            self._emit_chat_event(
+                event_sink,
+                event_type="session_started",
+                turn_index=turn_index,
+                message="chat session started",
+                payload=self.status(),
+            )
+        self._emit_chat_event(
+            event_sink,
+            event_type="turn_started",
+            turn_index=turn_index,
+            message="chat turn started",
+            payload={"prompt": _summary_value(clean_prompt, 160)},
+        )
+        runtime_events: list[dict[str, object]] = []
+
+        def on_runtime_event(event: dict[str, object]) -> None:
+            runtime_events.append(event)
+            self._emit_runtime_event(event_sink, turn_index, event)
 
         with tempfile.TemporaryDirectory(prefix="haagent-chat-") as task_dir:
             task_path = Path(task_dir) / "task.yaml"
@@ -108,12 +156,32 @@ class AgentSession:
                 model_gateway=self.model_gateway,
                 max_turns=self.max_turns,
                 session_summary=self.summary_text(),
+                event_sink=on_runtime_event,
             ).run(task_path)
 
         turn_result = self._build_turn_result(clean_prompt, result)
         self.turn_count += 1
         self._summaries.append(_turn_summary(clean_prompt, turn_result))
         self._summaries = _bounded_summaries(self._summaries)
+        self._emit_chat_event(
+            event_sink,
+            event_type="turn_finished",
+            turn_index=turn_index,
+            message="chat turn finished",
+            payload={
+                "status": turn_result.status,
+                "episode_path": str(turn_result.episode_path),
+                "runtime_event_count": len(runtime_events),
+            },
+        )
+        if include_session_events:
+            self._emit_chat_event(
+                event_sink,
+                event_type="session_finished",
+                turn_index=turn_index,
+                message="chat session finished",
+                payload={"status": turn_result.status},
+            )
         return turn_result
 
     def status(self) -> dict[str, object]:
@@ -133,6 +201,62 @@ class AgentSession:
         if not self._summaries:
             return None
         return "\n".join(_bounded_summaries(self._summaries))
+
+    def session_started_event(self) -> ChatEvent:
+        return ChatEvent(
+            event_type="session_started",
+            session_id=self.session_id,
+            turn_index=self.turn_count,
+            message="chat session started",
+            payload=self.status(),
+        )
+
+    def session_finished_event(self) -> ChatEvent:
+        return ChatEvent(
+            event_type="session_finished",
+            session_id=self.session_id,
+            turn_index=self.turn_count,
+            message="chat session finished",
+            payload={"turn_count": self.turn_count},
+        )
+
+    def _emit_chat_event(
+        self,
+        event_sink: Callable[[ChatEvent], None] | None,
+        *,
+        event_type: str,
+        turn_index: int,
+        message: str,
+        payload: dict[str, object],
+    ) -> None:
+        if event_sink is None:
+            return
+        event_sink(
+            ChatEvent(
+                event_type=event_type,
+                session_id=self.session_id,
+                turn_index=turn_index,
+                message=message,
+                payload=payload,
+            ),
+        )
+
+    def _emit_runtime_event(
+        self,
+        event_sink: Callable[[ChatEvent], None] | None,
+        turn_index: int,
+        event: dict[str, object],
+    ) -> None:
+        event_type = str(event.get("event_type", "unknown"))
+        payload = dict(event)
+        payload.pop("event_type", None)
+        self._emit_chat_event(
+            event_sink,
+            event_type=event_type,
+            turn_index=turn_index,
+            message=_runtime_event_message(event_type, payload),
+            payload=_runtime_event_payload(event_type, payload),
+        )
 
     def _build_turn_result(self, prompt: str, result) -> ChatTurnResult:
         try:
@@ -214,6 +338,118 @@ def _run_final_response(transcript: list[dict[str, Any]]) -> str:
         if record.get("event") == "model_response":
             return str(record.get("content", ""))
     return "none"
+
+
+def _runtime_event_message(event_type: str, payload: dict[str, object]) -> str:
+    if event_type == "tool_started":
+        return f"starting tool {payload.get('tool_name', 'unknown')}"
+    if event_type == "tool_finished":
+        return f"finished tool {payload.get('tool_name', 'unknown')}"
+    if event_type == "tool_failed":
+        return f"failed tool {payload.get('tool_name', 'unknown')}"
+    if event_type == "assistant_message":
+        return _summary_value(str(payload.get("content", "")))
+    return event_type
+
+
+def _runtime_event_payload(event_type: str, payload: dict[str, object]) -> dict[str, object]:
+    if event_type == "tool_started":
+        tool_name = str(payload.get("tool_name", "unknown"))
+        args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+        return {
+            "model_turn": payload.get("turn"),
+            "tool_name": tool_name,
+            "args_summary": _tool_args_summary(tool_name, args),
+        }
+    if event_type == "tool_finished":
+        tool_name = str(payload.get("tool_name", "unknown"))
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        return {
+            "model_turn": payload.get("turn"),
+            "tool_name": tool_name,
+            "status": str(result.get("status", "unknown")),
+            "result_summary": _tool_result_summary(tool_name, result),
+        }
+    if event_type == "tool_failed":
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        return {
+            "model_turn": payload.get("turn"),
+            "tool_name": str(payload.get("tool_name", "unknown")),
+            "error_type": str(error.get("type", "unknown")),
+            "message": _summary_value(str(error.get("message", ""))),
+        }
+    if event_type == "assistant_message":
+        return {
+            "model_turn": payload.get("turn"),
+            "content": _summary_value(str(payload.get("content", ""))),
+        }
+    return payload
+
+
+def _tool_args_summary(tool_name: str, args: dict[str, object]) -> dict[str, object]:
+    if tool_name == "file_write":
+        content = str(args.get("content", ""))
+        return {
+            "path": _summary_value(str(args.get("path", "")), 160),
+            "mode": str(args.get("mode", "")),
+            "content_chars": len(content),
+        }
+    if tool_name == "code_run":
+        code = str(args.get("code", ""))
+        return {
+            "cwd": str(args.get("cwd", ".")),
+            "timeout_seconds": args.get("timeout_seconds"),
+            "code_chars": len(code),
+        }
+    if tool_name == "file_read":
+        return {
+            "path": _summary_value(str(args.get("path", "")), 160),
+            "offset": args.get("offset"),
+            "limit": args.get("limit"),
+            "keyword": _summary_value(str(args.get("keyword", "")), 80),
+        }
+    if tool_name == "shell":
+        return {
+            "cwd": str(args.get("cwd", ".")),
+            "timeout_seconds": args.get("timeout_seconds"),
+            "command": _summary_value(str(args.get("command", "")), 160),
+        }
+    return {"args_keys": sorted(str(key) for key in args)}
+
+
+def _tool_result_summary(tool_name: str, result: dict[str, object]) -> dict[str, object]:
+    if tool_name == "file_read":
+        return {
+            "path": _summary_value(str(result.get("path", "")), 160),
+            "start_line": result.get("start_line"),
+            "end_line": result.get("end_line"),
+            "line_count": result.get("line_count"),
+            "truncated": bool(result.get("truncated")),
+        }
+    if tool_name == "file_write":
+        return {
+            "path": _summary_value(str(result.get("path", "")), 160),
+            "mode": result.get("mode"),
+            "bytes_written": result.get("bytes_written"),
+            "created": result.get("created"),
+        }
+    if tool_name == "code_run":
+        return {
+            "exit_code": result.get("exit_code"),
+            "stdout_chars": len(str(result.get("stdout_excerpt", ""))),
+            "stderr_chars": len(str(result.get("stderr_excerpt", ""))),
+            "truncated": bool(result.get("truncated")),
+        }
+    if tool_name == "shell":
+        return {
+            "exit_code": result.get("exit_code"),
+            "stdout_chars": len(str(result.get("stdout", ""))),
+            "stderr_chars": len(str(result.get("stderr", ""))),
+        }
+    return {
+        "status": str(result.get("status", "unknown")),
+        "result_keys": sorted(str(key) for key in result),
+    }
 
 
 def _summary_value(value: str, limit: int = 300) -> str:

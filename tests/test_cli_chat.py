@@ -26,6 +26,54 @@ class RecordingGateway:
         return ModelResponse(f"done: {task.goal}", [])
 
 
+class WriteThenDoneGateway:
+    provider_name = "write-then-done"
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        if not observations:
+            return ModelResponse(
+                "writing",
+                [
+                    ToolCall(
+                        "file_write",
+                        {
+                            "path": "notes.txt",
+                            "content": "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT",
+                            "mode": "create",
+                        },
+                    ),
+                ],
+            )
+        return ModelResponse("done writing", [])
+
+
+class BadToolGateway:
+    provider_name = "bad-tool"
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        return ModelResponse("bad args", [ToolCall("file_read", {"offset": 1})])
+
+
+class CodeRunThenDoneGateway:
+    provider_name = "code-run-then-done"
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        if not observations:
+            return ModelResponse(
+                "running code",
+                [
+                    ToolCall(
+                        "code_run",
+                        {
+                            "code": "print('SECRET_STDOUT_SHOULD_NOT_PRINT' * 200)",
+                            "timeout_seconds": 5,
+                        },
+                    ),
+                ],
+            )
+        return ModelResponse("done code", [])
+
+
 class FakeProfileGateway:
     provider_name = "openai-chat"
 
@@ -242,6 +290,123 @@ def test_cli_chat_single_prompt_still_runs_once(
     assert "status=completed" in output
     assert "verification=not_run" in output
     assert "session_id=" not in output
+
+
+def test_agent_session_events_show_single_turn_order_and_tool_success(tmp_path: Path) -> None:
+    events = []
+    session = AgentSession(
+        workspace_root=tmp_path,
+        runs_root=tmp_path / ".runs",
+        model_gateway=WriteThenDoneGateway(),
+        max_turns=20,
+    )
+
+    result = session.run_prompt_events(
+        "write notes",
+        event_sink=events.append,
+        include_session_events=True,
+    )
+
+    assert result.status == "completed"
+    assert [event.event_type for event in events] == [
+        "session_started",
+        "turn_started",
+        "tool_started",
+        "tool_finished",
+        "assistant_message",
+        "turn_finished",
+        "session_finished",
+    ]
+    assert events[2].payload["tool_name"] == "file_write"
+    assert events[2].payload["args_summary"]["content_chars"] == len("SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT")
+    assert "content" not in events[2].payload["args_summary"]
+    assert events[3].payload["result_summary"]["bytes_written"] == len("SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT")
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT"
+    assert (result.episode_path / "tool-calls.jsonl").exists()
+
+
+def test_agent_session_events_emit_tool_failed_on_real_tool_error(tmp_path: Path) -> None:
+    events = []
+    session = AgentSession(
+        workspace_root=tmp_path,
+        runs_root=tmp_path / ".runs",
+        model_gateway=BadToolGateway(),
+        max_turns=20,
+    )
+
+    result = session.run_prompt_events("fail", event_sink=events.append)
+
+    assert result.status == "failed"
+    assert [event.event_type for event in events] == [
+        "turn_started",
+        "tool_started",
+        "tool_failed",
+        "turn_finished",
+    ]
+    assert events[2].payload["tool_name"] == "file_read"
+    assert events[2].payload["error_type"] == "tool_argument_invalid"
+    assert "missing required argument: path" in events[2].payload["message"]
+
+
+def test_cli_chat_single_prompt_prints_progress_events_without_secret_content(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: WriteThenDoneGateway())
+
+    exit_code = cli.main(["chat", "Write notes", "--workspace-root", str(tmp_path), "--provider", "fake"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "event=session_started" in output
+    assert "event=turn_started" in output
+    assert "event=tool_started tool=file_write" in output
+    assert "content_chars=37" in output
+    assert "event=tool_finished tool=file_write status=success" in output
+    assert "event=assistant_message" in output
+    assert "event=session_finished" in output
+    assert "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT" not in output
+    assert "status=completed" in output
+
+
+def test_cli_chat_repl_prints_events_and_still_accepts_quit(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: WriteThenDoneGateway())
+    inputs = iter(["Write notes", ":quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    exit_code = cli.main(["chat", "--provider", "fake"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "event=session_started" in output
+    assert "event=tool_started tool=file_write" in output
+    assert "event=session_finished" in output
+    assert "bye" in output
+    assert "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT" not in output
+
+
+def test_cli_chat_event_output_hides_full_code_and_long_stdout(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: CodeRunThenDoneGateway())
+
+    exit_code = cli.main(["chat", "Run code", "--workspace-root", str(tmp_path), "--provider", "fake"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "event=tool_started tool=code_run" in output
+    assert "code_chars=" in output
+    assert "event=tool_finished tool=code_run status=success" in output
+    assert "SECRET_STDOUT_SHOULD_NOT_PRINT" not in output
+    assert "print(" not in output
 
 
 def test_agent_session_summary_is_bounded_and_not_episode_trace(tmp_path: Path) -> None:
