@@ -84,9 +84,9 @@ class RunOrchestrator:
                 approval_allowed_tools=task.policy["approval_allowed_tools"],
                 approved_tools=task.policy["approved_tools"],
             )
+            verification_engine: VerificationEngine | None = None
             observations: list[dict[str, object]] = []
             completion_observations: list[dict[str, object]] = []
-            has_entered_executing = False
             passed_verification_commands: set[str] = set()
             final_response_requested = False
             for turn in range(1, self._max_turns + 1):
@@ -140,11 +140,34 @@ class RunOrchestrator:
                     return _finish_run(writer, RunStatus.FAILED, state_history)
 
                 if not model_response.tool_calls:
-                    break
+                    transition(RunStatus.VERIFYING)
+                    if verification_engine is None:
+                        verification_engine = VerificationEngine(writer, workspace_root)
+                    verification_result = verification_engine.run(task.verification_commands)
+                    if verification_result.status == "success":
+                        transition(RunStatus.COMPLETED)
+                        writer.write_failure_attribution(None)
+                        return _finish_run(writer, RunStatus.COMPLETED, state_history)
 
-                if not has_entered_executing:
+                    observations = [_verification_observation(verification_result)]
+                    final_response_requested = False
+                    if turn == self._max_turns:
+                        transition(RunStatus.FAILED)
+                        writer.write_failure_attribution(
+                            {
+                                "stage": "verifying",
+                                "category": FailureCategory.LOOP_LIMIT.value,
+                                "evidence": _verification_loop_limit_evidence(
+                                    self._max_turns,
+                                    verification_result,
+                                ),
+                            },
+                        )
+                        return _finish_run(writer, RunStatus.FAILED, state_history)
+                    continue
+
+                if state_history[-1] is not RunStatus.EXECUTING:
                     transition(RunStatus.EXECUTING)
-                    has_entered_executing = True
 
                 observations = []
                 # 工具失败以结构化结果返回；orchestrator 在这里显式转换成 failed run。
@@ -191,23 +214,6 @@ class RunOrchestrator:
                     },
                 )
                 return _finish_run(writer, RunStatus.FAILED, state_history)
-
-            transition(RunStatus.VERIFYING)
-            verification_result = VerificationEngine(writer, workspace_root).run(task.verification_commands)
-            if verification_result.status == "failed":
-                transition(RunStatus.FAILED)
-                writer.write_failure_attribution(
-                    {
-                        "stage": "verifying",
-                        "category": FailureCategory.VERIFICATION.value,
-                        "evidence": _verification_evidence(verification_result),
-                    },
-                )
-                return _finish_run(writer, RunStatus.FAILED, state_history)
-
-            transition(RunStatus.COMPLETED)
-            writer.write_failure_attribution(None)
-            return _finish_run(writer, RunStatus.COMPLETED, state_history)
         except ToolRoutingError as error:
             transition(RunStatus.FAILED)
             writer.write_failure_attribution(
@@ -276,6 +282,29 @@ def _verification_evidence(verification_result) -> str:
     if verification_result.stderr_excerpt:
         lines.append(f"stderr: {verification_result.stderr_excerpt}")
     return "\n".join(lines)
+
+
+def _verification_loop_limit_evidence(max_turns: int, verification_result) -> str:
+    return (
+        f"verification did not pass before max_turns={max_turns}\n"
+        f"{_verification_evidence(verification_result)}"
+    )
+
+
+def _verification_observation(verification_result) -> dict[str, object]:
+    return {
+        "tool_name": "verification",
+        "args": {"command": verification_result.failed_command},
+        "result": {
+            "status": "error",
+            "command": verification_result.failed_command,
+            "exit_code": verification_result.exit_code,
+            "failure_reason": verification_result.failure_reason,
+            "timeout": verification_result.timeout,
+            "stdout": verification_result.stdout_excerpt,
+            "stderr": verification_result.stderr_excerpt,
+        },
+    }
 
 
 def _update_in_band_verification_progress(

@@ -86,6 +86,69 @@ class ToolHungryGateway:
         return ModelResponse("Changed add to return a + b and verification passed.", [])
 
 
+class VerificationRepairGateway:
+    provider_name = "verification-repair"
+
+    def __init__(self) -> None:
+        self.observations_seen = []
+        self.model_inputs_seen = []
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        self.observations_seen.append(list(observations))
+        self.model_inputs_seen.append(model_input)
+        call_index = len(self.model_inputs_seen)
+        if call_index == 1:
+            return ModelResponse(
+                "make the first fix incorrectly",
+                [
+                    ToolCall(
+                        "apply_patch",
+                        {
+                            "path": "app.py",
+                            "old_text": "VALUE = 0",
+                            "new_text": "VALUE = 1",
+                        },
+                    ),
+                ],
+            )
+        if call_index == 2:
+            return ModelResponse("ready to verify", [])
+        latest_observation = observations[-1] if observations else {}
+        latest_result = latest_observation.get("result", {})
+        if (
+            latest_observation.get("tool_name") == "verification"
+            and isinstance(latest_result, dict)
+            and latest_result.get("status") == "error"
+        ):
+            return ModelResponse(
+                "repair after verification failure",
+                [
+                    ToolCall(
+                        "apply_patch",
+                        {
+                            "path": "app.py",
+                            "old_text": "VALUE = 1",
+                            "new_text": "VALUE = 2",
+                        },
+                    ),
+                ],
+            )
+        return ModelResponse("verification passed after repair", [])
+
+
+class StubbornVerificationGateway:
+    provider_name = "stubborn-verification"
+
+    def __init__(self) -> None:
+        self.observations_seen = []
+        self.model_inputs_seen = []
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        self.observations_seen.append(list(observations))
+        self.model_inputs_seen.append(model_input)
+        return ModelResponse("no more useful changes", [])
+
+
 def write_task(
     path: Path,
     allowed_tools: list[str],
@@ -555,7 +618,7 @@ def test_orchestrator_redacts_verification_output_in_failure_attribution(tmp_pat
             f"python -c \"import sys; print('{raw_key}'); sys.exit(5)\"",
         ],
     )
-    gateway = SequenceGateway([ModelResponse("done", [])])
+    gateway = StubbornVerificationGateway()
 
     result = RunOrchestrator(
         runs_root=tmp_path / ".runs",
@@ -622,7 +685,73 @@ def test_orchestrator_does_not_retry_internal_gateway_type_error(tmp_path: Path)
     assert (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8") == ""
 
 
-def test_orchestrator_fails_when_verification_command_fails(tmp_path: Path) -> None:
+def test_orchestrator_repairs_after_verification_failure_observation(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    (tmp_path / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    write_task(
+        task_path,
+        ["apply_patch"],
+        verification_commands=[
+            "python -c \"from pathlib import Path; import sys; "
+            "print('verify-out-start-' + ('x' * 3000) + '-verify-out-' + 'end'); "
+            "print('verify-err', file=sys.stderr); "
+            "sys.exit(0 if 'VALUE = 2' in Path('app.py').read_text(encoding='utf-8') else 5)\"",
+        ],
+        policy_block="""
+policy:
+  approval_allowed_tools:
+    - apply_patch
+  approved_tools:
+    - apply_patch
+""".strip(),
+    )
+    gateway = VerificationRepairGateway()
+
+    result = RunOrchestrator(
+        runs_root=runs_dir,
+        model_gateway=gateway,
+        max_turns=4,
+    ).run(task_path)
+
+    assert result.status is RunStatus.COMPLETED
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert result.state_history == [
+        RunStatus.CREATED,
+        RunStatus.PLANNING,
+        RunStatus.EXECUTING,
+        RunStatus.VERIFYING,
+        RunStatus.EXECUTING,
+        RunStatus.VERIFYING,
+        RunStatus.COMPLETED,
+    ]
+    assert gateway.observations_seen[2][0]["tool_name"] == "verification"
+    verification_result = gateway.observations_seen[2][0]["result"]
+    assert verification_result["status"] == "error"
+    assert verification_result["command"].startswith("python -c")
+    assert verification_result["exit_code"] == 5
+    assert "verify-out-start-" in verification_result["stdout"]
+    repair_model_input = gateway.model_inputs_seen[2]
+    assert "verification" in repair_model_input
+    assert '"exit_code": 5' in repair_model_input
+    assert '"stdout_excerpt": "verify-out-start-' in repair_model_input
+    verification_line = next(line for line in repair_model_input.splitlines() if line.startswith("- verification:"))
+    assert "-verify-out-end" not in verification_line
+    assert "x" * 3000 not in repair_model_input
+    commands = [
+        json.loads(line)
+        for line in (result.episode_path / "verification" / "commands.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [record["exit_code"] for record in commands] == [5, 0]
+    failure = json.loads((result.episode_path / "failure.json").read_text(encoding="utf-8"))
+    assert failure == {"status": "success", "failure": None}
+
+
+def test_orchestrator_fails_with_verification_loop_limit_when_verification_never_passes(
+    tmp_path: Path,
+) -> None:
     task_path = tmp_path / "task.yaml"
     runs_dir = tmp_path / ".runs"
     write_task(
@@ -632,27 +761,37 @@ def test_orchestrator_fails_when_verification_command_fails(tmp_path: Path) -> N
             "python -c \"import sys; print('verify-out'); print('verify-err', file=sys.stderr); sys.exit(5)\"",
         ],
     )
+    gateway = StubbornVerificationGateway()
 
-    result = RunOrchestrator(runs_root=runs_dir).run(task_path)
+    result = RunOrchestrator(
+        runs_root=runs_dir,
+        model_gateway=gateway,
+        max_turns=2,
+    ).run(task_path)
 
     assert result.status is RunStatus.FAILED
     assert result.state_history == [
         RunStatus.CREATED,
         RunStatus.PLANNING,
-        RunStatus.EXECUTING,
+        RunStatus.VERIFYING,
         RunStatus.VERIFYING,
         RunStatus.FAILED,
     ]
     failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
-    assert "Verification Failure" in failure_text
+    assert "Loop Limit Failure" in failure_text
+    assert "verification did not pass before max_turns=2" in failure_text
     assert "exit_code=5" in failure_text
     assert "stdout: verify-out" in failure_text
     assert "stderr: verify-err" in failure_text
     commands_log = result.episode_path / "verification" / "commands.jsonl"
-    assert json.loads(commands_log.read_text(encoding="utf-8"))["exit_code"] == 5
+    commands = [json.loads(line) for line in commands_log.read_text(encoding="utf-8").splitlines()]
+    assert [record["exit_code"] for record in commands] == [5, 5]
+    assert gateway.observations_seen[1][0]["tool_name"] == "verification"
     failure = json.loads((result.episode_path / "failure.json").read_text(encoding="utf-8"))
     assert failure["status"] == "failed"
-    assert failure["failure"]["category"] == "Verification Failure"
+    assert failure["failure"]["category"] == "Loop Limit Failure"
+    assert failure["failure"]["stage"] == "verifying"
+    assert "verification did not pass before max_turns=2" in failure["failure"]["evidence"]
     assert "stdout: verify-out" in failure["failure"]["evidence"]
     assert "stderr: verify-err" in failure["failure"]["evidence"]
 
@@ -753,7 +892,8 @@ def test_orchestrator_failure_attribution_includes_verification_timeout(
 
     assert result.status is RunStatus.FAILED
     failure_text = (result.episode_path / "failure-attribution.md").read_text(encoding="utf-8")
-    assert "Verification Failure" in failure_text
+    assert "Loop Limit Failure" in failure_text
+    assert "verification did not pass before max_turns=3" in failure_text
     assert "slow command" in failure_text
     assert "timeout" in failure_text
 

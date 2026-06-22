@@ -293,6 +293,7 @@ class ContextBuilder:
             }
         observation_index = len(self._observations) - 1
         latest_observation = self._observations[observation_index]
+        latest_tool_name = observation_tool_name(latest_observation)
         if self._final_response_requested:
             return {
                 "status": "continue",
@@ -301,11 +302,14 @@ class ContextBuilder:
                     "Produce the final answer now; do not call tools again."
                 ),
                 "based_on_observation_index": observation_index,
-                "based_on_tool_name": observation_tool_name(latest_observation),
+                "based_on_tool_name": latest_tool_name,
             }
         latest_result = self._observations[-1].get("result", {})
         status = latest_result.get("status") if isinstance(latest_result, dict) else None
-        if status == "success":
+        if latest_tool_name == "verification" and status == "error":
+            next_action_status = "handle_error"
+            reason = "Use the verification failure summary to repair the workspace, then stop for verification again."
+        elif status == "success":
             next_action_status = "continue"
             reason = (
                 "Continue from the latest successful tool observation. "
@@ -324,7 +328,7 @@ class ContextBuilder:
             "status": next_action_status,
             "reason": reason,
             "based_on_observation_index": observation_index,
-            "based_on_tool_name": observation_tool_name(latest_observation),
+            "based_on_tool_name": latest_tool_name,
         }
 
     def _read_plan(self) -> dict[str, object]:

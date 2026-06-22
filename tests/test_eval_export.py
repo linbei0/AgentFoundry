@@ -149,11 +149,14 @@ def test_failed_episode_exports_failure_information(tmp_path: Path) -> None:
     assert result.status is RunStatus.FAILED
     assert eval_case["eval_case_version"] == EVAL_CASE_VERSION
     assert eval_case["final_status"] == "failed"
-    assert eval_case["failure"]["category"] == "Verification Failure"
+    assert eval_case["failure"]["category"] == "Loop Limit Failure"
     assert eval_case["failure"]["stage"] == "verifying"
+    assert "verification did not pass before max_turns=3" in eval_case["failure"]["evidence"]
     assert "exit_code=7" in eval_case["failure"]["evidence"]
-    assert eval_case["verification"] == [
-        {
+    assert len(eval_case["verification"]) == 2
+    assert all(
+        record
+        == {
             "command": "python -c \"import sys; sys.exit(7)\"",
             "status": "failed",
             "exit_code": 7,
@@ -165,8 +168,9 @@ def test_failed_episode_exports_failure_information(tmp_path: Path) -> None:
             "stdout_original_length": 0,
             "stderr_original_length": 0,
             "redacted": False,
-        },
-    ]
+        }
+        for record in eval_case["verification"]
+    )
 
 
 def test_eval_export_includes_tool_argument_errors(tmp_path: Path) -> None:
@@ -393,7 +397,8 @@ def test_eval_export_rejects_missing_verification_metadata(tmp_path: Path) -> No
     write_task(task_path, verification_commands=["python -c \"import sys; sys.exit(7)\""])
     result = RunOrchestrator(runs_root=tmp_path / ".runs").run(task_path)
     commands_path = result.episode_path / "verification" / "commands.jsonl"
-    record = json.loads(commands_path.read_text(encoding="utf-8"))
+    lines = commands_path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[0])
     for field_name in [
         "stdout_excerpt",
         "stderr_excerpt",
@@ -404,7 +409,10 @@ def test_eval_export_rejects_missing_verification_metadata(tmp_path: Path) -> No
         "redacted",
     ]:
         record.pop(field_name, None)
-    commands_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    commands_path.write_text(
+        "\n".join([json.dumps(record), *lines[1:]]) + "\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(
         EpisodeValidationError,

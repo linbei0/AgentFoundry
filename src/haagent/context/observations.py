@@ -29,6 +29,8 @@ def observation_summary(observation: dict[str, object]) -> dict[str, object]:
         return _shell_observation_summary(args, result)
     if tool_name == "apply_patch":
         return _apply_patch_observation_summary(args, result)
+    if tool_name == "verification":
+        return _verification_observation_summary(args, result)
     return _generic_observation_summary(args, result)
 
 
@@ -109,6 +111,24 @@ def _apply_patch_observation_summary(
         "new_text_length": len(new_text),
         "replacements": result.get("replacements"),
         "truncated": old_text_truncated or new_text_truncated,
+    }
+
+
+def _verification_observation_summary(
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, object]:
+    stdout_excerpt, stdout_truncated = _compact_excerpt(_string_value(result.get("stdout")))
+    stderr_excerpt, stderr_truncated = _compact_excerpt(_string_value(result.get("stderr")))
+    return {
+        "status": _string_value(result.get("status")),
+        "command": _first_present_string(args.get("command"), result.get("command")),
+        "exit_code": result.get("exit_code"),
+        "failure_reason": _string_value(result.get("failure_reason")),
+        "timeout": bool(result.get("timeout")),
+        "stdout_excerpt": stdout_excerpt,
+        "stderr_excerpt": stderr_excerpt,
+        "truncated": stdout_truncated or stderr_truncated,
     }
 
 
