@@ -5,6 +5,7 @@ tests/test_orchestrator.py - RunOrchestrator 状态流转测试
 """
 
 import json
+import subprocess
 from pathlib import Path
 
 from haagent.models.gateway import ModelCallError
@@ -84,6 +85,13 @@ class ToolHungryGateway:
                 [ToolCall("shell", {"command": self._verification_command, "cwd": "."})],
             )
         return ModelResponse("Changed add to return a + b and verification passed.", [])
+
+
+class NoToolGateway:
+    provider_name = "no-tool"
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        return ModelResponse("done", [])
 
 
 class VerificationRepairGateway:
@@ -648,6 +656,83 @@ def test_orchestrator_fails_when_workspace_root_does_not_exist(tmp_path: Path) -
     assert failure["failure"]["category"] == "Task Spec Failure"
     assert failure["failure"]["stage"] == "created"
     assert "workspace_root does not exist" in failure["failure"]["evidence"]
+    preflight = json.loads((result.episode_path / "workspace" / "preflight.json").read_text(encoding="utf-8"))
+    assert preflight["workspace_root"].endswith("missing-workspace")
+    assert preflight["exists"] is False
+    assert preflight["git_status"] == "missing"
+    assert preflight["modifies_original_workspace"] is True
+
+
+def test_orchestrator_records_clean_git_workspace_preflight(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_clean_git_repo(repo)
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path, ["fake_tool"], workspace_root=str(repo))
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=NoToolGateway(),
+    ).run(task_path)
+
+    preflight = json.loads((result.episode_path / "workspace" / "preflight.json").read_text(encoding="utf-8"))
+    model_input = (result.episode_path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    assert result.status is RunStatus.COMPLETED
+    assert preflight["workspace_root"] == str(repo.resolve())
+    assert preflight["exists"] is True
+    assert preflight["is_git_repo"] is True
+    assert preflight["git_branch"]
+    assert preflight["git_dirty"] is False
+    assert preflight["git_status"] == "clean"
+    assert preflight["git_dirty_summary"]["total"] == 0
+    assert preflight["modifies_original_workspace"] is True
+    assert "workspace/preflight.json" not in model_input
+    assert "git_dirty_summary" not in model_input
+
+
+def test_orchestrator_records_dirty_git_workspace_preflight(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    tracked = _init_clean_git_repo(repo)
+    tracked.write_text("changed\n", encoding="utf-8")
+    (repo / "new.txt").write_text("new\n", encoding="utf-8")
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path, ["fake_tool"], workspace_root=str(repo))
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=NoToolGateway(),
+    ).run(task_path)
+
+    preflight = json.loads((result.episode_path / "workspace" / "preflight.json").read_text(encoding="utf-8"))
+    assert result.status is RunStatus.COMPLETED
+    assert preflight["is_git_repo"] is True
+    assert preflight["git_dirty"] is True
+    assert preflight["git_status"] == "dirty"
+    assert preflight["git_dirty_summary"]["modified"] >= 1
+    assert preflight["git_dirty_summary"]["untracked"] >= 1
+    assert preflight["git_dirty_summary"]["total"] >= 2
+
+
+def test_orchestrator_records_non_git_workspace_preflight(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task_path = tmp_path / "task.yaml"
+    write_task(task_path, ["fake_tool"], workspace_root=str(workspace))
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=NoToolGateway(),
+    ).run(task_path)
+
+    preflight = json.loads((result.episode_path / "workspace" / "preflight.json").read_text(encoding="utf-8"))
+    assert result.status is RunStatus.COMPLETED
+    assert preflight["workspace_root"] == str(workspace.resolve())
+    assert preflight["exists"] is True
+    assert preflight["is_git_repo"] is False
+    assert preflight["git_branch"] is None
+    assert preflight["git_dirty"] is None
+    assert preflight["git_status"] == "not_git_repo"
+    assert preflight["git_dirty_summary"]["total"] == 0
+    assert preflight["modifies_original_workspace"] is True
 
 
 def test_orchestrator_fails_when_model_gateway_fails(tmp_path: Path) -> None:
@@ -1180,3 +1265,26 @@ def _read_transcript(episode_path: Path) -> list[dict[str, object]]:
         json.loads(line)
         for line in (episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
     ]
+
+
+def _init_clean_git_repo(path: Path) -> Path:
+    path.mkdir()
+    tracked = path / "tracked.txt"
+    tracked.write_text("clean\n", encoding="utf-8")
+    _git(path, "init")
+    _git(path, "config", "user.email", "haagent@example.test")
+    _git(path, "config", "user.name", "HaAgent Test")
+    _git(path, "add", "tracked.txt")
+    _git(path, "commit", "-m", "initial")
+    return tracked
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )

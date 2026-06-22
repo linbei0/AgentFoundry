@@ -17,6 +17,7 @@ from haagent.runtime.failure import FailureCategory
 from haagent.runtime.plan import build_plan
 from haagent.runtime.state import RunStatus
 from haagent.runtime.task_contract import TaskLoadError, load_task, resolve_workspace_root
+from haagent.runtime.workspace_preflight import build_workspace_preflight
 from haagent.tools.base import ToolRoutingError
 from haagent.tools.registry import export_tool_schemas
 from haagent.tools.router import ToolRouter
@@ -55,6 +56,8 @@ class RunOrchestrator:
 
         try:
             task = load_task(task_path)
+            workspace_candidate = _workspace_root_candidate(task.workspace_root, task_path)
+            writer.write_workspace_preflight(build_workspace_preflight(workspace_candidate))
             workspace_root = resolve_workspace_root(task, task_path)
             writer.write_episode_metadata(
                 status=RunStatus.CREATED.value,
@@ -355,3 +358,10 @@ def _tool_failure_category(error: ToolRoutingError) -> FailureCategory:
     if error.error_type in {"invalid_tool_arguments", "tool_argument_invalid"}:
         return FailureCategory.TOOL_ARGUMENT
     return FailureCategory.TOOL_INTERFACE
+
+
+def _workspace_root_candidate(raw_root: str | None, task_path: Path) -> Path:
+    candidate = task_path.parent if raw_root is None else Path(raw_root)
+    if raw_root is not None and not candidate.is_absolute():
+        candidate = task_path.parent / candidate
+    return candidate.resolve(strict=False)

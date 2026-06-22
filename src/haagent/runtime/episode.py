@@ -106,6 +106,14 @@ class EpisodeWriter:
             },
         )
 
+    def write_workspace_preflight(self, preflight: dict[str, Any]) -> None:
+        workspace_dir = self.path / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / "preflight.json").write_text(
+            json.dumps(preflight, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def write_failure_attribution(self, failure: dict[str, Any] | None) -> None:
         """写入失败归因；成功 run 也保留文件，方便测试和审计稳定读取。"""
         if failure is None:

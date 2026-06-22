@@ -46,6 +46,13 @@ class ShellOnceGateway:
         return ModelResponse("shell", [ToolCall("shell", {"command": "echo approval"})])
 
 
+class NoToolGateway:
+    provider_name = "no-tool"
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        return ModelResponse("done", [])
+
+
 def write_minimal_episode(
     episode_path: Path,
     episode_json: dict[str, object] | None = None,
@@ -533,6 +540,38 @@ verification_commands: []
     assert "category: Verification Failure" in output
     assert "stage: verifying" in output
     assert "structured evidence" in output
+
+
+def test_cli_inspect_outputs_workspace_preflight(tmp_path: Path, capsys) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        f"""
+goal: Inspect workspace preflight
+workspace_root: {workspace}
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=NoToolGateway(),
+    ).run(task_path)
+
+    exit_code = cli.main(["inspect", str(result.episode_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Workspace Preflight" in output
+    assert f"workspace_root: {workspace.resolve()}" in output
+    assert "exists: true" in output
+    assert "git_status: not_git_repo" in output
+    assert "modifies_original_workspace: true" in output
 
 
 def test_cli_inspect_outputs_tool_argument_errors(tmp_path: Path, capsys) -> None:

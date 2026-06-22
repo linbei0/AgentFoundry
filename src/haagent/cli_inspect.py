@@ -35,6 +35,7 @@ def render_episode_summary(episode_path: Path) -> str:
     verification_reached = package_view.verification_reached
     failure_record = package_view.failure_record
     sandbox = package_view.sandbox
+    workspace_preflight = package_view.workspace_preflight
 
     failure_attribution = (episode_path / "failure-attribution.md").read_text(encoding="utf-8").strip()
 
@@ -69,6 +70,8 @@ def render_episode_summary(episode_path: Path) -> str:
     lines.extend(_format_plan(plan))
     lines.extend(["", "Sandbox"])
     lines.extend(_format_sandbox(sandbox))
+    lines.extend(["", "Workspace Preflight"])
+    lines.extend(_format_workspace_preflight(workspace_preflight))
     lines.extend(["", "Next Actions"])
     lines.extend(_format_next_actions(episode_path, context_manifest.get("contexts", [])))
     lines.extend(["", "Model Calls"])
@@ -130,6 +133,47 @@ def _format_sandbox(sandbox: dict[str, Any]) -> list[str]:
             f"{resource_limits.get('command_timeout_seconds', 'unknown')}"
         ),
     ]
+
+
+def _format_workspace_preflight(preflight: dict[str, Any]) -> list[str]:
+    if not preflight:
+        return ["- none"]
+    lines = [
+        f"- workspace_root: {preflight.get('workspace_root', 'unknown')}",
+        f"- exists: {_format_bool(preflight.get('exists'))}",
+        f"- git_status: {preflight.get('git_status', 'unknown')}",
+        f"- is_git_repo: {_format_bool(preflight.get('is_git_repo'))}",
+        f"- git_branch: {preflight.get('git_branch') or 'none'}",
+        f"- git_dirty: {_format_bool(preflight.get('git_dirty'))}",
+    ]
+    summary = preflight.get("git_dirty_summary")
+    if isinstance(summary, dict):
+        lines.append(
+            (
+                "- git_dirty_summary: "
+                f"total={summary.get('total', 0)} "
+                f"modified={summary.get('modified', 0)} "
+                f"untracked={summary.get('untracked', 0)} "
+                f"deleted={summary.get('deleted', 0)} "
+                f"renamed={summary.get('renamed', 0)} "
+                f"other={summary.get('other', 0)}"
+            ),
+        )
+    lines.append(
+        (
+            "- modifies_original_workspace: "
+            f"{_format_bool(preflight.get('modifies_original_workspace'))}"
+        ),
+    )
+    return lines
+
+
+def _format_bool(value: Any) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "unknown"
 
 
 def _format_next_actions(episode_path: Path, contexts: list[dict[str, Any]]) -> list[str]:

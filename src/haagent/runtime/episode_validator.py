@@ -55,6 +55,7 @@ class EpisodePackageView:
     verification_commands: list[dict[str, Any]]
     plan: dict[str, Any] = field(default_factory=dict)
     sandbox: dict[str, Any] = field(default_factory=dict)
+    workspace_preflight: dict[str, Any] = field(default_factory=dict)
     verification_reached: bool = True
 
 
@@ -94,6 +95,7 @@ def _read_validated_episode_package(
     context_manifest = _read_json(episode_path / "context-manifest.json")
     environment = _read_json(episode_path / "environment.json")
     sandbox = _read_json(episode_path / "sandbox.json")
+    workspace_preflight = _read_workspace_preflight(episode_path)
 
     transcript = _validate_jsonl_fields(episode_path / "transcript.jsonl", "transcript.jsonl", ["event"])
     tool_calls = _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
@@ -117,6 +119,8 @@ def _read_validated_episode_package(
         )
     _validate_environment(environment)
     _validate_sandbox(sandbox)
+    if workspace_preflight:
+        _validate_workspace_preflight(workspace_preflight)
     _validate_plan(plan)
     _validate_tool_calls(tool_calls)
     _validate_verification_commands(verification_commands)
@@ -138,6 +142,7 @@ def _read_validated_episode_package(
         tool_calls=tool_calls,
         verification_commands=verification_commands,
         sandbox=sandbox,
+        workspace_preflight=workspace_preflight,
         verification_reached=verification_reached,
     )
 
@@ -156,6 +161,9 @@ def _read_inspect_episode_package(episode_path: Path) -> EpisodePackageView:
     failure_record = read_failure_record(episode_path)
     transcript = _validate_jsonl_fields(episode_path / "transcript.jsonl", "transcript.jsonl", ["event"])
     tool_calls = _validate_jsonl_fields(episode_path / "tool-calls.jsonl", "tool-calls.jsonl", ["tool_name", "status"])
+    workspace_preflight = _read_workspace_preflight(episode_path)
+    if workspace_preflight:
+        _validate_workspace_preflight(workspace_preflight)
 
     if not _can_omit_verification_commands(episode_metadata, transcript):
         _validate_episode_metadata(episode_metadata)
@@ -215,6 +223,7 @@ def _read_inspect_episode_package(episode_path: Path) -> EpisodePackageView:
         tool_calls=tool_calls,
         verification_commands=verification_commands,
         sandbox=sandbox or {},
+        workspace_preflight=workspace_preflight,
         verification_reached=verification_reached,
     )
 
@@ -280,6 +289,11 @@ def _read_optional_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return _read_json(path)
+
+
+def _read_workspace_preflight(episode_path: Path) -> dict[str, Any]:
+    preflight = _read_optional_json(episode_path / "workspace" / "preflight.json")
+    return preflight or {}
 
 
 def _validate_jsonl_fields(path: Path, label: str, required_fields: list[str]) -> list[dict[str, Any]]:
@@ -441,6 +455,35 @@ def _validate_sandbox(sandbox: dict[str, Any]) -> None:
         raise EpisodeValidationError(
             "sandbox.json resource_limits.command_timeout_seconds must be a number",
         )
+
+
+def _validate_workspace_preflight(preflight: dict[str, Any]) -> None:
+    """校验 workspace preflight 审计记录的轻量结构。"""
+    if not isinstance(preflight.get("workspace_root"), str):
+        raise EpisodeValidationError("workspace/preflight.json workspace_root must be a string")
+    for field_name in ["exists", "is_git_repo", "modifies_original_workspace"]:
+        if not isinstance(preflight.get(field_name), bool):
+            raise EpisodeValidationError(f"workspace/preflight.json {field_name} must be a bool")
+    git_branch = preflight.get("git_branch")
+    if git_branch is not None and not isinstance(git_branch, str):
+        raise EpisodeValidationError("workspace/preflight.json git_branch must be a string or null")
+    git_dirty = preflight.get("git_dirty")
+    if git_dirty is not None and not isinstance(git_dirty, bool):
+        raise EpisodeValidationError("workspace/preflight.json git_dirty must be a bool or null")
+    git_status = preflight.get("git_status")
+    if git_status not in {"missing", "not_git_repo", "unknown", "clean", "dirty"}:
+        raise EpisodeValidationError(
+            f"workspace/preflight.json git_status is invalid: {git_status}",
+        )
+    summary = preflight.get("git_dirty_summary")
+    if not isinstance(summary, dict):
+        raise EpisodeValidationError("workspace/preflight.json git_dirty_summary must be an object")
+    for field_name in ["total", "modified", "untracked", "deleted", "renamed", "other"]:
+        value = summary.get(field_name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise EpisodeValidationError(
+                f"workspace/preflight.json git_dirty_summary.{field_name} must be an int",
+            )
 
 
 def _validate_plan(plan: dict[str, Any]) -> None:
