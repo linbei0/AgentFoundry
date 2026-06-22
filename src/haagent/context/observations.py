@@ -39,6 +39,8 @@ def observation_summary(observation: dict[str, object]) -> dict[str, object]:
         return _apply_patch_observation_summary(args, result)
     if tool_name == "verification":
         return _verification_observation_summary(args, result)
+    if tool_name == "loop_guidance":
+        return _loop_guidance_observation_summary(args, result)
     return _generic_observation_summary(args, result)
 
 
@@ -211,6 +213,20 @@ def _verification_observation_summary(
         "stdout_excerpt": stdout_excerpt,
         "stderr_excerpt": stderr_excerpt,
         "truncated": stdout_truncated or stderr_truncated,
+    }
+
+
+def _loop_guidance_observation_summary(
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, object]:
+    message_excerpt, message_truncated = _compact_excerpt(_string_value(result.get("message")))
+    return {
+        "status": _string_value(result.get("status")),
+        "trigger": _first_present_string(args.get("trigger"), result.get("trigger")),
+        "tool_name": _first_present_string(args.get("tool_name"), result.get("tool_name")),
+        "message": message_excerpt,
+        "truncated": message_truncated,
     }
 
 

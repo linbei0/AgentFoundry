@@ -20,6 +20,13 @@ from haagent.runtime.human_interaction import (
     HumanInteractionRequest,
     HumanInteractionResponse,
 )
+from haagent.runtime.loop_guidance import (
+    LoopGuidance,
+    LoopGuidanceState,
+    guidance_for_no_tool_response,
+    guidance_for_observation,
+    guidance_observation,
+)
 from haagent.runtime.plan import build_plan
 from haagent.runtime.state import RunStatus
 from haagent.runtime.task_contract import TaskLoadError, load_task, resolve_workspace_root
@@ -108,6 +115,7 @@ class RunOrchestrator:
             completion_observations: list[dict[str, object]] = []
             passed_verification_commands: set[str] = set()
             final_response_requested = False
+            guidance_state = LoopGuidanceState()
             for turn in range(1, self._max_turns + 1):
                 context = ContextBuilder(
                     task=task,
@@ -160,6 +168,40 @@ class RunOrchestrator:
                     return _finish_run(writer, RunStatus.FAILED, state_history)
 
                 if not model_response.tool_calls:
+                    no_tool_guidance = None if final_response_requested else guidance_for_no_tool_response(
+                        model_response.content,
+                        task.goal,
+                        guidance_state,
+                    )
+                    writer.append_transcript(
+                        {
+                            "event": "no_tool_reviewed",
+                            "turn": turn,
+                            "guidance_added": no_tool_guidance is not None,
+                            "trigger": no_tool_guidance.trigger if no_tool_guidance else None,
+                        },
+                    )
+                    self._emit_event(
+                        {
+                            "event_type": "no_tool_reviewed",
+                            "turn": turn,
+                            "guidance_added": no_tool_guidance is not None,
+                            "trigger": no_tool_guidance.trigger if no_tool_guidance else None,
+                        },
+                    )
+                    if no_tool_guidance is not None:
+                        observations = [_record_guidance(writer, self._emit_event, turn, no_tool_guidance)]
+                        if turn == self._max_turns:
+                            transition(RunStatus.FAILED)
+                            writer.write_failure_attribution(
+                                {
+                                    "stage": "executing",
+                                    "category": FailureCategory.LOOP_LIMIT.value,
+                                    "evidence": "no-tool response still needed loop guidance at max_turns",
+                                },
+                            )
+                            return _finish_run(writer, RunStatus.FAILED, state_history)
+                        continue
                     self._emit_event(
                         {
                             "event_type": "assistant_message",
@@ -227,7 +269,30 @@ class RunOrchestrator:
                                 "error": error,
                             },
                         )
-                    router.raise_for_error(tool_result)
+                    observation = {
+                        "tool_name": tool_call.name,
+                        "args": tool_call.args,
+                        "result": tool_result,
+                    }
+                    writer.append_transcript(
+                        {
+                            "event": "tool_observation",
+                            "turn": turn,
+                            **observation,
+                        },
+                    )
+                    if tool_result.get("status") == "error":
+                        guidance = guidance_for_observation(observation, guidance_state)
+                        if _tool_error_is_terminal(tool_result):
+                            router.raise_for_error(tool_result)
+                        if guidance is not None:
+                            observations = [
+                                observation,
+                                _record_guidance(writer, self._emit_event, turn, guidance),
+                            ]
+                        else:
+                            observations = [observation]
+                        break
                     self._emit_event(
                         {
                             "event_type": "tool_finished",
@@ -237,23 +302,14 @@ class RunOrchestrator:
                             "result": tool_result,
                         },
                     )
-                    observation = {
-                        "tool_name": tool_call.name,
-                        "args": tool_call.args,
-                        "result": tool_result,
-                    }
                     observations.append(observation)
+                    guidance = guidance_for_observation(observation, guidance_state)
+                    if guidance is not None:
+                        observations.append(_record_guidance(writer, self._emit_event, turn, guidance))
                     if tool_call.name == "apply_patch":
                         completion_observations = [observation]
                     else:
                         completion_observations.append(observation)
-                    writer.append_transcript(
-                        {
-                            "event": "tool_observation",
-                            "turn": turn,
-                            **observation,
-                        },
-                    )
                     _update_in_band_verification_progress(
                         tool_call.name,
                         tool_call.args,
@@ -352,6 +408,37 @@ def _verification_loop_limit_evidence(max_turns: int, verification_result) -> st
         f"verification did not pass before max_turns={max_turns}\n"
         f"{_verification_evidence(verification_result)}"
     )
+
+
+def _record_guidance(
+    writer: EpisodeWriter,
+    emit_event: Callable[[dict[str, object]], None],
+    turn: int,
+    guidance: LoopGuidance,
+) -> dict[str, object]:
+    event = {
+        "event_type": "loop_guidance_added",
+        "turn": turn,
+        "status": guidance.status,
+        "trigger": guidance.trigger,
+        "tool_name": guidance.tool_name,
+        "message": guidance.message,
+    }
+    writer.append_transcript({"event": "loop_guidance_added", **_transcript_event(event)})
+    emit_event(event)
+    return guidance_observation(guidance)
+
+
+def _tool_error_is_terminal(tool_result: dict[str, object]) -> bool:
+    error = tool_result.get("error") if isinstance(tool_result.get("error"), dict) else {}
+    error_type = str(error.get("type", ""))
+    if error_type in {"approval_denied", "policy_denied", "tool_not_allowed", "unknown_tool"}:
+        return True
+    if error_type in {"patch_text_not_found", "patch_text_not_unique", "code_run_failed", "timeout"}:
+        return False
+    if tool_result.get("suggestions"):
+        return False
+    return error_type == "tool_argument_invalid"
 
 
 def _interaction_bridge(

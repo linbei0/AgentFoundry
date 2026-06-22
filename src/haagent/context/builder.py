@@ -323,7 +323,10 @@ class ContextBuilder:
             }
         latest_result = self._observations[-1].get("result", {})
         status = latest_result.get("status") if isinstance(latest_result, dict) else None
-        if latest_tool_name == "verification" and status == "error":
+        if latest_tool_name == "loop_guidance" and isinstance(latest_result, dict):
+            next_action_status = str(latest_result.get("status") or "continue")
+            reason = str(latest_result.get("message") or "Continue using the loop guidance.")
+        elif latest_tool_name == "verification" and status == "error":
             next_action_status = "handle_error"
             reason = "Use the verification failure summary to repair the workspace, then stop for verification again."
         elif status == "success":

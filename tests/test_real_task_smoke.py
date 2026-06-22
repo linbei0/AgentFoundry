@@ -261,6 +261,124 @@ def test_real_task_smoke_failed_task_is_clear_in_inspect(tmp_path: Path) -> None
     assert "file_read: path does not exist: missing.py" in summary
 
 
+def test_real_task_smoke_no_tool_reply_for_edit_is_pushed_to_use_tool(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse("Add this line to README.md: pushed by guidance", []),
+            ModelResponse(
+                "apply guidance",
+                [
+                    ToolCall(
+                        "apply_patch",
+                        {
+                            "path": "README.md",
+                            "old_text": "Tiny project.",
+                            "new_text": "Tiny project.\n\npushed by guidance",
+                        },
+                    ),
+                ],
+            ),
+            ModelResponse("README changed.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "修改 README，增加 pushed by guidance", approvals=True)
+
+    assert result.status == "completed"
+    assert "pushed by guidance" in (workspace / "README.md").read_text(encoding="utf-8")
+    events = _transcript_events(result.episode_path)
+    assert "no_tool_reviewed" in events
+    assert "loop_guidance_added" in events
+
+
+def test_real_task_smoke_recovers_from_wrong_file_path_with_suggestions(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse("guess path", [ToolCall("file_read", {"path": "app.py"})]),
+            ModelResponse("use suggested path", [ToolCall("file_read", {"path": "src/app.py"})]),
+            ModelResponse("Read the app after suggestion.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "读取 app.py")
+
+    assert result.status == "completed"
+    calls = _tool_calls(result.episode_path)
+    assert [call["tool_name"] for call in calls] == ["file_read", "file_read"]
+    assert calls[0]["error"]["type"] == "tool_argument_invalid"
+    assert calls[0]["result"] is None
+    assert Path(calls[1]["result"]["path"]).parts[-2:] == ("src", "app.py")
+    assert "loop_guidance_added" in _transcript_events(result.episode_path)
+
+
+def test_real_task_smoke_reads_file_after_patch_miss_then_repairs(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse(
+                "bad patch",
+                [
+                    ToolCall(
+                        "apply_patch",
+                        {
+                            "path": "README.md",
+                            "old_text": "Tiny old project.",
+                            "new_text": "Tiny repaired project.",
+                        },
+                    ),
+                ],
+            ),
+            ModelResponse("read current file", [ToolCall("file_read", {"path": "README.md"})]),
+            ModelResponse(
+                "patch exact text",
+                [
+                    ToolCall(
+                        "apply_patch",
+                        {
+                            "path": "README.md",
+                            "old_text": "Tiny project.",
+                            "new_text": "Tiny repaired project.",
+                        },
+                    ),
+                ],
+            ),
+            ModelResponse("Patch repaired.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "修正 README 文案", approvals=True)
+
+    assert result.status == "completed"
+    assert "Tiny repaired project." in (workspace / "README.md").read_text(encoding="utf-8")
+    assert [call["tool_name"] for call in _tool_calls(result.episode_path)] == [
+        "apply_patch",
+        "file_read",
+        "apply_patch",
+    ]
+    assert "loop_guidance_added" in _transcript_events(result.episode_path)
+
+
+def test_real_task_smoke_unverified_done_is_pushed_to_run_validation(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse("Done, tests pass.", []),
+            ModelResponse("run validation", [ToolCall("shell", {"command": "python -m pytest -q", "timeout_seconds": 20})]),
+            ModelResponse("Validated with pytest.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "运行测试验证项目", approvals=True)
+
+    assert result.status == "completed"
+    calls = _tool_calls(result.episode_path)
+    assert calls[0]["tool_name"] == "shell"
+    assert calls[0]["result"]["exit_code"] == 0
+    assert "no_tool_reviewed" in _transcript_events(result.episode_path)
+
+
 def _run_chat(
     workspace: Path,
     gateway: ScriptedGateway,

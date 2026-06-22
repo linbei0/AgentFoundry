@@ -341,6 +341,8 @@ def test_agent_session_events_show_single_turn_order_and_tool_success(tmp_path: 
         "approval_requested",
         "approval_granted",
         "tool_finished",
+        "loop_guidance_added",
+        "no_tool_reviewed",
         "assistant_message",
         "turn_finished",
         "session_finished",
@@ -379,6 +381,8 @@ def test_agent_session_user_input_request_continues_with_answer(tmp_path: Path) 
         "user_input_requested",
         "user_input_received",
         "tool_finished",
+        "loop_guidance_added",
+        "no_tool_reviewed",
         "assistant_message",
         "turn_finished",
     ]
