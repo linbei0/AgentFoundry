@@ -21,6 +21,8 @@ def observation_summary(observation: dict[str, object]) -> dict[str, object]:
     tool_name = observation_tool_name(observation)
     args = _dict_or_empty(observation.get("args"))
     result = _dict_or_empty(observation.get("result"))
+    if tool_name == "file_list":
+        return _file_list_observation_summary(args, result)
     if tool_name == "file_read":
         return _file_read_observation_summary(args, result)
     if tool_name == "file_search":
@@ -55,6 +57,23 @@ def _file_read_observation_summary(
         "line_count": len(content.splitlines()),
         "excerpt": excerpt,
         "truncated": truncated,
+    }
+
+
+def _file_list_observation_summary(
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, object]:
+    tree_excerpt, tree_truncated = _compact_excerpt(_string_value(result.get("tree")))
+    return {
+        "status": _string_value(result.get("status")),
+        "path": _first_present_string(args.get("path"), result.get("path"), "."),
+        "max_depth": _first_present(args.get("max_depth"), result.get("max_depth")),
+        "max_entries": _first_present(args.get("max_entries"), result.get("max_entries")),
+        "entry_count": result.get("entry_count"),
+        "tree_excerpt": tree_excerpt,
+        "skipped_dirs": result.get("skipped_dirs", []),
+        "truncated": bool(result.get("truncated")) or tree_truncated,
     }
 
 

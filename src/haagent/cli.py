@@ -28,7 +28,7 @@ from haagent.runtime.orchestrator import RunOrchestrator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AUTHORING_ALLOWED_TOOLS = ["file_read", "file_search", "apply_patch", "shell"]
+AUTHORING_ALLOWED_TOOLS = ["file_list", "file_read", "file_search", "apply_patch", "shell"]
 AUTHORING_APPROVED_TOOLS = ["apply_patch", "shell"]
 
 

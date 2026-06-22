@@ -260,6 +260,7 @@ def test_cli_run_goal_entry_starts_fake_provider_task(
     assert "provider=fake" in output
     assert "goal: Run the generated task smoke." in task_text
     assert f"workspace_root: {workspace_root}" in task_text
+    assert "- file_list" in task_text
     assert "- file_read" in task_text
     assert "- file_search" in task_text
     assert "- apply_patch" in task_text
@@ -312,7 +313,7 @@ def test_cli_run_goal_entry_generates_current_task_contract(
     assert calls["task_path_name"] == "task.yaml"
     assert task.goal == "Fix a small bug."
     assert task.workspace_root == str(workspace_root)
-    assert task.allowed_tools == ["file_read", "file_search", "apply_patch", "shell"]
+    assert task.allowed_tools == ["file_list", "file_read", "file_search", "apply_patch", "shell"]
     assert task.verification_commands == ["uv run pytest"]
     assert task.policy == {
         "approval_allowed_tools": ["apply_patch", "shell"],

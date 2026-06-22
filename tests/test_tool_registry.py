@@ -19,6 +19,7 @@ from haagent.tools.registry import (
 def test_tool_registry_contains_mvp_tools() -> None:
     assert set(TOOL_REGISTRY) == {
         "fake_tool",
+        "file_list",
         "file_search",
         "file_read",
         "apply_patch",
@@ -58,10 +59,19 @@ def test_export_fake_tool_schema() -> None:
 
 
 def test_export_tool_schemas_only_exports_allowed_tools() -> None:
-    schemas = export_tool_schemas(["file_read", "shell"])
+    schemas = export_tool_schemas(["file_list", "file_read", "shell"])
 
-    assert [schema["name"] for schema in schemas] == ["file_read", "shell"]
+    assert [schema["name"] for schema in schemas] == ["file_list", "file_read", "shell"]
     assert [definition.name for definition in allowed_tool_definitions(["file_read"])] == ["file_read"]
+
+
+def test_export_file_list_schema_describes_discovery_defaults() -> None:
+    schemas = export_tool_schemas(["file_list"])
+    schema = schemas[0]
+
+    assert schema["description"] == "list a compact workspace file tree for project discovery"
+    assert schema["parameters"]["required"] == []
+    assert set(schema["parameters"]["properties"]) == {"path", "max_depth", "max_entries"}
 
 
 def test_export_shell_schema_describes_cwd_relative_to_workspace_root() -> None:

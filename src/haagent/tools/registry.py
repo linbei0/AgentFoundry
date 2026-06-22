@@ -42,6 +42,30 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
             "additionalProperties": True,
         },
     ),
+    "file_list": ToolDefinition(
+        name="file_list",
+        description="list a compact workspace file tree for project discovery",
+        risk_level="low",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": 'optional workspace-relative directory to list; defaults to "."',
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "optional maximum directory depth; defaults to 2",
+                },
+                "max_entries": {
+                    "type": "integer",
+                    "description": "optional maximum entries to return; defaults to 100",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    ),
     "file_search": ToolDefinition(
         name="file_search",
         description="search workspace text using ripgrep when available",

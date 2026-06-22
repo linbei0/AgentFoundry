@@ -13,7 +13,7 @@ from typing import Any
 from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.policy import PolicyDecision, evaluate_tool_call
 from haagent.tools.base import ToolHandler, ToolRoutingError, tool_error
-from haagent.tools.file_tools import apply_patch, file_read, file_search
+from haagent.tools.file_tools import apply_patch, file_list, file_read, file_search
 from haagent.tools.registry import TOOL_REGISTRY, validate_tool_registry
 from haagent.tools.shell import shell
 
@@ -34,6 +34,7 @@ class ToolRouter:
         self._workspace_root = workspace_root.resolve()
         self._handlers: dict[str, ToolHandler] = {
             "fake_tool": self._fake_tool,
+            "file_list": lambda args: file_list(args, self._workspace_root),
             "file_search": lambda args: file_search(args, self._workspace_root),
             "file_read": lambda args: file_read(args, self._workspace_root),
             "apply_patch": lambda args: apply_patch(args, self._workspace_root),

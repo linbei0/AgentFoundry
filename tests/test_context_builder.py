@@ -505,6 +505,51 @@ def test_context_builder_compacts_long_file_search_observation(tmp_path: Path) -
     assert json.dumps(matches, ensure_ascii=False) not in model_input
 
 
+def test_context_builder_compacts_long_file_list_observation(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    tree = "\n".join(f"src/file_{index:03d}.py" for index in range(80))
+    ContextBuilder(
+        task=make_task(["file_list"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
+    builder = ContextBuilder(
+        task=make_task(["file_list"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "file_list",
+                "args": {"path": ".", "max_depth": 2, "max_entries": 100},
+                "result": {
+                    "status": "success",
+                    "path": ".",
+                    "max_depth": 2,
+                    "max_entries": 100,
+                    "entry_count": 80,
+                    "truncated": False,
+                    "tree": tree,
+                    "skipped_dirs": [".git", ".runs"],
+                },
+            },
+        ],
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0002.txt").read_text(encoding="utf-8")
+    observation_line = _single_observation_line(model_input)
+    assert '"path": "."' in observation_line
+    assert '"entry_count": 80' in observation_line
+    assert '"tree_excerpt":' in observation_line
+    assert '"truncated": true' in observation_line
+    assert "src/file_000.py" in observation_line
+    assert "src/file_079.py" not in model_input
+    assert tree not in model_input
+
+
 def test_context_builder_compacts_long_shell_observation(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     stdout = "stdout-start-" + ("o" * 600) + "-stdout-end"

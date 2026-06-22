@@ -201,6 +201,99 @@ def test_file_read_missing_path_returns_short_argument_error(tmp_path: Path) -> 
     assert str(tmp_path) not in result["error"]["message"]
 
 
+def test_file_list_defaults_to_workspace_root_and_writes_trace(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_list"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_list", {})
+
+    assert result["status"] == "success"
+    assert result["path"] == "."
+    assert result["max_depth"] == 2
+    assert result["max_entries"] == 100
+    assert result["truncated"] is False
+    assert "README.md" in result["tree"]
+    assert "src/" in result["tree"]
+    assert "src/app.py" in result["tree"]
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "file_list"
+    assert record["status"] == "success"
+    assert record["result"] == result
+
+
+def test_file_list_supports_relative_path(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("value = 2\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_list"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_list", {"path": "pkg"})
+
+    assert result["status"] == "success"
+    assert result["path"] == "pkg"
+    assert "module.py" in result["tree"]
+    assert "outside.py" not in result["tree"]
+
+
+def test_file_list_rejects_path_outside_workspace_root(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_list"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_list", {"path": ".."})
+
+    assert result["status"] == "error"
+    assert result["error"] == {
+        "type": "tool_argument_invalid",
+        "message": "path must stay inside workspace_root; path is relative to workspace_root",
+    }
+
+
+def test_file_list_truncates_many_files(tmp_path: Path) -> None:
+    for index in range(10):
+        (tmp_path / f"file_{index:02d}.txt").write_text("x\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_list"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_list", {"max_entries": 3})
+
+    assert result["status"] == "success"
+    assert result["entry_count"] == 3
+    assert result["truncated"] is True
+    assert "file_00.txt" in result["tree"]
+    assert "file_03.txt" not in result["tree"]
+
+
+def test_file_list_skips_noise_directories_by_default(tmp_path: Path) -> None:
+    for directory in [".git", ".runs", ".smoke-runs", ".venv", "__pycache__", "node_modules", "dist", "build"]:
+        noise_dir = tmp_path / directory
+        noise_dir.mkdir()
+        (noise_dir / "noise.txt").write_text("ignore me\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_list"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_list", {})
+
+    assert result["status"] == "success"
+    assert "src/app.py" in result["tree"]
+    assert "noise.txt" not in result["tree"]
+    assert set(result["skipped_dirs"]) == {
+        ".git",
+        ".runs",
+        ".smoke-runs",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        "dist",
+        "build",
+    }
+
+
 def test_file_search_finds_matching_text_and_writes_trace(tmp_path: Path) -> None:
     (tmp_path / "alpha.txt").write_text("needle appears here\n", encoding="utf-8")
     (tmp_path / "beta.txt").write_text("nothing useful\n", encoding="utf-8")

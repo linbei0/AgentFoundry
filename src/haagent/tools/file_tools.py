@@ -1,7 +1,7 @@
 """
 haagent/tools/file_tools.py - 文件类本地工具
 
-实现 file_search、file_read 和 apply_patch，并限制路径在 workspace 内。
+实现 file_list、file_search、file_read 和 apply_patch，并限制路径在 workspace 内。
 """
 
 from __future__ import annotations
@@ -17,6 +17,58 @@ from haagent.tools.base import tool_error
 
 PATH_GUIDANCE = "path is relative to workspace_root"
 ROOT_GUIDANCE = 'root is relative to workspace_root; use "." or omit root'
+NOISE_DIRECTORIES = {
+    ".git",
+    ".runs",
+    ".smoke-runs",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "dist",
+    "build",
+}
+
+
+def file_list(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+    path_arg = args.get("path", ".")
+    if not isinstance(path_arg, str):
+        return tool_error("tool_argument_invalid", "path must be a string")
+    root = resolve_workspace_path(path_arg, workspace_root)
+    if root is None:
+        return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    if not root.exists():
+        return tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
+    if not root.is_dir():
+        return tool_error("tool_argument_invalid", f"path must be a directory: {path_arg}; {PATH_GUIDANCE}")
+
+    max_depth = args.get("max_depth", 2)
+    max_entries = args.get("max_entries", 100)
+    if max_depth < 0:
+        return tool_error("tool_argument_invalid", "max_depth must be non-negative")
+    if max_entries <= 0:
+        return tool_error("tool_argument_invalid", "max_entries must be positive")
+
+    entries: list[str] = []
+    skipped_dirs: set[str] = set()
+    truncated = _collect_file_tree(
+        root=root,
+        current=root,
+        current_depth=0,
+        max_depth=max_depth,
+        max_entries=max_entries,
+        entries=entries,
+        skipped_dirs=skipped_dirs,
+    )
+    return {
+        "status": "success",
+        "path": path_arg,
+        "max_depth": max_depth,
+        "max_entries": max_entries,
+        "entry_count": len(entries),
+        "truncated": truncated,
+        "tree": "\n".join(entries),
+        "skipped_dirs": sorted(skipped_dirs),
+    }
 
 
 def file_search(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
@@ -130,6 +182,42 @@ def resolve_workspace_path(path: str, workspace_root: Path) -> Path | None:
     if resolved == root or root in resolved.parents:
         return resolved
     return None
+
+
+def _collect_file_tree(
+    *,
+    root: Path,
+    current: Path,
+    current_depth: int,
+    max_depth: int,
+    max_entries: int,
+    entries: list[str],
+    skipped_dirs: set[str],
+) -> bool:
+    for child in sorted(current.iterdir(), key=lambda path: (not path.is_dir(), path.name.lower())):
+        if child.is_dir() and child.name in NOISE_DIRECTORIES:
+            skipped_dirs.add(_relative_tree_path(child, root).rstrip("/"))
+            continue
+        if len(entries) >= max_entries:
+            return True
+        entries.append(_relative_tree_path(child, root))
+        if child.is_dir() and current_depth < max_depth - 1:
+            if _collect_file_tree(
+                root=root,
+                current=child,
+                current_depth=current_depth + 1,
+                max_depth=max_depth,
+                max_entries=max_entries,
+                entries=entries,
+                skipped_dirs=skipped_dirs,
+            ):
+                return True
+    return False
+
+
+def _relative_tree_path(path: Path, root: Path) -> str:
+    suffix = "/" if path.is_dir() else ""
+    return path.relative_to(root).as_posix() + suffix
 
 
 def _parse_rg_json(output: str) -> list[dict[str, Any]]:
