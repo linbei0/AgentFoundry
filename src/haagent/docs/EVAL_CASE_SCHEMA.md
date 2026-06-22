@@ -2,13 +2,15 @@
 
 `export_eval_case()` 把一个已校验的 episode package 导出为可序列化的 eval case 字典。导出入口会先复用 episode validator / package view；invalid episode 必须在导出前被 validator 拒绝，不能生成半可信 eval case。
 
+Eval export 是后台评估能力，不是普通用户入口。普通用户路径应优先通过自然语言 `haagent chat` 使用 HaAgent；`task.yaml` 和 eval case 主要服务复现、批处理、smoke 和回归评估。
+
 ## 顶层字段
 
 当前 `eval_case_version=1.0` 的真实顶层字段如下：
 
 - `eval_case_version`: eval case schema 版本。
 - `episode_version`: episode package schema 版本。
-- `task`: 任务事实摘要，来自 episode package 内冻结的 `task.yaml` 快照，而不是重新读取当前工作区原始 task 路径。
+- `task`: 任务事实摘要，来自 episode package 内冻结的任务契约。该契约可能来自 `task.yaml`，也可能来自 `haagent chat` 为自然语言请求生成的临时 task contract。
 - `workspace_root`: episode 记录的 workspace root。
 - `final_status`: episode 最终状态，例如 `completed` 或 `failed`。
 - `failure`: 失败摘要；成功时为 `null`。
@@ -31,7 +33,7 @@
 - `acceptance_criteria`
 - `verification_commands`
 
-这些字段来自 episode package 中复制保存的 `task.yaml`。即使原始任务文件在工作区中被修改，eval export 也只读取 episode 内冻结快照，保证重复导出确定。
+这些字段来自 episode package 中复制保存的任务契约。即使原始 `task.yaml` 或 chat 输入上下文在工作区中被修改，eval export 也只读取 episode 内冻结快照，保证重复导出确定。
 
 ### verification
 
@@ -78,7 +80,7 @@
 
 - `not_required`: 低风险或中风险工具不需要审批。
 - `missing`: 高风险工具需要审批，但本次任务没有获得可执行批准。
-- `granted`: 高风险工具已在 `task.yaml` 的 policy 配置中被显式批准，可以进入 handler 执行路径。
+- `granted`: 高风险工具已在任务契约的 policy 配置中被显式批准，可以进入 handler 执行路径。
 
 ## 最小 JSON 示例
 

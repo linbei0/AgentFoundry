@@ -1,6 +1,8 @@
-# task.yaml policy 配置
+# 任务契约 policy 配置
 
-`task.yaml` 可以通过可选的 `policy` 字段声明本次任务的高风险工具审批配置。该配置只影响 Policy Engine 对工具调用的决策，不会引入交互式审批，也不会改变工具本身的执行方式。
+任务契约可以通过可选的 `policy` 字段声明本次任务的高风险工具审批配置。任务契约可能来自 `task.yaml`，也可能来自 `haagent chat` 为自然语言请求生成的临时 task contract。
+
+`task.yaml` 仍是复现、批处理、smoke 和 eval 的高级入口；普通用户路径应优先使用自然语言 chat。无论入口是什么，policy 都只影响 Policy Engine 对工具调用的决策，不会自动引入交互式审批，也不会改变工具本身的执行方式。
 
 ## 字段语义
 
@@ -19,7 +21,7 @@
 
 ## 示例：允许申请但未批准
 
-下面的任务允许 `shell` 进入审批申请流程，但没有把它加入 `approved_tools`。如果模型调用 `shell`，预期结果是 policy deny，approval missing，handler 不会执行。
+下面的任务契约允许 `shell` 进入审批申请流程，但没有把它加入 `approved_tools`。如果模型调用 `shell`，预期结果是 policy deny，approval missing，handler 不会执行。
 
 ```yaml
 goal: Try a high risk shell command without approval grant
@@ -44,7 +46,7 @@ policy:
 
 ## 示例：高风险工具已批准
 
-下面的任务同时把 `shell` 放入 `approval_allowed_tools` 和 `approved_tools`。如果模型调用 `shell`，预期结果是 approval granted，并进入 `shell` handler 执行路径。
+下面的任务契约同时把 `shell` 放入 `approval_allowed_tools` 和 `approved_tools`。如果模型调用 `shell`，预期结果是 approval granted，并进入 `shell` handler 执行路径。
 
 ```yaml
 goal: Run an approved high risk shell command
