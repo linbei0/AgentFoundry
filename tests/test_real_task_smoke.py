@@ -379,6 +379,44 @@ def test_real_task_smoke_unverified_done_is_pushed_to_run_validation(tmp_path: P
     assert "no_tool_reviewed" in _transcript_events(result.episode_path)
 
 
+def test_real_task_smoke_finds_context_before_edit_without_path(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse(
+                "find greeting implementation",
+                [ToolCall("context_find", {"query": "greeting function implementation"})],
+            ),
+            ModelResponse("read candidate", [ToolCall("file_read", {"path": "src/app.py", "keyword": "greet", "limit": 20})]),
+            ModelResponse(
+                "patch found file",
+                [
+                    ToolCall(
+                        "apply_patch",
+                        {
+                            "path": "src/app.py",
+                            "old_text": 'return f"Hello, {name}!"',
+                            "new_text": 'return f"Howdy, {name}!"',
+                        },
+                    ),
+                ],
+            ),
+            ModelResponse("Greeting implementation updated.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "把问候函数的输出改成 Howdy", approvals=True)
+
+    assert result.status == "completed"
+    assert 'return f"Howdy, {name}!"' in (workspace / "src" / "app.py").read_text(encoding="utf-8")
+    assert [call["tool_name"] for call in _tool_calls(result.episode_path)] == [
+        "context_find",
+        "file_read",
+        "apply_patch",
+    ]
+    assert "loop_guidance_added" in _transcript_events(result.episode_path)
+
+
 def _run_chat(
     workspace: Path,
     gateway: ScriptedGateway,

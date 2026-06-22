@@ -128,6 +128,11 @@ def _success_guidance(tool_name: str, args: dict[str, Any], result: dict[str, An
         if path:
             return f"Choose the most relevant search hit and read it next with file_read: {path}."
         return "Review the search result summary and choose the next file_read or refine the search query."
+    if tool_name == "context_find":
+        read_args = _first_context_read_args(result)
+        if read_args:
+            return f"context_find found candidates. Choose the most relevant one and read it next with file_read: {read_args}."
+        return "context_find found no candidates. change keywords, adjust file_glob, or ask the user with request_user_input."
     if tool_name in {"file_write", "apply_patch"}:
         path = str(result.get("path") or args.get("path") or "")
         return f"File change succeeded. Read back {path} or run verification before claiming completion."
@@ -164,6 +169,19 @@ def _first_match_path(result: dict[str, Any]) -> str | None:
     for match in matches:
         if isinstance(match, dict) and isinstance(match.get("path"), str):
             return str(match["path"])
+    return None
+
+
+def _first_context_read_args(result: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        read_args = candidate.get("recommended_file_read")
+        if isinstance(read_args, dict) and isinstance(read_args.get("path"), str):
+            return read_args
     return None
 
 

@@ -538,6 +538,66 @@ def test_context_builder_compacts_long_file_search_observation(tmp_path: Path) -
     assert json.dumps(matches, ensure_ascii=False) not in model_input
 
 
+def test_context_builder_compacts_context_find_observation(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    candidates = [
+        {
+            "path": "src/app.py",
+            "line": 2,
+            "excerpt": "def greet(name): " + ("x" * 500),
+            "score": 6,
+            "reasons": ["filename", "text"],
+            "recommended_file_read": {"path": "src/app.py", "keyword": "greet", "limit": 80},
+        },
+        {
+            "path": "README.md",
+            "line": 4,
+            "excerpt": "Usage mentions greeting",
+            "score": 2,
+            "reasons": ["text"],
+            "recommended_file_read": {"path": "README.md", "keyword": "greeting", "limit": 80},
+        },
+    ]
+    ContextBuilder(
+        task=make_task(["context_find"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
+    builder = ContextBuilder(
+        task=make_task(["context_find"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "context_find",
+                "args": {"query": "find greeting logic", "max_results": 5},
+                "result": {
+                    "status": "success",
+                    "query": "find greeting logic",
+                    "keywords": ["greeting", "logic"],
+                    "candidate_count": 2,
+                    "candidates": candidates,
+                    "truncated": True,
+                },
+            },
+        ],
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0002.txt").read_text(encoding="utf-8")
+    observation_line = _single_observation_line(model_input)
+    assert '"query": "find greeting logic"' in observation_line
+    assert '"keywords": ["greeting", "logic"]' in observation_line
+    assert '"candidate_count": 2' in observation_line
+    assert '"path": "src/app.py"' in observation_line
+    assert '"recommended_file_read": {"keyword": "greet", "limit": 80, "path": "src/app.py"}' in observation_line
+    assert "x" * 300 not in model_input
+    assert json.dumps(candidates, ensure_ascii=False) not in model_input
+
+
 def test_context_builder_compacts_long_file_list_observation(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     tree = "\n".join(f"src/file_{index:03d}.py" for index in range(80))

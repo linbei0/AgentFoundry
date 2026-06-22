@@ -29,6 +29,7 @@ from haagent.runtime.orchestrator import RunOrchestrator
 CHAT_ALLOWED_TOOLS = [
     "file_list",
     "file_search",
+    "context_find",
     "file_read",
     "request_user_input",
     "file_write",

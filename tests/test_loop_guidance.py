@@ -32,6 +32,49 @@ def test_guidance_for_successful_file_search_selects_file_to_read() -> None:
     assert "src/app.py" in guidance.message
 
 
+def test_guidance_for_successful_context_find_selects_candidate_to_read() -> None:
+    guidance = guidance_for_observation(
+        {
+            "tool_name": "context_find",
+            "args": {"query": "greeting"},
+            "result": {
+                "status": "success",
+                "candidates": [
+                    {
+                        "path": "src/app.py",
+                        "line": 1,
+                        "excerpt": "def greet",
+                        "recommended_file_read": {"path": "src/app.py", "keyword": "greet", "limit": 80},
+                    },
+                ],
+            },
+        },
+        LoopGuidanceState(),
+    )
+
+    assert guidance is not None
+    assert guidance.status == "continue"
+    assert "context_find" in guidance.message
+    assert "file_read" in guidance.message
+    assert "src/app.py" in guidance.message
+
+
+def test_guidance_for_empty_context_find_changes_keywords_or_asks_user() -> None:
+    guidance = guidance_for_observation(
+        {
+            "tool_name": "context_find",
+            "args": {"query": "missing feature"},
+            "result": {"status": "success", "candidates": []},
+        },
+        LoopGuidanceState(),
+    )
+
+    assert guidance is not None
+    assert guidance.status == "continue"
+    assert "change keywords" in guidance.message
+    assert "request_user_input" in guidance.message
+
+
 def test_guidance_for_missing_file_prefers_suggestion_path() -> None:
     guidance = guidance_for_observation(
         {

@@ -19,9 +19,11 @@ class RecordingGateway:
 
     def __init__(self) -> None:
         self.model_inputs: list[str] = []
+        self.tool_schema_names: list[list[str]] = []
 
     def generate(self, task, model_input, tool_schemas, observations):
         self.model_inputs.append(model_input)
+        self.tool_schema_names.append([schema["name"] for schema in tool_schemas])
         if task.goal == "first" and not observations:
             return ModelResponse("listing", [ToolCall("file_list", {})])
         return ModelResponse(f"done: {task.goal}", [])
@@ -315,6 +317,23 @@ def test_cli_chat_single_prompt_still_runs_once(
     assert "status=completed" in output
     assert "verification=not_run" in output
     assert "session_id=" not in output
+
+
+def test_agent_session_chat_default_tools_include_context_find(tmp_path: Path) -> None:
+    gateway = RecordingGateway()
+    session = AgentSession(
+        workspace_root=tmp_path,
+        runs_root=tmp_path / ".runs",
+        model_gateway=gateway,
+        max_turns=20,
+    )
+
+    result = session.run_prompt_events("describe greeting code")
+
+    assert result.status == "completed"
+    assert "context_find" in gateway.tool_schema_names[0]
+    task = load_task(result.episode_path / "task.yaml")
+    assert "context_find" in task.allowed_tools
 
 
 def test_agent_session_events_show_single_turn_order_and_tool_success(tmp_path: Path) -> None:

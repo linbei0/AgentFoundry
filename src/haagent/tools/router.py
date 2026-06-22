@@ -24,7 +24,7 @@ from haagent.runtime.policy import (
 )
 from haagent.tools.base import ToolHandler, ToolRoutingError, tool_error
 from haagent.tools.code_run import code_run
-from haagent.tools.file_tools import apply_patch, file_list, file_read, file_search, file_write
+from haagent.tools.file_tools import apply_patch, context_find, file_list, file_read, file_search, file_write
 from haagent.tools.registry import TOOL_REGISTRY, validate_tool_registry
 from haagent.tools.shell import shell
 
@@ -47,6 +47,7 @@ class ToolRouter:
             "fake_tool": self._fake_tool,
             "file_list": lambda args: file_list(args, self._workspace_root),
             "file_search": lambda args: file_search(args, self._workspace_root),
+            "context_find": lambda args: context_find(args, self._workspace_root),
             "file_read": lambda args: file_read(args, self._workspace_root),
             "request_user_input": self._request_user_input_without_handler,
             "file_write": lambda args: file_write(args, self._workspace_root),

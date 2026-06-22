@@ -21,6 +21,7 @@ def test_tool_registry_contains_mvp_tools() -> None:
         "fake_tool",
         "file_list",
         "file_search",
+        "context_find",
         "file_read",
         "request_user_input",
         "file_write",
@@ -92,6 +93,16 @@ def test_file_read_schema_supports_keyword() -> None:
 
     assert "keyword" in schema["parameters"]["properties"]
     assert schema["parameters"]["properties"]["keyword"]["type"] == "string"
+
+
+def test_context_find_schema_supports_natural_language_lookup() -> None:
+    schemas = export_tool_schemas(["context_find"])
+    schema = schemas[0]
+
+    assert schema["description"] == "find relevant workspace files and snippets from a natural language query"
+    assert schema["parameters"]["required"] == ["query"]
+    assert set(schema["parameters"]["properties"]) == {"query", "file_glob", "max_results", "max_chars"}
+    assert TOOL_REGISTRY["context_find"].risk_level == "low"
 
 
 def test_request_user_input_schema_requires_question() -> None:
