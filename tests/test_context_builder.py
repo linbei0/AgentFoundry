@@ -803,6 +803,54 @@ def test_context_builder_compacts_code_run_observation_without_full_output_or_co
     assert "-stderr-end" not in model_input
 
 
+def test_context_builder_compacts_apply_patch_set_without_full_patch_text(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    builder = ContextBuilder(
+        task=make_task(["apply_patch_set"]),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "apply_patch_set",
+                "args": {
+                    "replacements": [
+                        {
+                            "path": "src/app.py",
+                            "old_text": "SECRET_OLD_TEXT_SHOULD_NOT_ENTER_MODEL",
+                            "new_text": "SECRET_NEW_TEXT_SHOULD_NOT_ENTER_MODEL",
+                        },
+                    ],
+                },
+                "result": {
+                    "status": "error",
+                    "replacement_count": 1,
+                    "error": {"type": "patch_text_not_found", "message": "old_text was not found"},
+                    "replacements": [
+                        {
+                            "index": 0,
+                            "path": "src/app.py",
+                            "status": "error",
+                            "reason": "old_text was not found",
+                            "match_count": 0,
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    builder.build()
+
+    model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
+    observation_line = _single_observation_line(model_input)
+    assert '"path": "src/app.py"' in observation_line
+    assert '"replacement_count": 1' in observation_line
+    assert "patch_text_not_found" in observation_line
+    assert "SECRET_OLD_TEXT_SHOULD_NOT_ENTER_MODEL" not in model_input
+    assert "SECRET_NEW_TEXT_SHOULD_NOT_ENTER_MODEL" not in model_input
+
+
 def test_tool_call_trace_keeps_full_result_when_context_compacts_observation(
     tmp_path: Path,
 ) -> None:

@@ -58,7 +58,7 @@ def guidance_for_observation(
         state.consecutive_failures = 0
         state.successful_tool_count += 1
         state.successful_tool_names.append(tool_name)
-        if tool_name in {"file_write", "apply_patch"}:
+        if tool_name in {"file_write", "apply_patch", "apply_patch_set"}:
             state.has_file_change = True
         if tool_name in {"shell", "code_run"} and result.get("exit_code") == 0:
             state.has_verification_evidence = True
@@ -87,7 +87,7 @@ def guidance_for_no_tool_response(
             status="continue",
             message=(
                 "The task appears to require changing files. Do not stop with prose or code only; "
-                "choose file_write/apply_patch/code_run as appropriate."
+                "choose file_write/apply_patch/apply_patch_set/code_run as appropriate."
             ),
             trigger="no_tool_edit_needed",
         )
@@ -133,8 +133,11 @@ def _success_guidance(tool_name: str, args: dict[str, Any], result: dict[str, An
         if read_args:
             return f"context_find found candidates. Choose the most relevant one and read it next with file_read: {read_args}."
         return "context_find found no candidates. change keywords, adjust file_glob, or ask the user with request_user_input."
-    if tool_name in {"file_write", "apply_patch"}:
+    if tool_name in {"file_write", "apply_patch", "apply_patch_set"}:
         path = str(result.get("path") or args.get("path") or "")
+        if tool_name == "apply_patch_set":
+            paths = result.get("paths")
+            path = ", ".join(str(item) for item in paths) if isinstance(paths, list) else path
         return f"File change succeeded. Read back {path} or run verification before claiming completion."
     if tool_name == "shell":
         exit_code = result.get("exit_code")
@@ -157,6 +160,12 @@ def _error_guidance(tool_name: str, args: dict[str, Any], result: dict[str, Any]
     if tool_name == "apply_patch" and _patch_miss(error_type, message):
         path = str(args.get("path", ""))
         return f"Patch did not match. First file_read {path}, then narrow old_text to an exact current snippet."
+    if tool_name == "apply_patch_set" and error_type == "patch_text_not_unique":
+        path = _first_patch_set_error_path(result)
+        return f"Patch text was ambiguous. First file_read {path}, then retry apply_patch_set with expand old_text context."
+    if tool_name == "apply_patch_set" and _patch_miss(error_type, message):
+        path = _first_patch_set_error_path(result)
+        return f"Patch set did not match. First file_read {path}, then retry apply_patch_set with exact current snippets."
     if tool_name in {"shell", "code_run"}:
         return "Use stderr/stdout summary to fix the command or code; do not rerun the same command unchanged."
     return "Use the latest structured error to adjust arguments or ask the user for missing information."
@@ -183,6 +192,17 @@ def _first_context_read_args(result: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(read_args, dict) and isinstance(read_args.get("path"), str):
             return read_args
     return None
+
+
+def _first_patch_set_error_path(result: dict[str, Any]) -> str:
+    replacements = result.get("replacements")
+    if isinstance(replacements, list):
+        for replacement in replacements:
+            if not isinstance(replacement, dict):
+                continue
+            if replacement.get("status") == "error":
+                return str(replacement.get("path") or "")
+    return ""
 
 
 def _patch_miss(error_type: str, message: str) -> bool:

@@ -35,9 +35,10 @@ CHAT_ALLOWED_TOOLS = [
     "file_write",
     "code_run",
     "apply_patch",
+    "apply_patch_set",
     "shell",
 ]
-CHAT_APPROVED_TOOLS = ["file_write", "code_run", "apply_patch", "shell"]
+CHAT_APPROVED_TOOLS = ["file_write", "code_run", "apply_patch", "apply_patch_set", "shell"]
 CHAT_MAX_TURNS = 20
 SESSION_SUMMARY_CHAR_LIMIT = 1000
 
@@ -433,7 +434,7 @@ def _runtime_event_payload(event_type: str, payload: dict[str, object]) -> dict[
 
 
 def _tool_args_summary(tool_name: str, args: dict[str, object]) -> dict[str, object]:
-    if tool_name in {"file_write", "code_run", "apply_patch", "shell", "request_user_input"}:
+    if tool_name in {"file_write", "code_run", "apply_patch", "apply_patch_set", "shell", "request_user_input"}:
         return interaction_args_summary(tool_name, args)
     if tool_name == "file_read":
         return {

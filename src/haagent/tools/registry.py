@@ -238,6 +238,28 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
             "additionalProperties": False,
         },
     ),
+    "apply_patch_set": ToolDefinition(
+        name="apply_patch_set",
+        description=(
+            "apply multiple unique text replacements atomically after reading current file context; "
+            "no files are written if any replacement does not match exactly once"
+        ),
+        risk_level="high",
+        parameters={
+            "type": "object",
+            "properties": {
+                "replacements": {
+                    "type": "array",
+                    "description": (
+                        "non-empty list of replacements; each item has workspace-relative path, "
+                        "old_text, and new_text"
+                    ),
+                },
+            },
+            "required": ["replacements"],
+            "additionalProperties": False,
+        },
+    ),
     "shell": ToolDefinition(
         name="shell",
         description="run a shell command with timeout and captured output",

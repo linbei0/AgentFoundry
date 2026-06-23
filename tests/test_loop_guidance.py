@@ -115,6 +115,56 @@ def test_guidance_for_patch_miss_reads_current_file_before_retry() -> None:
     assert "narrow old_text" in guidance.message
 
 
+def test_guidance_for_patch_set_failure_reads_current_file_before_retry() -> None:
+    guidance = guidance_for_observation(
+        {
+            "tool_name": "apply_patch_set",
+            "args": {
+                "replacements": [
+                    {"path": "README.md", "old_text": "missing", "new_text": "new"},
+                    {"path": "src/app.py", "old_text": "x", "new_text": "y"},
+                ],
+            },
+            "result": {
+                "status": "error",
+                "error": {"type": "patch_text_not_found", "message": "old_text was not found"},
+                "replacement_count": 2,
+                "replacements": [
+                    {"index": 0, "path": "README.md", "status": "error", "reason": "old_text was not found"},
+                    {"index": 1, "path": "src/app.py", "status": "skipped"},
+                ],
+            },
+        },
+        LoopGuidanceState(),
+    )
+
+    assert guidance is not None
+    assert "file_read README.md" in guidance.message
+    assert "then retry apply_patch_set" in guidance.message
+
+
+def test_guidance_for_patch_set_duplicate_match_expands_context() -> None:
+    guidance = guidance_for_observation(
+        {
+            "tool_name": "apply_patch_set",
+            "args": {"replacements": [{"path": "README.md", "old_text": "same", "new_text": "new"}]},
+            "result": {
+                "status": "error",
+                "error": {"type": "patch_text_not_unique", "message": "old_text must match exactly once"},
+                "replacement_count": 1,
+                "replacements": [
+                    {"index": 0, "path": "README.md", "status": "error", "reason": "old_text repeated"}
+                ],
+            },
+        },
+        LoopGuidanceState(),
+    )
+
+    assert guidance is not None
+    assert "file_read README.md" in guidance.message
+    assert "expand old_text context" in guidance.message
+
+
 def test_guidance_for_shell_failure_uses_output_without_mechanical_retry() -> None:
     guidance = guidance_for_observation(
         {

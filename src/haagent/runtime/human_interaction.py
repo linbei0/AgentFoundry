@@ -53,6 +53,16 @@ def interaction_args_summary(tool_name: str, args: dict[str, Any]) -> dict[str, 
             "old_text_chars": len(old_text),
             "path": _summary_value(str(args.get("path", "")), 160),
         }
+    if tool_name == "apply_patch_set":
+        replacements = args.get("replacements")
+        if not isinstance(replacements, list):
+            return {"replacement_count": 0, "paths": []}
+        paths = [
+            _summary_value(str(replacement.get("path", "")), 160)
+            for replacement in replacements
+            if isinstance(replacement, dict)
+        ]
+        return {"replacement_count": len(replacements), "paths": paths}
     if tool_name == "shell":
         return {
             "command": _summary_value(str(args.get("command", "")), 160),

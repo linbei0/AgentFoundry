@@ -39,6 +39,8 @@ def observation_summary(observation: dict[str, object]) -> dict[str, object]:
         return _shell_observation_summary(args, result)
     if tool_name == "apply_patch":
         return _apply_patch_observation_summary(args, result)
+    if tool_name == "apply_patch_set":
+        return _apply_patch_set_observation_summary(args, result)
     if tool_name == "verification":
         return _verification_observation_summary(args, result)
     if tool_name == "loop_guidance":
@@ -235,6 +237,43 @@ def _apply_patch_observation_summary(
     }
 
 
+def _apply_patch_set_observation_summary(
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, object]:
+    error = _dict_or_empty(result.get("error"))
+    replacements = result.get("replacements")
+    compact_replacements: list[dict[str, object]] = []
+    if isinstance(replacements, list):
+        for replacement in replacements:
+            if not isinstance(replacement, dict):
+                continue
+            compact_replacements.append(
+                {
+                    "index": replacement.get("index"),
+                    "path": _string_value(replacement.get("path")),
+                    "status": _string_value(replacement.get("status")),
+                    "reason": _string_value(replacement.get("reason")),
+                    "match_count": replacement.get("match_count"),
+                    "old_text_chars": replacement.get("old_text_chars"),
+                    "new_text_chars": replacement.get("new_text_chars"),
+                },
+            )
+    paths = result.get("paths")
+    if not isinstance(paths, list):
+        paths = sorted({item["path"] for item in compact_replacements if item.get("path")})
+    failure_reason, reason_truncated = _compact_excerpt(_string_value(error.get("message")))
+    return {
+        "status": _string_value(result.get("status")),
+        "replacement_count": result.get("replacement_count", _patch_set_arg_count(args)),
+        "paths": paths,
+        "failure_type": _string_value(error.get("type")),
+        "failure_reason": failure_reason,
+        "replacements": compact_replacements,
+        "truncated": reason_truncated,
+    }
+
+
 def _verification_observation_summary(
     args: dict[str, Any],
     result: dict[str, Any],
@@ -323,3 +362,10 @@ def _first_present_string(*values: object) -> str:
         if value is not None:
             return str(value)
     return ""
+
+
+def _patch_set_arg_count(args: dict[str, Any]) -> int:
+    replacements = args.get("replacements")
+    if isinstance(replacements, list):
+        return len(replacements)
+    return 0

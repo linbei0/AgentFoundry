@@ -24,7 +24,7 @@ from haagent.runtime.policy import (
 )
 from haagent.tools.base import ToolHandler, ToolRoutingError, tool_error
 from haagent.tools.code_run import code_run
-from haagent.tools.file_tools import apply_patch, context_find, file_list, file_read, file_search, file_write
+from haagent.tools.file_tools import apply_patch, apply_patch_set, context_find, file_list, file_read, file_search, file_write
 from haagent.tools.registry import TOOL_REGISTRY, validate_tool_registry
 from haagent.tools.shell import shell
 
@@ -53,6 +53,7 @@ class ToolRouter:
             "file_write": lambda args: file_write(args, self._workspace_root),
             "code_run": lambda args: code_run(args, self._workspace_root),
             "apply_patch": lambda args: apply_patch(args, self._workspace_root),
+            "apply_patch_set": lambda args: apply_patch_set(args, self._workspace_root),
             "shell": lambda args: shell(args, self._workspace_root),
         }
         try:

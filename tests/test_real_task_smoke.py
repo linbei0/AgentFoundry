@@ -128,6 +128,58 @@ def test_real_task_smoke_modifies_python_file_and_runs_tests(tmp_path: Path) -> 
     assert shell_call["result"]["exit_code"] == 0
 
 
+def test_real_task_smoke_context_find_read_patch_set_and_runs_tests(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse(
+                "find greeting feature",
+                [ToolCall("context_find", {"query": "greeting function and its test"})],
+            ),
+            ModelResponse("read app", [ToolCall("file_read", {"path": "src/app.py", "keyword": "greet", "limit": 20})]),
+            ModelResponse("read test", [ToolCall("file_read", {"path": "tests/test_app.py", "keyword": "test_greet", "limit": 20})]),
+            ModelResponse(
+                "edit implementation and test",
+                [
+                    ToolCall(
+                        "apply_patch_set",
+                        {
+                            "replacements": [
+                                {
+                                    "path": "src/app.py",
+                                    "old_text": 'return f"Hello, {name}!"',
+                                    "new_text": 'return f"Hi, {name}!"',
+                                },
+                                {
+                                    "path": "tests/test_app.py",
+                                    "old_text": 'assert greet("Ada") == "Hello, Ada!"',
+                                    "new_text": 'assert greet("Ada") == "Hi, Ada!"',
+                                },
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            ModelResponse("run tests", [ToolCall("shell", {"command": "python -m pytest -q", "timeout_seconds": 20})]),
+            ModelResponse("Greeting feature updated and tests pass.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "把问候功能改成 Hi，并同步测试后运行 pytest", approvals=True)
+
+    assert result.status == "completed"
+    assert [call["tool_name"] for call in _tool_calls(result.episode_path)] == [
+        "context_find",
+        "file_read",
+        "file_read",
+        "apply_patch_set",
+        "shell",
+    ]
+    assert 'return f"Hi, {name}!"' in (workspace / "src" / "app.py").read_text(encoding="utf-8")
+    assert 'assert greet("Ada") == "Hi, Ada!"' in (workspace / "tests" / "test_app.py").read_text(encoding="utf-8")
+    assert _tool_calls(result.episode_path)[-1]["result"]["exit_code"] == 0
+
+
 def test_real_task_smoke_runs_script_validation(tmp_path: Path) -> None:
     workspace = _make_project_workspace(tmp_path)
     gateway = ScriptedGateway(
@@ -358,6 +410,103 @@ def test_real_task_smoke_reads_file_after_patch_miss_then_repairs(tmp_path: Path
         "apply_patch",
     ]
     assert "loop_guidance_added" in _transcript_events(result.episode_path)
+
+
+def test_real_task_smoke_patch_set_failure_does_not_partially_write(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    original_app = (workspace / "src" / "app.py").read_text(encoding="utf-8")
+    original_test = (workspace / "tests" / "test_app.py").read_text(encoding="utf-8")
+    gateway = ScriptedGateway(
+        [
+            ModelResponse(
+                "try multi edit",
+                [
+                    ToolCall(
+                        "apply_patch_set",
+                        {
+                            "replacements": [
+                                {
+                                    "path": "src/app.py",
+                                    "old_text": 'return f"Hello, {name}!"',
+                                    "new_text": 'return f"Hi, {name}!"',
+                                },
+                                {
+                                    "path": "tests/test_app.py",
+                                    "old_text": "missing assertion",
+                                    "new_text": 'assert greet("Ada") == "Hi, Ada!"',
+                                },
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            ModelResponse("read app after failure", [ToolCall("file_read", {"path": "src/app.py", "keyword": "greet", "limit": 20})]),
+            ModelResponse(
+                "read test after failure",
+                [ToolCall("file_read", {"path": "tests/test_app.py", "keyword": "test_greet", "limit": 20})],
+            ),
+            ModelResponse("No partial write occurred after the failed patch set.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "确认 apply_patch_set 失败不会部分写入", approvals=True)
+
+    assert result.status == "completed"
+    calls = _tool_calls(result.episode_path)
+    call = calls[0]
+    assert call["tool_name"] == "apply_patch_set"
+    assert call["error"]["type"] == "patch_text_not_found"
+    assert [item["tool_name"] for item in calls] == ["apply_patch_set", "file_read", "file_read"]
+    assert (workspace / "src" / "app.py").read_text(encoding="utf-8") == original_app
+    assert (workspace / "tests" / "test_app.py").read_text(encoding="utf-8") == original_test
+
+
+def test_real_task_smoke_repeated_patch_set_fragment_reads_then_uses_longer_context(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    (workspace / "README.md").write_text("# Demo\n\nTiny project.\n\nTiny project.\n", encoding="utf-8")
+    gateway = ScriptedGateway(
+        [
+            ModelResponse(
+                "ambiguous edit",
+                [
+                    ToolCall(
+                        "apply_patch_set",
+                        {"replacements": [{"path": "README.md", "old_text": "Tiny project.", "new_text": "Tiny demo."}]},
+                    ),
+                ],
+            ),
+            ModelResponse("read current file", [ToolCall("file_read", {"path": "README.md"})]),
+            ModelResponse(
+                "edit with larger context",
+                [
+                    ToolCall(
+                        "apply_patch_set",
+                        {
+                            "replacements": [
+                                {
+                                    "path": "README.md",
+                                    "old_text": "# Demo\n\nTiny project.\n\n",
+                                    "new_text": "# Demo\n\nTiny demo.\n\n",
+                                },
+                            ],
+                        },
+                    ),
+                ],
+            ),
+            ModelResponse("Repeated fragment repaired with longer context.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "把 README 第一段项目描述改成 Tiny demo", approvals=True)
+
+    assert result.status == "completed"
+    assert [call["tool_name"] for call in _tool_calls(result.episode_path)] == [
+        "apply_patch_set",
+        "file_read",
+        "apply_patch_set",
+    ]
+    assert _tool_calls(result.episode_path)[0]["error"]["type"] == "patch_text_not_unique"
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "# Demo\n\nTiny demo.\n\nTiny project.\n"
 
 
 def test_real_task_smoke_unverified_done_is_pushed_to_run_validation(tmp_path: Path) -> None:

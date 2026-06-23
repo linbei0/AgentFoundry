@@ -306,7 +306,7 @@ class RunOrchestrator:
                     guidance = guidance_for_observation(observation, guidance_state)
                     if guidance is not None:
                         observations.append(_record_guidance(writer, self._emit_event, turn, guidance))
-                    if tool_call.name == "apply_patch":
+                    if tool_call.name in {"apply_patch", "apply_patch_set"}:
                         completion_observations = [observation]
                     else:
                         completion_observations.append(observation)
@@ -537,7 +537,7 @@ def _update_in_band_verification_progress(
     passed_verification_commands: set[str],
 ) -> None:
     # 修改文件后，之前通过的验证不再证明当前工作区状态。
-    if tool_name == "apply_patch":
+    if tool_name in {"apply_patch", "apply_patch_set"}:
         passed_verification_commands.clear()
         return
     if tool_name != "shell":

@@ -428,6 +428,138 @@ def test_apply_patch_missing_path_returns_short_argument_error(tmp_path: Path) -
     assert str(tmp_path) not in result["error"]["message"]
 
 
+def test_apply_patch_set_replaces_multiple_unique_snippets_atomically(tmp_path: Path) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("alpha\nold one\nomega\n", encoding="utf-8")
+    second.write_text("before\nold two\nafter\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["apply_patch_set"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["apply_patch_set"],
+        approved_tools=["apply_patch_set"],
+    )
+
+    result = router.dispatch(
+        "apply_patch_set",
+        {
+            "replacements": [
+                {"path": "first.txt", "old_text": "old one", "new_text": "new one"},
+                {"path": "second.txt", "old_text": "old two", "new_text": "new two"},
+            ],
+        },
+    )
+
+    assert result["status"] == "success"
+    assert result["replacement_count"] == 2
+    assert [item["status"] for item in result["replacements"]] == ["success", "success"]
+    assert first.read_text(encoding="utf-8") == "alpha\nnew one\nomega\n"
+    assert second.read_text(encoding="utf-8") == "before\nnew two\nafter\n"
+
+
+def test_apply_patch_set_single_failure_writes_no_partial_results(tmp_path: Path) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("alpha\nold one\nomega\n", encoding="utf-8")
+    second.write_text("before\nunchanged\nafter\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["apply_patch_set"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["apply_patch_set"],
+        approved_tools=["apply_patch_set"],
+    )
+
+    result = router.dispatch(
+        "apply_patch_set",
+        {
+            "replacements": [
+                {"path": "first.txt", "old_text": "old one", "new_text": "new one"},
+                {"path": "second.txt", "old_text": "missing", "new_text": "new two"},
+            ],
+        },
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "patch_text_not_found"
+    assert [item["status"] for item in result["replacements"]] == ["ready", "error"]
+    assert first.read_text(encoding="utf-8") == "alpha\nold one\nomega\n"
+    assert second.read_text(encoding="utf-8") == "before\nunchanged\nafter\n"
+
+
+def test_apply_patch_set_duplicate_match_fails_without_writing(tmp_path: Path) -> None:
+    target = tmp_path / "repeat.txt"
+    target.write_text("same\nsame\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["apply_patch_set"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["apply_patch_set"],
+        approved_tools=["apply_patch_set"],
+    )
+
+    result = router.dispatch(
+        "apply_patch_set",
+        {"replacements": [{"path": "repeat.txt", "old_text": "same", "new_text": "done"}]},
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "patch_text_not_unique"
+    assert result["replacements"][0]["match_count"] == 2
+    assert target.read_text(encoding="utf-8") == "same\nsame\n"
+
+
+def test_apply_patch_set_rejects_workspace_escape(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "apply_patch_set_outside.txt"
+    outside.write_text("old", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["apply_patch_set"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["apply_patch_set"],
+        approved_tools=["apply_patch_set"],
+    )
+
+    result = router.dispatch(
+        "apply_patch_set",
+        {"replacements": [{"path": "../apply_patch_set_outside.txt", "old_text": "old", "new_text": "new"}]},
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "tool_argument_invalid"
+    assert outside.read_text(encoding="utf-8") == "old"
+
+
+def test_apply_patch_set_policy_denial_happens_before_handler(tmp_path: Path) -> None:
+    target = tmp_path / "change.txt"
+    target.write_text("old", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["apply_patch_set"], episode_writer=writer, workspace_root=tmp_path)
+    calls = []
+
+    def handler(args):
+        calls.append(args)
+        target.write_text("new", encoding="utf-8")
+        return {"status": "success"}
+
+    router._handlers["apply_patch_set"] = handler
+
+    result = router.dispatch(
+        "apply_patch_set",
+        {"replacements": [{"path": "change.txt", "old_text": "old", "new_text": "new"}]},
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "policy_denied"
+    assert calls == []
+    assert target.read_text(encoding="utf-8") == "old"
+
+
 def test_file_write_create_overwrite_and_append(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     router = ToolRouter(

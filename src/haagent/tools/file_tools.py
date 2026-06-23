@@ -1,7 +1,7 @@
 """
 haagent/tools/file_tools.py - 文件类本地工具
 
-实现 file_list、file_search、file_read、file_write 和 apply_patch，并限制路径在 workspace 内。
+实现文件发现、读取、写入和补丁类工具，并限制路径在 workspace 内。
 """
 
 from __future__ import annotations
@@ -356,6 +356,116 @@ def apply_patch(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     return {"status": "success", "path": str(path), "replacements": 1}
 
 
+def apply_patch_set(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+    """原子校验多个唯一文本替换；全部可应用后才写文件。"""
+    replacements = args.get("replacements")
+    if not isinstance(replacements, list) or not replacements:
+        return tool_error("tool_argument_invalid", "replacements must be a non-empty list")
+
+    staged_texts: dict[Path, str] = {}
+    summaries: list[dict[str, object]] = []
+    for index, replacement in enumerate(replacements):
+        if not isinstance(replacement, dict):
+            return _patch_set_error(
+                "tool_argument_invalid",
+                "each replacement must be an object",
+                summaries,
+                replacements,
+                index,
+            )
+
+        path_arg = replacement.get("path")
+        old_text = replacement.get("old_text")
+        new_text = replacement.get("new_text")
+        if not all(isinstance(value, str) for value in (path_arg, old_text, new_text)):
+            return _patch_set_error(
+                "tool_argument_invalid",
+                "path, old_text, and new_text must be strings",
+                summaries,
+                replacements,
+                index,
+                path_arg,
+            )
+
+        path = resolve_workspace_path(path_arg, workspace_root)
+        if path is None:
+            return _patch_set_error(
+                "tool_argument_invalid",
+                f"path must stay inside workspace_root; {PATH_GUIDANCE}",
+                summaries,
+                replacements,
+                index,
+                path_arg,
+            )
+        if not path.exists():
+            return _patch_set_error(
+                "tool_argument_invalid",
+                f"path does not exist: {path_arg}; {PATH_GUIDANCE}",
+                summaries,
+                replacements,
+                index,
+                path_arg,
+            )
+        if not path.is_file():
+            return _patch_set_error(
+                "tool_argument_invalid",
+                f"path must be a file: {path_arg}; {PATH_GUIDANCE}",
+                summaries,
+                replacements,
+                index,
+                path_arg,
+            )
+
+        text = staged_texts.get(path)
+        if text is None:
+            text = path.read_text(encoding="utf-8")
+        match_count = text.count(old_text)
+        if match_count == 0:
+            return _patch_set_error(
+                "patch_text_not_found",
+                "old_text was not found",
+                summaries,
+                replacements,
+                index,
+                path_arg,
+                match_count,
+            )
+        if match_count > 1:
+            return _patch_set_error(
+                "patch_text_not_unique",
+                "old_text must match exactly once",
+                summaries,
+                replacements,
+                index,
+                path_arg,
+                match_count,
+            )
+
+        staged_texts[path] = text.replace(old_text, new_text, 1)
+        summaries.append(
+            {
+                "index": index,
+                "path": path_arg,
+                "status": "ready",
+                "match_count": match_count,
+                "old_text_chars": len(old_text),
+                "new_text_chars": len(new_text),
+            },
+        )
+
+    for path, text in staged_texts.items():
+        path.write_text(text, encoding="utf-8")
+
+    success_summaries = [{**summary, "status": "success"} for summary in summaries]
+    changed_paths = sorted({str(summary["path"]) for summary in success_summaries})
+    return {
+        "status": "success",
+        "replacement_count": len(success_summaries),
+        "paths": changed_paths,
+        "replacements": success_summaries,
+    }
+
+
 def resolve_workspace_path(path: str, workspace_root: Path) -> Path | None:
     """把相对路径绑定到 workspace，拒绝逃逸到工作区之外的路径。"""
     root = workspace_root.resolve()
@@ -366,6 +476,41 @@ def resolve_workspace_path(path: str, workspace_root: Path) -> Path | None:
     if resolved == root or root in resolved.parents:
         return resolved
     return None
+
+
+def _patch_set_error(
+    error_type: str,
+    message: str,
+    summaries: list[dict[str, object]],
+    replacements: list[object],
+    failed_index: int,
+    path: object = "",
+    match_count: int | None = None,
+) -> dict[str, Any]:
+    result = tool_error(error_type, message)
+    failed_summary: dict[str, object] = {
+        "index": failed_index,
+        "path": str(path or ""),
+        "status": "error",
+        "reason": message,
+    }
+    if match_count is not None:
+        failed_summary["match_count"] = match_count
+    replacement_summaries = [*summaries, failed_summary]
+    for skipped_index in range(failed_index + 1, len(replacements)):
+        skipped = replacements[skipped_index]
+        skipped_path = skipped.get("path", "") if isinstance(skipped, dict) else ""
+        replacement_summaries.append(
+            {
+                "index": skipped_index,
+                "path": str(skipped_path or ""),
+                "status": "skipped",
+                "reason": "previous replacement failed",
+            },
+        )
+    result["replacement_count"] = len(replacements)
+    result["replacements"] = replacement_summaries
+    return result
 
 
 def _iter_context_files(root: Path, file_glob: str | None):
