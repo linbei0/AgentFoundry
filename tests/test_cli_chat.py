@@ -7,8 +7,11 @@ tests/test_cli_chat.py - chat 入口与 AgentSession 测试
 import json
 from pathlib import Path
 
+import yaml
+
 from haagent import cli
 from haagent.models.gateway import ModelResponse, ToolCall
+from haagent.runtime import chat_session
 from haagent.runtime.chat_session import AgentSession
 from haagent.runtime.human_interaction import HumanInteractionResponse
 from haagent.runtime.task_contract import load_task
@@ -111,6 +114,22 @@ class FakeProfileGateway:
 
     def generate(self, task, model_input, tool_schemas, observations):
         return ModelResponse("profile done", [])
+
+
+def _patch_chat_verification_commands(monkeypatch, commands: list[str]) -> None:
+    def write_task(path: Path, request: str, workspace_root: Path) -> None:
+        task = {
+            "goal": request,
+            "workspace_root": str(workspace_root.resolve()),
+            "constraints": [],
+            "allowed_tools": ["file_list"],
+            "acceptance_criteria": ["Complete the requested chat task."],
+            "verification_commands": commands,
+            "policy": {"approval_allowed_tools": [], "approved_tools": []},
+        }
+        path.write_text(yaml.safe_dump(task, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    monkeypatch.setattr(chat_session, "_write_chat_task_yaml", write_task)
 
 
 def test_cli_chat_parser_accepts_optional_request() -> None:
@@ -331,9 +350,58 @@ def test_agent_session_chat_default_tools_include_context_find(tmp_path: Path) -
     result = session.run_prompt_events("describe greeting code")
 
     assert result.status == "completed"
+    assert result.verification_status == "not_run"
     assert "context_find" in gateway.tool_schema_names[0]
     task = load_task(result.episode_path / "task.yaml")
     assert "context_find" in task.allowed_tools
+
+
+def test_agent_session_summary_reports_successful_verification(tmp_path: Path, monkeypatch) -> None:
+    _patch_chat_verification_commands(
+        monkeypatch,
+        ["python -c \"print('verified-output-should-stay-in-episode')\""],
+    )
+    session = AgentSession(
+        workspace_root=tmp_path,
+        runs_root=tmp_path / ".runs",
+        model_gateway=RecordingGateway(),
+        max_turns=20,
+    )
+
+    result = session.run_prompt_events("check success")
+
+    output = "\n".join(result.output_lines())
+    commands_log = result.episode_path / "verification" / "commands.jsonl"
+    records = [json.loads(line) for line in commands_log.read_text(encoding="utf-8").splitlines()]
+    assert result.status == "completed"
+    assert result.verification_status == "success"
+    assert "verification=success" in output
+    assert "verified-output-should-stay-in-episode" not in output
+    assert [record["status"] for record in records] == ["success"]
+
+
+def test_agent_session_summary_reports_failed_verification_loop_limit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_chat_verification_commands(
+        monkeypatch,
+        ["python -c \"import sys; print('verify failed'); sys.exit(5)\""],
+    )
+    session = AgentSession(
+        workspace_root=tmp_path,
+        runs_root=tmp_path / ".runs",
+        model_gateway=RecordingGateway(),
+        max_turns=2,
+    )
+
+    result = session.run_prompt_events("check failure")
+
+    assert result.status == "failed"
+    assert result.verification_status == "failed"
+    assert "verification=failed" in "\n".join(result.output_lines())
+    assert result.failed_stage == "verifying"
+    assert result.failure_category == "Loop Limit Failure"
 
 
 def test_agent_session_events_show_single_turn_order_and_tool_success(tmp_path: Path) -> None:
@@ -456,6 +524,9 @@ def test_agent_session_events_emit_tool_failed_on_real_tool_error(tmp_path: Path
     result = session.run_prompt_events("fail", event_sink=events.append)
 
     assert result.status == "failed"
+    assert result.verification_status == "not_run"
+    assert result.summary_error is None
+    assert result.failed_stage == "executing"
     assert [event.event_type for event in events] == [
         "turn_started",
         "tool_started",

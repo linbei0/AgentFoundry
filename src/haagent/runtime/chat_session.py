@@ -296,7 +296,10 @@ class AgentSession:
             episode_path=result.episode_path,
             provider=str(package_view.episode_metadata.get("provider", self.provider_name)),
             final_response=_run_final_response(package_view.transcript),
-            verification_status="not_run",
+            verification_status=_verification_status(
+                package_view.verification_commands,
+                package_view.verification_reached,
+            ),
             failed_stage=str(failure.get("stage", "none")),
             failure_category=str(failure.get("category", "none")),
             reason=str(failure.get("evidence", "none")),
@@ -351,6 +354,14 @@ def _run_final_response(transcript: list[dict[str, Any]]) -> str:
         if record.get("event") == "model_response":
             return str(record.get("content", ""))
     return "none"
+
+
+def _verification_status(commands: list[dict[str, Any]], verification_reached: bool) -> str:
+    if not verification_reached or not commands:
+        return "not_run"
+    if any(command.get("status") != "success" for command in commands):
+        return "failed"
+    return "success"
 
 
 def _runtime_event_message(event_type: str, payload: dict[str, object]) -> str:
