@@ -7,44 +7,60 @@ haagent/cli.py - HaAgent CLI 入口
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import tempfile
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-import yaml
-
-from haagent.cli_inspect import EpisodeInspectError, render_episode_summary
+from haagent.cli_commands import (
+    SmokeDefinition,
+    SmokeResult,
+    export_single_eval_case,
+    handle_check,
+    handle_chat,
+    handle_dogfood,
+    handle_eval,
+    handle_export_eval,
+    handle_inspect,
+    handle_run,
+    handle_smoke,
+    run_failure_summary,
+    run_smoke_definition,
+    run_task_path,
+    smoke_definitions,
+    write_eval_case_file,
+    write_eval_dataset_manifest,
+    write_authoring_task_yaml,
+)
+from haagent.cli_gateway import (
+    build_dogfood_model_gateway,
+    build_run_model_gateway,
+    gateway_from_profile,
+)
+from haagent.cli_render import (
+    excerpt,
+    format_event_mapping,
+    last_model_response,
+    print_chat_event,
+    print_chat_turn_result,
+    print_check_summary,
+    print_eval_summary,
+    print_run_summary,
+    print_session_status,
+    print_smoke_result,
+    read_chat_interaction,
+    run_chat_repl,
+    run_final_response,
+    shell_token,
+    summary_provider,
+    summary_value,
+)
 from haagent.models.gateway import OpenAIChatCompletionsGateway, OpenAIResponsesGateway
-from haagent.models.provider_profile import ProviderProfile, ProviderProfileError, load_provider_profile
-from haagent.runtime.chat_session import (
-    AgentSession,
-    CHAT_MAX_TURNS,
-    ChatEvent,
-    ChatSessionError,
-    ChatTurnResult,
-)
-from haagent.runtime.checks import run_quality_checks
-from haagent.runtime.dogfood import render_dogfood_report, run_dogfood_tasks, skipped_dogfood_report
-from haagent.runtime.episode_validator import (
-    EpisodeValidationError,
-    load_inspect_episode_package,
-)
-from haagent.runtime.eval_export import export_eval_case
-from haagent.runtime.eval_runner import EvalRunnerError, run_eval_path
-from haagent.runtime.human_interaction import (
-    HumanInteractionRequest,
-    HumanInteractionResponse,
-)
+from haagent.models.provider_profile import ProviderProfile
+from haagent.runtime.chat_session import AgentSession
 from haagent.runtime.orchestrator import RunOrchestrator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AUTHORING_ALLOWED_TOOLS = ["file_list", "file_read", "file_search", "apply_patch", "shell"]
-AUTHORING_APPROVED_TOOLS = ["apply_patch", "shell"]
+SMOKE_DEFINITIONS = smoke_definitions(PROJECT_ROOT)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="maximum model/tool turns before failing the run (default: 3)",
     )
+    run_parser.set_defaults(handler=_handle_run)
 
     chat_parser = subparsers.add_parser("chat", help="run a natural language request")
     chat_parser.add_argument(
@@ -130,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         help="OpenAI-compatible Responses API base URL; only used when --provider openai",
     )
+    chat_parser.set_defaults(handler=_handle_chat)
 
     smoke_parser = subparsers.add_parser(
         "smoke",
@@ -151,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=12,
         help="maximum model/tool turns per smoke task (default: 12)",
     )
+    smoke_parser.set_defaults(handler=_handle_smoke)
 
     dogfood_parser = subparsers.add_parser(
         "dogfood",
@@ -189,9 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="deny high-risk tool approvals instead of auto-granting them",
     )
+    dogfood_parser.set_defaults(handler=_handle_dogfood)
 
     inspect_parser = subparsers.add_parser("inspect", help="inspect an episode package")
     inspect_parser.add_argument("episode_path", type=Path, help="path to an episode directory")
+    inspect_parser.set_defaults(handler=_handle_inspect)
 
     export_eval_parser = subparsers.add_parser("export-eval", help="export an eval case JSON")
     export_eval_parser.add_argument(
@@ -210,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="write one eval case JSON file per episode into this existing directory",
     )
+    export_eval_parser.set_defaults(handler=_handle_export_eval)
 
     eval_parser = subparsers.add_parser("eval", help="run exported eval case JSON locally")
     eval_parser.add_argument("eval_path", type=Path, help="eval case JSON, directory, or batch manifest")
@@ -242,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         help="OpenAI-compatible Responses API base URL; only used when --provider openai",
     )
+    eval_parser.set_defaults(handler=_handle_eval)
 
     check_parser = subparsers.add_parser("check", help="run the local HaAgent quality gate")
     check_parser.add_argument(
@@ -284,6 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         help="OpenAI-compatible Responses API base URL; only used when --provider openai",
     )
+    check_parser.set_defaults(handler=_handle_check)
     return parser
 
 
@@ -291,158 +315,49 @@ def main(argv: list[str] | None = None) -> int:
     """解析 CLI 参数，运行 orchestrator，并输出机器可读的最小结果。"""
     parser = build_parser()
     args = parser.parse_args(argv)
+    return args.handler(args)
 
-    if args.command == "run":
-        generated_task_dir: tempfile.TemporaryDirectory[str] | None = None
-        try:
-            model_gateway = _build_run_model_gateway(args)
-            task_path, generated_task_dir = _run_task_path(args)
-        except ProviderProfileError as error:
-            print(f"error: {error}")
-            return 1
-        except ValueError as error:
-            print(f"error: {error}")
-            return 2
-        try:
-            if model_gateway is not None:
-                result = RunOrchestrator(
-                    runs_root=args.runs_root,
-                    model_gateway=model_gateway,
-                    max_turns=args.max_turns,
-                ).run(task_path)
-            else:
-                result = RunOrchestrator(
-                    runs_root=args.runs_root,
-                    max_turns=args.max_turns,
-                ).run(task_path)
-            _print_run_summary(result)
-            return 0 if result.status.value == "completed" else 1
-        finally:
-            if generated_task_dir is not None:
-                generated_task_dir.cleanup()
-
-    if args.command == "chat":
-        try:
-            model_gateway = _build_run_model_gateway(args)
-        except ProviderProfileError as error:
-            print(f"error: {error}")
-            return 1
-        try:
-            if args.resume is None:
-                session = AgentSession(
-                    workspace_root=args.workspace_root if args.workspace_root is not None else Path.cwd(),
-                    runs_root=Path(".runs"),
-                    model_gateway=model_gateway,
-                    max_turns=CHAT_MAX_TURNS,
-                )
-            else:
-                session = AgentSession.resume(
-                    args.resume,
-                    runs_root=Path(".runs"),
-                    model_gateway=model_gateway,
-                    max_turns=CHAT_MAX_TURNS,
-                )
-        except ChatSessionError as error:
-            print(f"error: {error}")
-            return 1
-        if args.request is None:
-            return _run_chat_repl(session)
-        result = session.run_prompt_events(
-            str(args.request),
-            event_sink=_print_chat_event,
-            include_session_events=True,
-            interaction_handler=_read_chat_interaction,
-        )
-        _print_chat_turn_result(result)
-        return 0 if result.status == "completed" else 1
-
-    if args.command == "smoke":
-        return _handle_smoke(args)
-
-    if args.command == "dogfood":
-        return _handle_dogfood(args)
-    if args.command == "check":
-        return _handle_check(args)
-
-    if args.command == "inspect":
-        try:
-            print(render_episode_summary(args.episode_path))
-        except EpisodeInspectError as error:
-            print(f"error: {error}")
-            return 1
-        return 0
-
-    if args.command == "export-eval":
-        return _handle_export_eval(args.episode_paths, args.output, args.output_dir)
-
-    if args.command == "eval":
-        return _handle_eval(args)
-
-    parser.error(f"unknown command: {args.command}")
-    return 2
+def _handle_run(args: argparse.Namespace) -> int:
+    return handle_run(args, build_gateway=_build_run_model_gateway, orchestrator_cls=RunOrchestrator)
 
 
-@dataclass(frozen=True)
-class SmokeDefinition:
-    name: str
-    task_path: Path
-    requires_profile: bool
+def _handle_chat(args: argparse.Namespace) -> int:
+    return handle_chat(args, build_gateway=_build_run_model_gateway, session_cls=AgentSession)
 
 
-@dataclass(frozen=True)
-class SmokeResult:
-    name: str
-    status: str
-    episode_path: Path | None
-    failed_stage: str | None = None
-    failure_category: str | None = None
-    reason: str | None = None
+def _handle_smoke(args: argparse.Namespace) -> int:
+    return handle_smoke(
+        args,
+        definitions=SMOKE_DEFINITIONS,
+        gateway_from_profile=_gateway_from_profile,
+        orchestrator_cls=RunOrchestrator,
+    )
 
 
-SMOKE_DEFINITIONS = [
-    SmokeDefinition(
-        name="hello",
-        task_path=PROJECT_ROOT / "examples/tasks/hello.yaml",
-        requires_profile=False,
-    ),
-    SmokeDefinition(
-        name="real_file_read",
-        task_path=PROJECT_ROOT / "examples/tasks/openai_chat_file_read_smoke.yaml",
-        requires_profile=True,
-    ),
-    SmokeDefinition(
-        name="real_edit_verify",
-        task_path=PROJECT_ROOT / "examples/tasks/openai_chat_edit_smoke.yaml",
-        requires_profile=True,
-    ),
-]
+def _handle_dogfood(args: argparse.Namespace) -> int:
+    return handle_dogfood(args, build_dogfood_gateway=_build_dogfood_model_gateway)
+
+
+def _handle_inspect(args: argparse.Namespace) -> int:
+    return handle_inspect(args)
+
+
+def _handle_eval(args: argparse.Namespace) -> int:
+    return handle_eval(args, build_gateway=_build_run_model_gateway)
+
+
+def _handle_check(args: argparse.Namespace) -> int:
+    return handle_check(args, build_gateway=_build_run_model_gateway)
+
+
+def _handle_export_eval(args: argparse.Namespace) -> int:
+    return handle_export_eval(args.episode_paths, args.output, args.output_dir)
 
 
 def _run_task_path(
     args: argparse.Namespace,
 ) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
-    if args.task_yaml is not None:
-        return args.task_yaml, None
-
-    for field_name, option_name in [
-        ("goal", "--goal"),
-        ("workspace_root", "--workspace-root"),
-        ("verify", "--verify"),
-    ]:
-        if getattr(args, field_name) is None:
-            raise ValueError(f"{option_name} is required when task_yaml is omitted")
-
-    generated_task_dir: tempfile.TemporaryDirectory[str] = tempfile.TemporaryDirectory(
-        prefix="haagent-task-",
-    )
-    task_path = Path(generated_task_dir.name) / "task.yaml"
-    _write_authoring_task_yaml(
-        task_path,
-        goal=str(args.goal),
-        workspace_root=args.workspace_root,
-        verification_command=str(args.verify),
-    )
-    return task_path, generated_task_dir
+    return run_task_path(args)
 
 
 def _write_authoring_task_yaml(
@@ -452,366 +367,105 @@ def _write_authoring_task_yaml(
     workspace_root: Path,
     verification_command: str,
 ) -> None:
-    task = {
-        "goal": goal,
-        "workspace_root": str(workspace_root.resolve()),
-        "constraints": [],
-        "allowed_tools": list(AUTHORING_ALLOWED_TOOLS),
-        "acceptance_criteria": ["Complete the requested goal and pass verification."],
-        "verification_commands": [verification_command],
-        "policy": {
-            "approval_allowed_tools": list(AUTHORING_APPROVED_TOOLS),
-            "approved_tools": list(AUTHORING_APPROVED_TOOLS),
-        },
-    }
-    path.write_text(yaml.safe_dump(task, sort_keys=False, allow_unicode=True), encoding="utf-8")
-
-
-def _handle_smoke(args: argparse.Namespace) -> int:
-    smoke_definitions = [
-        definition
-        for definition in SMOKE_DEFINITIONS
-        if not definition.requires_profile or args.profile is not None
-    ]
-    exit_code = 0
-    for definition in smoke_definitions:
-        result = _run_smoke_definition(definition, args)
-        _print_smoke_result(result)
-        if result.status != "completed":
-            exit_code = 1
-    return exit_code
-
-
-def _handle_dogfood(args: argparse.Namespace) -> int:
-    try:
-        model_gateway = _build_dogfood_model_gateway(args)
-    except ProviderProfileError as error:
-        print(render_dogfood_report(skipped_dogfood_report(str(error))))
-        return 0
-    if model_gateway is None:
-        print(render_dogfood_report(skipped_dogfood_report("provide --profile or --provider to run real dogfood")))
-        return 0
-    report = run_dogfood_tasks(
-        model_gateway,
-        runs_root=args.runs_root,
-        max_turns=args.max_turns,
-        auto_approve=not args.no_auto_approve,
+    write_authoring_task_yaml(
+        path,
+        goal=goal,
+        workspace_root=workspace_root,
+        verification_command=verification_command,
     )
-    print(render_dogfood_report(report))
-    return 0 if report.status == "completed" else 1
 
 
 def _build_dogfood_model_gateway(args: argparse.Namespace):
-    if args.profile is not None:
-        if args.provider is not None or args.model is not None or args.base_url is not None:
-            raise ProviderProfileError(
-                "--profile cannot be combined with --provider, --model, or --base-url",
-            )
-        return _gateway_from_profile(load_provider_profile(args.profile))
-    if args.provider is None:
-        return None
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise ProviderProfileError("OPENAI_API_KEY is not set; dogfood skipped")
-    return _build_run_model_gateway(args)
+    return build_dogfood_model_gateway(
+        args,
+        responses_gateway_cls=OpenAIResponsesGateway,
+        chat_gateway_cls=OpenAIChatCompletionsGateway,
+    )
 
 
 def _run_smoke_definition(definition: SmokeDefinition, args: argparse.Namespace) -> SmokeResult:
-    model_gateway = None
-    if definition.requires_profile:
-        try:
-            model_gateway = _gateway_from_profile(load_provider_profile(args.profile))
-        except ProviderProfileError as error:
-            return SmokeResult(
-                name=definition.name,
-                status="failed",
-                episode_path=None,
-                failed_stage="configuration",
-                failure_category="Provider Profile Error",
-                reason=str(error),
-            )
-    result = RunOrchestrator(
-        runs_root=args.runs_root,
-        model_gateway=model_gateway,
-        max_turns=args.max_turns,
-    ).run(definition.task_path)
-    if result.status.value == "completed":
-        return SmokeResult(definition.name, result.status.value, result.episode_path)
-    stage, category, reason = _run_failure_summary(result.episode_path)
-    return SmokeResult(
-        name=definition.name,
-        status=result.status.value,
-        episode_path=result.episode_path,
-        failed_stage=stage,
-        failure_category=category,
-        reason=reason,
+    return run_smoke_definition(
+        definition,
+        args,
+        gateway_from_profile=_gateway_from_profile,
+        orchestrator_cls=RunOrchestrator,
     )
 
 
 def _run_failure_summary(episode_path: Path) -> tuple[str, str, str]:
-    try:
-        package_view = load_inspect_episode_package(episode_path)
-    except EpisodeValidationError as error:
-        return "summary", "Episode Summary Error", str(error)
-    failure = package_view.failure_record.get("failure")
-    if not isinstance(failure, dict):
-        return "unknown", "unknown", ""
-    return (
-        str(failure.get("stage", "unknown")),
-        str(failure.get("category", "unknown")),
-        str(failure.get("evidence", "")),
-    )
+    return run_failure_summary(episode_path)
 
 
 def _print_smoke_result(result: SmokeResult) -> None:
-    print(f"smoke={result.name}")
-    print(f"status={result.status}")
-    episode_path = "none" if result.episode_path is None else str(result.episode_path)
-    print(f"episode_path={episode_path}")
-    if result.status != "completed":
-        print(f"failed_stage={_summary_value(result.failed_stage or 'unknown')}")
-        print(f"failure_category={_summary_value(result.failure_category or 'unknown')}")
-        print(f"reason={_summary_value(result.reason or '')}")
+    print_smoke_result(result)
 
 
 def _build_run_model_gateway(args: argparse.Namespace):
-    if args.profile is not None:
-        if args.provider != "fake" or args.model is not None or args.base_url is not None:
-            raise ProviderProfileError(
-                "--profile cannot be combined with --provider, --model, or --base-url",
-            )
-        return _gateway_from_profile(load_provider_profile(args.profile))
-
-    if args.provider in {"openai", "openai-chat"}:
-        gateway_kwargs = {}
-        if args.model is not None:
-            gateway_kwargs["model"] = args.model
-        if args.base_url is not None:
-            gateway_kwargs["base_url"] = args.base_url
-        gateway_class = (
-            OpenAIResponsesGateway
-            if args.provider == "openai"
-            else OpenAIChatCompletionsGateway
-        )
-        return gateway_class(**gateway_kwargs)
-    return None
+    return build_run_model_gateway(
+        args,
+        responses_gateway_cls=OpenAIResponsesGateway,
+        chat_gateway_cls=OpenAIChatCompletionsGateway,
+    )
 
 
 def _gateway_from_profile(profile: ProviderProfile):
-    gateway_kwargs = {
-        "api_key": profile.api_key,
-        "model": profile.model,
-        "base_url": profile.base_url,
-    }
-    if profile.provider == "openai":
-        return OpenAIResponsesGateway(**gateway_kwargs)
-    if profile.provider == "openai-chat":
-        return OpenAIChatCompletionsGateway(**gateway_kwargs)
-    raise ProviderProfileError(f"unsupported provider in profile: {profile.provider}")
+    return gateway_from_profile(
+        profile,
+        responses_gateway_cls=OpenAIResponsesGateway,
+        chat_gateway_cls=OpenAIChatCompletionsGateway,
+    )
 
 
 def _print_run_summary(result) -> None:
-    """输出短 run 摘要；完整复盘仍交给 inspect。"""
-    print(f"status={result.status.value}")
-    print(f"episode_path={result.episode_path}")
-    try:
-        package_view = load_inspect_episode_package(result.episode_path)
-    except EpisodeValidationError as error:
-        print(f"summary_error={_summary_value(str(error))}")
-        return
-
-    print(f"provider={_summary_provider(package_view.episode_metadata)}")
-    if result.status.value == "completed":
-        print(f"final_response={_summary_value(_run_final_response(package_view.transcript))}")
-        return
-
-    failure = package_view.failure_record.get("failure")
-    if not isinstance(failure, dict):
-        failure = {}
-    print(f"failed_stage={_summary_value(str(failure.get('stage', 'unknown')))}")
-    print(f"failure_category={_summary_value(str(failure.get('category', 'unknown')))}")
-    print(f"reason={_summary_value(str(failure.get('evidence', '')))}")
+    print_run_summary(result)
 
 
 def _run_chat_repl(session: AgentSession) -> int:
-    _print_chat_event(session.session_started_event())
-    _print_session_status(session)
-    while True:
-        try:
-            raw_prompt = input("haagent> ")
-        except EOFError:
-            _print_chat_event(session.session_finished_event())
-            print("bye")
-            return 0
-        prompt = raw_prompt.strip()
-        if not prompt:
-            continue
-        if prompt in {":quit", ":exit"}:
-            _print_chat_event(session.session_finished_event())
-            print("bye")
-            return 0
-        if prompt == ":status":
-            _print_session_status(session)
-            continue
-        if prompt == ":new":
-            session.new()
-            print("session reset")
-            continue
-
-        result = session.run_prompt_events(
-            prompt,
-            event_sink=_print_chat_event,
-            interaction_handler=_read_chat_interaction,
-        )
-        _print_chat_turn_result(result)
+    return run_chat_repl(session)
 
 
 def _print_session_status(session: AgentSession) -> None:
-    status = session.status()
-    print(f"session_id={status['session_id']}")
-    print(f"session_path={status['session_path']}")
-    print(f"workspace_root={status['workspace_root']}")
-    print(f"provider={status['provider']}")
-    print(f"turn_count={status['turn_count']}")
-    working_state = status.get("working_state") if isinstance(status.get("working_state"), dict) else {}
-    working_state_exists = bool(working_state.get("exists"))
-    print(f"working_state={'present' if working_state_exists else 'empty'}")
-    if working_state_exists:
-        print(f"working_state_goal={_summary_value(str(working_state.get('current_goal', '')), 120)}")
-        print(f"working_state_next_steps={working_state.get('next_steps_count', 0)}")
+    print_session_status(session)
 
 
-def _print_chat_turn_result(result: ChatTurnResult) -> None:
-    for line in result.output_lines():
-        print(line)
+def _print_chat_turn_result(result) -> None:
+    print_chat_turn_result(result)
 
 
-def _print_chat_event(event: ChatEvent) -> None:
-    pieces = [f"event={event.event_type}"]
-    if event.event_type in {
-        "tool_started",
-        "tool_finished",
-        "tool_failed",
-        "approval_requested",
-        "approval_granted",
-        "approval_denied",
-    }:
-        tool_name = event.payload.get("tool_name")
-        if tool_name is not None:
-            pieces.append(f"tool={tool_name}")
-    if event.event_type == "tool_started":
-        pieces.append(f"args={_format_event_mapping(event.payload.get('args_summary'))}")
-    elif event.event_type == "tool_finished":
-        status = event.payload.get("status")
-        if status is not None:
-            pieces.append(f"status={status}")
-        pieces.append(f"result={_format_event_mapping(event.payload.get('result_summary'))}")
-    elif event.event_type == "tool_failed":
-        error_type = event.payload.get("error_type")
-        if error_type is not None:
-            pieces.append(f"error={error_type}")
-        message = event.payload.get("message")
-        if message:
-            pieces.append(f"message={_shell_token(str(message))}")
-    elif event.event_type == "approval_requested":
-        question = event.payload.get("question")
-        if question:
-            pieces.append(f"question={_shell_token(str(question))}")
-        pieces.append(f"args={_format_event_mapping(event.payload.get('args_summary'))}")
-    elif event.event_type in {"approval_granted", "approval_denied"}:
-        approved = event.payload.get("approved")
-        if approved is not None:
-            pieces.append(f"approved={str(approved).lower()}")
-    elif event.event_type == "user_input_requested":
-        question = event.payload.get("question")
-        if question:
-            pieces.append(f"question={_shell_token(str(question))}")
-    elif event.event_type == "user_input_received":
-        answer_chars = event.payload.get("answer_chars")
-        if answer_chars is not None:
-            pieces.append(f"answer_chars={answer_chars}")
-    elif event.event_type == "assistant_message":
-        content = event.payload.get("content")
-        if content:
-            pieces.append(f"message={_shell_token(str(content))}")
-    elif event.event_type == "guardrail_triggered":
-        for key in ["scope", "rule_id", "severity", "message"]:
-            value = event.payload.get(key)
-            if value:
-                pieces.append(f"{key}={_shell_token(str(value))}")
-    elif event.event_type == "failure":
-        for key in ["failed_stage", "failure_category", "reason"]:
-            value = event.payload.get(key)
-            if value:
-                pieces.append(f"{key}={_shell_token(str(value))}")
-    elif event.event_type in {"turn_started", "turn_finished", "session_started", "session_finished"}:
-        status = event.payload.get("status")
-        if status is not None:
-            pieces.append(f"status={status}")
-    print(" ".join(pieces))
+def _print_chat_event(event) -> None:
+    print_chat_event(event)
 
 
-def _read_chat_interaction(request: HumanInteractionRequest) -> HumanInteractionResponse:
-    try:
-        if request.interaction_type == "approval":
-            raw_answer = input("approve [y/N]> ")
-            approved = raw_answer.strip().lower() in {"y", "yes"}
-            return HumanInteractionResponse(approved=approved, answer=raw_answer)
-        answer = input("answer> ")
-        return HumanInteractionResponse(approved=True, answer=answer)
-    except EOFError:
-        return HumanInteractionResponse(approved=False, answer="")
+def _read_chat_interaction(request):
+    return read_chat_interaction(request)
 
 
 def _format_event_mapping(value: object) -> str:
-    if not isinstance(value, dict) or not value:
-        return "none"
-    parts = []
-    for key in sorted(value):
-        item = value[key]
-        if item is None or item == "":
-            continue
-        parts.append(f"{key}={_shell_token(str(item))}")
-    return ",".join(parts) if parts else "none"
+    return format_event_mapping(value)
 
 
 def _shell_token(value: str) -> str:
-    compact = _summary_value(" ".join(value.split()), 160)
-    if not compact:
-        return "none"
-    if any(character.isspace() or character in {",", "="} for character in compact):
-        return json.dumps(compact, ensure_ascii=False)
-    return compact
+    return shell_token(value)
 
 
-def _run_final_response(transcript: list[dict[str, Any]]) -> str:
-    response = _last_model_response(transcript)
-    if response is None:
-        return "none"
-    return str(response.get("content", ""))
+def _run_final_response(transcript: list[dict[str, object]]) -> str:
+    return run_final_response(transcript)
 
 
-def _summary_provider(episode_metadata: dict[str, Any]) -> str:
-    return str(episode_metadata.get("provider", "unknown"))
+def _summary_provider(episode_metadata: dict[str, object]) -> str:
+    return summary_provider(episode_metadata)
 
 
-def _last_model_response(transcript: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for record in reversed(transcript):
-        if record.get("event") == "model_response":
-            return record
-    return None
+def _last_model_response(transcript: list[dict[str, object]]) -> dict[str, object] | None:
+    return last_model_response(transcript)
 
 
 def _excerpt(content: str, limit: int = 500) -> str:
-    if len(content) <= limit:
-        return content
-    return content[:limit] + "... [truncated]"
+    return excerpt(content, limit)
 
 
 def _summary_value(value: str, limit: int = 300) -> str:
-    normalized = " ".join(value.split())
-    if not normalized:
-        normalized = "none"
-    return _excerpt(normalized, limit)
+    return summary_value(value, limit)
 
 
 def _positive_int(value: str) -> int:
@@ -821,139 +475,12 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def _handle_eval(args: argparse.Namespace) -> int:
-    try:
-        model_gateway = _build_run_model_gateway(args)
-        report = run_eval_path(
-            args.eval_path,
-            runs_root=args.runs_root,
-            model_gateway=model_gateway,
-        )
-    except (ProviderProfileError, EvalRunnerError) as error:
-        print(f"error: {error}")
-        return 1
-
-    if args.output is not None:
-        if not args.output.parent.exists():
-            print(f"error: output parent directory does not exist: {args.output.parent}")
-            return 1
-        args.output.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        print(f"eval_report={args.output}")
-    _print_eval_summary(report)
-    return 0 if report["failed_count"] == 0 and report["error_count"] == 0 else 1
+def _print_check_summary(report: dict[str, object]) -> None:
+    print_check_summary(report)
 
 
-def _handle_check(args: argparse.Namespace) -> int:
-    try:
-        model_gateway = _build_run_model_gateway(args)
-        report = run_quality_checks(
-            eval_path=args.eval_path,
-            runs_root=args.runs_root,
-            model_gateway=model_gateway,
-            run_pytest=bool(args.pytest),
-            cwd=Path.cwd(),
-        )
-    except (ProviderProfileError, EvalRunnerError) as error:
-        print(f"error: {error}")
-        return 1
-
-    if args.output is not None:
-        if not args.output.parent.exists():
-            print(f"error: output parent directory does not exist: {args.output.parent}")
-            return 1
-        args.output.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        print(f"check_report={args.output}")
-    _print_check_summary(report)
-    return 0 if report["status"] == "passed" else 1
-
-
-def _print_check_summary(report: dict[str, Any]) -> None:
-    eval_report = report["eval_report"]
-    print(f"status={report['status']}")
-    print(f"eval_total={eval_report['total_count']}")
-    print(f"eval_passed={eval_report['passed_count']}")
-    print(f"eval_failed={eval_report['failed_count']}")
-    print(f"eval_error={eval_report['error_count']}")
-    for result in eval_report.get("results", []):
-        if not isinstance(result, dict) or result.get("status") == "passed":
-            continue
-        print(f"failure_case={result.get('case_path')}")
-        print(f"failure_reason={_summary_value(str(result.get('failure_reason', '')))}")
-    pytest_report = report.get("pytest")
-    if isinstance(pytest_report, dict):
-        print(f"pytest_exit_code={pytest_report['exit_code']}")
-        print(f"pytest_summary={_summary_value(str(pytest_report.get('summary', 'none')))}")
-
-
-def _print_eval_summary(report: dict[str, Any]) -> None:
-    status = "passed" if report["failed_count"] == 0 and report["error_count"] == 0 else "failed"
-    print(f"status={status}")
-    print(f"total={report['total_count']}")
-    print(f"passed={report['passed_count']}")
-    print(f"failed={report['failed_count']}")
-    print(f"error={report['error_count']}")
-    for result in report.get("results", []):
-        if not isinstance(result, dict) or result.get("status") == "passed":
-            continue
-        print(f"failure_case={result.get('case_path')}")
-        print(f"failure_reason={_summary_value(str(result.get('failure_reason', '')))}")
-
-
-def _handle_export_eval(
-    episode_paths: list[Path],
-    output_path: Path | None,
-    output_dir: Path | None,
-) -> int:
-    """处理 eval case 单文件和批量导出命令。"""
-    if len(episode_paths) == 1:
-        return _export_single_eval_case(episode_paths[0], output_path, output_dir)
-    if output_path is not None:
-        print("error: --output can only be used with a single episode path")
-        return 1
-    if output_dir is None:
-        print("error: multiple episode paths require --output-dir")
-        return 1
-    if not output_dir.exists():
-        print(f"error: output directory does not exist: {output_dir}")
-        return 1
-    if not output_dir.is_dir():
-        print(f"error: output directory is not a directory: {output_dir}")
-        return 1
-    records = []
-    for episode_path in episode_paths:
-        target_path = output_dir / f"{episode_path.name}.json"
-        try:
-            _write_eval_case_file(episode_path, target_path)
-        except EpisodeValidationError as error:
-            message = str(error)
-            records.append(
-                {
-                    "episode_path": str(episode_path),
-                    "status": "error",
-                    "output_file": None,
-                    "error": message,
-                },
-            )
-            print(f"error={episode_path}: {message}")
-            continue
-        records.append(
-            {
-                "episode_path": str(episode_path),
-                "status": "success",
-                "output_file": str(target_path),
-                "error": None,
-            },
-        )
-        print(f"exported_eval_case={target_path}")
-    _write_eval_dataset_manifest(output_dir, records)
-    failure_count = sum(1 for record in records if record["status"] == "error")
-    return 1 if failure_count else 0
+def _print_eval_summary(report: dict[str, object]) -> None:
+    print_eval_summary(report)
 
 
 def _export_single_eval_case(
@@ -961,48 +488,15 @@ def _export_single_eval_case(
     output_path: Path | None,
     output_dir: Path | None,
 ) -> int:
-    if output_dir is not None:
-        print("error: --output-dir requires multiple episode paths")
-        return 1
-    try:
-        eval_case = export_eval_case(episode_path)
-    except EpisodeValidationError as error:
-        print(f"error: {error}")
-        return 1
-    output = json.dumps(eval_case, ensure_ascii=False, indent=2)
-    if output_path is not None:
-        if not output_path.parent.exists():
-            print(f"error: output parent directory does not exist: {output_path.parent}")
-            return 1
-        output_path.write_text(output + "\n", encoding="utf-8")
-        print(f"exported_eval_case={output_path}")
-        return 0
-    print(output)
-    return 0
+    return export_single_eval_case(episode_path, output_path, output_dir)
 
 
 def _write_eval_case_file(episode_path: Path, output_path: Path) -> None:
-    eval_case = export_eval_case(episode_path)
-    output = json.dumps(eval_case, ensure_ascii=False, indent=2)
-    output_path.write_text(output + "\n", encoding="utf-8")
+    write_eval_case_file(episode_path, output_path)
 
 
-def _write_eval_dataset_manifest(output_dir: Path, records: list[dict[str, Any]]) -> None:
-    success_count = sum(1 for record in records if record["status"] == "success")
-    failure_count = sum(1 for record in records if record["status"] == "error")
-    manifest = {
-        "manifest_version": "1.0",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "output_dir": str(output_dir),
-        "total_count": len(records),
-        "success_count": success_count,
-        "failure_count": failure_count,
-        "records": records,
-    }
-    (output_dir / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+def _write_eval_dataset_manifest(output_dir: Path, records: list[dict[str, object]]) -> None:
+    write_eval_dataset_manifest(output_dir, records)
 
 
 if __name__ == "__main__":
