@@ -17,6 +17,7 @@ class FailureCategory(StrEnum):
     TOOL_INTERFACE = "Tool Interface Failure"
     TOOL_ARGUMENT = "Tool Argument Failure"
     USER_DENIED = "User Denied Failure"
+    GUARDRAIL = "Guardrail Failure"
     VERIFICATION = "Verification Failure"
     LOOP_LIMIT = "Loop Limit Failure"
     RUNTIME = "Runtime Failure"

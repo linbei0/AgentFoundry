@@ -15,6 +15,12 @@ from haagent.models.fake import FakeModelGateway
 from haagent.models.gateway import ModelCallError, ModelGateway
 from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.failure import FailureCategory
+from haagent.runtime.guardrails import (
+    GuardrailResult,
+    check_assistant_output,
+    check_user_input,
+    guardrail_evidence,
+)
 from haagent.runtime.human_interaction import (
     HumanInteractionHandler,
     HumanInteractionRequest,
@@ -102,6 +108,18 @@ class RunOrchestrator:
                     "planned_step_count": len(plan["planned_steps"]),
                 },
             )
+            input_guardrail = check_user_input(task.goal)
+            if input_guardrail is not None:
+                _record_guardrail(writer, self._emit_event, input_guardrail)
+                transition(RunStatus.FAILED)
+                writer.write_failure_attribution(
+                    {
+                        "stage": "planning",
+                        "category": FailureCategory.GUARDRAIL.value,
+                        "evidence": guardrail_evidence(input_guardrail),
+                    },
+                )
+                return _finish_run(writer, RunStatus.FAILED, state_history)
 
             router = ToolRouter(
                 task.allowed_tools,
@@ -143,18 +161,38 @@ class RunOrchestrator:
                     tool_schemas=tool_schemas,
                     observations=observations,
                 )
+                output_guardrail = (
+                    check_assistant_output(model_response.content)
+                    if not model_response.tool_calls
+                    else None
+                )
                 writer.append_transcript(
                     {
                         "event": "model_response",
                         "provider": self._model_gateway.provider_name,
                         "turn": turn,
-                        "content": model_response.content,
+                        "content": (
+                            "blocked by output guardrail"
+                            if output_guardrail is not None
+                            else model_response.content
+                        ),
                         "tool_calls": [
                             {"name": tool_call.name, "args": tool_call.args}
                             for tool_call in model_response.tool_calls
                         ],
                     },
                 )
+                if output_guardrail is not None:
+                    _record_guardrail(writer, self._emit_event, output_guardrail, turn=turn)
+                    transition(RunStatus.FAILED)
+                    writer.write_failure_attribution(
+                        {
+                            "stage": "executing",
+                            "category": FailureCategory.GUARDRAIL.value,
+                            "evidence": guardrail_evidence(output_guardrail),
+                        },
+                    )
+                    return _finish_run(writer, RunStatus.FAILED, state_history)
 
                 if final_response_requested and model_response.tool_calls:
                     transition(RunStatus.FAILED)
@@ -433,10 +471,30 @@ def _record_guidance(
     return guidance_observation(guidance)
 
 
+def _record_guardrail(
+    writer: EpisodeWriter,
+    emit_event: Callable[[dict[str, object]], None],
+    guardrail: GuardrailResult,
+    turn: int | None = None,
+) -> None:
+    event: dict[str, object] = {
+        "event_type": "guardrail_triggered",
+        "status": guardrail.status,
+        "scope": guardrail.scope,
+        "rule_id": guardrail.rule_id,
+        "severity": guardrail.severity,
+        "message": guardrail.message,
+    }
+    if turn is not None:
+        event["turn"] = turn
+    writer.append_transcript({"event": "guardrail_triggered", **_transcript_event(event)})
+    emit_event(event)
+
+
 def _tool_error_is_terminal(tool_result: dict[str, object]) -> bool:
     error = tool_result.get("error") if isinstance(tool_result.get("error"), dict) else {}
     error_type = str(error.get("type", ""))
-    if error_type in {"approval_denied", "policy_denied", "tool_not_allowed", "unknown_tool"}:
+    if error_type in {"approval_denied", "policy_denied", "guardrail_denied", "tool_not_allowed", "unknown_tool"}:
         return True
     if error_type in {"patch_text_not_found", "patch_text_not_unique", "code_run_failed", "timeout"}:
         return False
@@ -580,6 +638,8 @@ def _unexpected_failure_category(error: Exception, state_history: list[RunStatus
 def _tool_failure_category(error: ToolRoutingError) -> FailureCategory:
     if error.error_type == "approval_denied":
         return FailureCategory.USER_DENIED
+    if error.error_type == "guardrail_denied":
+        return FailureCategory.GUARDRAIL
     if error.error_type in {"invalid_tool_arguments", "tool_argument_invalid"}:
         return FailureCategory.TOOL_ARGUMENT
     return FailureCategory.TOOL_INTERFACE

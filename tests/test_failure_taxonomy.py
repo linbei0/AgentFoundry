@@ -16,6 +16,7 @@ def test_failure_taxonomy_contains_current_categories() -> None:
         "Tool Interface Failure",
         "Tool Argument Failure",
         "User Denied Failure",
+        "Guardrail Failure",
         "Verification Failure",
         "Loop Limit Failure",
         "Runtime Failure",

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from haagent.runtime.episode import EpisodeWriter
+from haagent.runtime.guardrails import GuardrailResult, check_tool_input, guardrail_evidence
 from haagent.runtime.human_interaction import (
     HumanInteractionHandler,
     HumanInteractionRequest,
@@ -71,6 +72,7 @@ class ToolRouter:
         """执行工具并保证每次调用都写入 tool-calls.jsonl。"""
         started = time.perf_counter()
         policy_decision: PolicyDecision | None = None
+        guardrail_result: GuardrailResult | None = None
         try:
             if tool_name not in self._allowed_tools:
                 result = tool_error("tool_not_allowed", f"tool is not allowed: {tool_name}")
@@ -83,7 +85,7 @@ class ToolRouter:
                     approved_tools=self._approved_tools,
                 )
                 if policy_decision.action == "deny":
-                    result, policy_decision = self._handle_denied_policy(
+                    result, policy_decision, guardrail_result = self._handle_denied_policy(
                         tool_name,
                         args,
                         policy_decision,
@@ -93,6 +95,11 @@ class ToolRouter:
                     validation_error = _validate_args(tool_name, args)
                     if validation_error:
                         result = validation_error
+                    elif guardrail_result := check_tool_input(tool_name, args):
+                        result = tool_error(
+                            "guardrail_denied",
+                            guardrail_evidence(guardrail_result),
+                        )
                     elif tool_name == "request_user_input":
                         result = self._request_user_input(args, interaction_handler)
                     else:
@@ -100,7 +107,7 @@ class ToolRouter:
         except Exception as error:
             result = tool_error(type(error).__name__, str(error))
 
-        self._write_trace(tool_name, args, result, started, policy_decision)
+        self._write_trace(tool_name, args, result, started, policy_decision, guardrail_result)
         return result
 
     def raise_for_error(self, result: dict[str, Any]) -> None:
@@ -154,7 +161,7 @@ class ToolRouter:
         args: dict[str, Any],
         policy_decision: PolicyDecision,
         interaction_handler: HumanInteractionHandler | None,
-    ) -> tuple[dict[str, Any], PolicyDecision]:
+    ) -> tuple[dict[str, Any], PolicyDecision, GuardrailResult | None]:
         if tool_name not in self._approval_allowed_tools or interaction_handler is None:
             return (
                 tool_error(
@@ -162,10 +169,11 @@ class ToolRouter:
                     f"{policy_decision.reason}; {policy_decision.approval.reason}",
                 ),
                 policy_decision,
+                None,
             )
         validation_error = _validate_args(tool_name, args)
         if validation_error:
-            return validation_error, policy_decision
+            return validation_error, policy_decision, None
         response = interaction_handler(
             HumanInteractionRequest(
                 interaction_type="approval",
@@ -184,9 +192,17 @@ class ToolRouter:
                     f"approval denied for high risk tool {tool_name}",
                 ),
                 denied_policy,
+                None,
             )
         granted_policy = grant_tool_approval(policy_decision)
-        return self._handlers[tool_name](args), granted_policy
+        guardrail_result = check_tool_input(tool_name, args)
+        if guardrail_result is not None:
+            return (
+                tool_error("guardrail_denied", guardrail_evidence(guardrail_result)),
+                granted_policy,
+                guardrail_result,
+            )
+        return self._handlers[tool_name](args), granted_policy, None
 
     def _assert_registry_alignment(self) -> None:
         """Router 和 Registry 必须同步，否则 allowed_tools 审计会和实际执行脱节。"""
@@ -202,6 +218,7 @@ class ToolRouter:
         result: dict[str, Any],
         started: float,
         policy_decision: PolicyDecision | None,
+        guardrail_result: GuardrailResult | None,
     ) -> None:
         self._episode_writer.append_tool_call(
             {
@@ -211,6 +228,7 @@ class ToolRouter:
                 "result": result if result["status"] == "success" else None,
                 "error": result.get("error"),
                 "policy": policy_decision.to_dict() if policy_decision else None,
+                "guardrail": guardrail_result.to_dict() if guardrail_result else None,
                 "duration_seconds": time.perf_counter() - started,
             },
         )

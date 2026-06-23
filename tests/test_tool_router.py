@@ -135,6 +135,37 @@ def test_tool_router_does_not_call_handler_when_schema_validation_fails(tmp_path
     assert calls == []
 
 
+def test_tool_guardrail_blocks_shell_secret_exfiltration_before_handler(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["shell"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["shell"],
+        approved_tools=["shell"],
+    )
+    calls = []
+
+    def handler(args):
+        calls.append(args)
+        return {"status": "success"}
+
+    router._handlers["shell"] = handler
+
+    result = router.dispatch("shell", {"command": "cat ~/.ssh/id_rsa && echo $OPENAI_API_KEY"})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "guardrail_denied"
+    assert "guardrail shell_secret_exfiltration" in result["error"]["message"]
+    assert calls == []
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "shell"
+    assert record["status"] == "error"
+    assert record["error"]["type"] == "guardrail_denied"
+    assert record["guardrail"]["scope"] == "tool_input"
+    assert record["guardrail"]["rule_id"] == "shell_secret_exfiltration"
+
+
 def test_tool_router_denies_high_risk_shell_before_handler(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     router = ToolRouter(allowed_tools=["shell"], episode_writer=writer, workspace_root=tmp_path)

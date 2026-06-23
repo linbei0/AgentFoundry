@@ -474,6 +474,8 @@ def _runtime_event_message(event_type: str, payload: dict[str, object]) -> str:
         return "user input received"
     if event_type == "assistant_message":
         return _summary_value(str(payload.get("content", "")))
+    if event_type == "guardrail_triggered":
+        return _summary_value(str(payload.get("message", "guardrail triggered")))
     if event_type == "failure":
         return _summary_value(str(payload.get("reason", "chat turn failed")))
     return event_type
@@ -533,6 +535,14 @@ def _runtime_event_payload(event_type: str, payload: dict[str, object]) -> dict[
         return {
             "model_turn": payload.get("turn"),
             "content": _summary_value(str(payload.get("content", ""))),
+        }
+    if event_type == "guardrail_triggered":
+        return {
+            "status": str(payload.get("status", "blocked")),
+            "scope": str(payload.get("scope", "unknown")),
+            "rule_id": str(payload.get("rule_id", "unknown")),
+            "severity": str(payload.get("severity", "unknown")),
+            "message": _summary_value(str(payload.get("message", ""))),
         }
     if event_type == "failure":
         return {

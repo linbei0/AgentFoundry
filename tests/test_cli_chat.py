@@ -104,6 +104,13 @@ class ClarifyThenDoneGateway:
         return ModelResponse("done with answer", [])
 
 
+class SecretOutputGateway:
+    provider_name = "secret-output"
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        return ModelResponse("Leaked secret: sk-test1234567890abcdef1234567890abcdef", [])
+
+
 class FakeProfileGateway:
     provider_name = "openai-chat"
 
@@ -679,6 +686,43 @@ def test_agent_session_events_emit_tool_failed_on_real_tool_error(tmp_path: Path
     assert events[3].payload["status"] == "failed"
     assert events[3].payload["failed_stage"] == "executing"
     assert events[3].payload["failure_category"] == "Tool Argument Failure"
+
+
+def test_agent_session_guardrail_failure_is_visible_without_secret(tmp_path: Path) -> None:
+    events = []
+    session = AgentSession(
+        workspace_root=tmp_path,
+        runs_root=tmp_path / ".runs",
+        model_gateway=SecretOutputGateway(),
+        max_turns=20,
+    )
+
+    result = session.run_prompt_events("answer plainly", event_sink=events.append)
+
+    assert result.status == "failed"
+    assert result.failure_category == "Guardrail Failure"
+    assert result.failed_stage == "executing"
+    assert "output_secret_pattern" in result.reason
+    assert "sk-test1234567890abcdef" not in result.reason
+    assert result.final_response == "blocked by output guardrail"
+    assert "sk-test1234567890abcdef" not in "\n".join(result.output_lines())
+    assert [event.event_type for event in events] == [
+        "turn_started",
+        "guardrail_triggered",
+        "failure",
+        "turn_finished",
+    ]
+    assert events[1].payload == {
+        "status": "blocked",
+        "scope": "output",
+        "rule_id": "output_secret_pattern",
+        "severity": "high",
+        "message": "assistant output contains a secret-like token",
+    }
+    assert "sk-test1234567890abcdef" not in json.dumps(
+        [event.to_dict() for event in events],
+        ensure_ascii=False,
+    )
 
 
 def test_cli_chat_single_prompt_prints_progress_events_without_secret_content(
