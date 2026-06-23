@@ -176,6 +176,19 @@ class AgentSession:
         self.turn_count += 1
         self._summaries.append(_turn_summary(clean_prompt, turn_result))
         self._summaries = _bounded_summaries(self._summaries)
+        if turn_result.status != "completed":
+            self._emit_chat_event(
+                event_sink,
+                event_type="failure",
+                turn_index=turn_index,
+                message="chat turn failed",
+                payload={
+                    "status": turn_result.status,
+                    "failed_stage": _summary_value(turn_result.failed_stage),
+                    "failure_category": _summary_value(turn_result.failure_category),
+                    "reason": _summary_value(turn_result.reason),
+                },
+            )
         self._emit_chat_event(
             event_sink,
             event_type="turn_finished",
@@ -383,6 +396,8 @@ def _runtime_event_message(event_type: str, payload: dict[str, object]) -> str:
         return "user input received"
     if event_type == "assistant_message":
         return _summary_value(str(payload.get("content", "")))
+    if event_type == "failure":
+        return _summary_value(str(payload.get("reason", "chat turn failed")))
     return event_type
 
 
@@ -440,6 +455,13 @@ def _runtime_event_payload(event_type: str, payload: dict[str, object]) -> dict[
         return {
             "model_turn": payload.get("turn"),
             "content": _summary_value(str(payload.get("content", ""))),
+        }
+    if event_type == "failure":
+        return {
+            "status": str(payload.get("status", "failed")),
+            "failed_stage": _summary_value(str(payload.get("failed_stage", "unknown"))),
+            "failure_category": _summary_value(str(payload.get("failure_category", "unknown"))),
+            "reason": _summary_value(str(payload.get("reason", ""))),
         }
     return payload
 

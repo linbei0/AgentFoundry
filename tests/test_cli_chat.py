@@ -434,9 +434,14 @@ def test_agent_session_events_show_single_turn_order_and_tool_success(tmp_path: 
         "turn_finished",
         "session_finished",
     ]
+    assert all(set(event.to_dict()) == {"event_type", "session_id", "turn_index", "message", "payload"} for event in events)
+    assert all(event.session_id == result.session_id for event in events)
+    assert all(event.turn_index == result.turn_index for event in events)
     assert events[2].payload["tool_name"] == "file_write"
     assert events[2].payload["args_summary"]["content_chars"] == len("SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT")
     assert "content" not in events[2].payload["args_summary"]
+    assert "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT" not in json.dumps(events[2].to_dict(), ensure_ascii=False)
+    assert "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT" not in json.dumps(events[5].to_dict(), ensure_ascii=False)
     assert events[5].payload["result_summary"]["bytes_written"] == len("SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT")
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT"
     assert (result.episode_path / "tool-calls.jsonl").exists()
@@ -475,6 +480,8 @@ def test_agent_session_user_input_request_continues_with_answer(tmp_path: Path) 
     ]
     assert events[2].payload["question"] == "Which file should I inspect?"
     assert events[3].payload["answer_chars"] == len("Use README.md")
+    assert "answer" not in events[3].payload
+    assert "Use README.md" not in json.dumps(events[3].to_dict(), ensure_ascii=False)
     assert "Use README.md" in gateway.model_inputs[1]
     assert "tool-calls.jsonl" not in gateway.model_inputs[1]
 
@@ -502,9 +509,17 @@ def test_agent_session_denied_approval_fails_without_running_tool(tmp_path: Path
         "approval_requested",
         "approval_denied",
         "tool_failed",
+        "failure",
         "turn_finished",
     ]
     assert result.failure_category == "User Denied Failure"
+    assert events[5].payload == {
+        "status": "failed",
+        "failed_stage": "executing",
+        "failure_category": "User Denied Failure",
+        "reason": "approval denied for high risk tool file_write",
+    }
+    assert "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT" not in json.dumps(events[5].to_dict(), ensure_ascii=False)
     transcript = [
         json.loads(line)
         for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
@@ -531,11 +546,15 @@ def test_agent_session_events_emit_tool_failed_on_real_tool_error(tmp_path: Path
         "turn_started",
         "tool_started",
         "tool_failed",
+        "failure",
         "turn_finished",
     ]
     assert events[2].payload["tool_name"] == "file_read"
     assert events[2].payload["error_type"] == "tool_argument_invalid"
     assert "missing required argument: path" in events[2].payload["message"]
+    assert events[3].payload["status"] == "failed"
+    assert events[3].payload["failed_stage"] == "executing"
+    assert events[3].payload["failure_category"] == "Tool Argument Failure"
 
 
 def test_cli_chat_single_prompt_prints_progress_events_without_secret_content(

@@ -623,6 +623,11 @@ def _print_chat_event(event: ChatEvent) -> None:
         content = event.payload.get("content")
         if content:
             pieces.append(f"message={_shell_token(str(content))}")
+    elif event.event_type == "failure":
+        for key in ["failed_stage", "failure_category", "reason"]:
+            value = event.payload.get(key)
+            if value:
+                pieces.append(f"{key}={_shell_token(str(value))}")
     elif event.event_type in {"turn_started", "turn_finished", "session_started", "session_finished"}:
         status = event.payload.get("status")
         if status is not None:
