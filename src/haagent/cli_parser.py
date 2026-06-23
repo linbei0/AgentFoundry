@@ -35,29 +35,12 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         help="workspace root used when task_yaml is omitted",
     )
     run_parser.add_argument("--verify", help="verification command used when task_yaml is omitted")
-    run_parser.add_argument(
-        "--runs-root",
-        type=Path,
-        default=Path(".runs"),
-        help="directory for episode packages (default: .runs)",
-    )
-    run_parser.add_argument(
-        "--provider",
-        choices=["fake", "openai", "openai-chat"],
-        default="fake",
-        help="model provider to use (default: fake)",
-    )
-    run_parser.add_argument("--profile", help="provider profile name from .haagent/providers.json")
-    run_parser.add_argument("--model", help="OpenAI model name; only used when --provider openai")
-    run_parser.add_argument(
-        "--base-url",
-        help="OpenAI-compatible Responses API base URL; only used when --provider openai",
-    )
-    run_parser.add_argument(
-        "--max-turns",
-        type=_positive_int,
+    _add_runs_root(run_parser, help_text="directory for episode packages (default: .runs)")
+    _add_model_provider(run_parser)
+    _add_max_turns(
+        run_parser,
         default=3,
-        help="maximum model/tool turns before failing the run (default: 3)",
+        help_text="maximum model/tool turns before failing the run (default: 3)",
     )
     run_parser.set_defaults(handler=lambda args: handle_run(args, runtime))
 
@@ -73,33 +56,16 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         help="workspace root for the chat request (default: current directory)",
     )
     chat_parser.add_argument("--resume", help="resume a chat session by session id or session package path")
-    chat_parser.add_argument(
-        "--provider",
-        choices=["fake", "openai", "openai-chat"],
-        default="fake",
-        help="model provider to use (default: fake)",
-    )
-    chat_parser.add_argument("--profile", help="provider profile name from .haagent/providers.json")
-    chat_parser.add_argument("--model", help="OpenAI model name; only used when --provider openai")
-    chat_parser.add_argument(
-        "--base-url",
-        help="OpenAI-compatible Responses API base URL; only used when --provider openai",
-    )
+    _add_model_provider(chat_parser)
     chat_parser.set_defaults(handler=lambda args: handle_chat(args, runtime))
 
     smoke_parser = subparsers.add_parser("smoke", help="run the minimal HaAgent smoke suite")
-    smoke_parser.add_argument(
-        "--runs-root",
-        type=Path,
-        default=Path(".runs"),
-        help="directory for episode packages (default: .runs)",
-    )
+    _add_runs_root(smoke_parser, help_text="directory for episode packages (default: .runs)")
     smoke_parser.add_argument("--profile", help="real provider profile name from .haagent/providers.json")
-    smoke_parser.add_argument(
-        "--max-turns",
-        type=_positive_int,
+    _add_max_turns(
+        smoke_parser,
         default=12,
-        help="maximum model/tool turns per smoke task (default: 12)",
+        help_text="maximum model/tool turns per smoke task (default: 12)",
     )
     smoke_parser.set_defaults(handler=lambda args: handle_smoke(args, runtime))
 
@@ -113,18 +79,19 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         help="directory for dogfood episode packages; defaults to a temporary directory",
     )
     dogfood_parser.add_argument("--profile", help="real provider profile name from .haagent/providers.json")
-    dogfood_parser.add_argument(
-        "--provider",
+    _add_model_provider(
+        dogfood_parser,
         choices=["openai", "openai-chat"],
-        help="real provider to use when --profile is omitted",
+        default=None,
+        provider_help="real provider to use when --profile is omitted",
+        model_help="model name for --provider dogfood runs",
+        base_url_help="OpenAI-compatible base URL for --provider dogfood runs",
+        include_profile=False,
     )
-    dogfood_parser.add_argument("--model", help="model name for --provider dogfood runs")
-    dogfood_parser.add_argument("--base-url", help="OpenAI-compatible base URL for --provider dogfood runs")
-    dogfood_parser.add_argument(
-        "--max-turns",
-        type=_positive_int,
+    _add_max_turns(
+        dogfood_parser,
         default=16,
-        help="maximum model/tool turns per dogfood task (default: 16)",
+        help_text="maximum model/tool turns per dogfood task (default: 16)",
     )
     dogfood_parser.add_argument(
         "--no-auto-approve",
@@ -163,24 +130,8 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         type=Path,
         help="write eval report JSON to this file instead of only printing a summary",
     )
-    eval_parser.add_argument(
-        "--runs-root",
-        type=Path,
-        default=Path(".runs"),
-        help="directory for eval run episode packages (default: .runs)",
-    )
-    eval_parser.add_argument(
-        "--provider",
-        choices=["fake", "openai", "openai-chat"],
-        default="fake",
-        help="model provider to use (default: fake)",
-    )
-    eval_parser.add_argument("--profile", help="provider profile name from .haagent/providers.json")
-    eval_parser.add_argument("--model", help="OpenAI model name; only used when --provider openai")
-    eval_parser.add_argument(
-        "--base-url",
-        help="OpenAI-compatible Responses API base URL; only used when --provider openai",
-    )
+    _add_runs_root(eval_parser, help_text="directory for eval run episode packages (default: .runs)")
+    _add_model_provider(eval_parser)
     eval_parser.set_defaults(handler=lambda args: handle_eval(args, runtime))
 
     check_parser = subparsers.add_parser("check", help="run the local HaAgent quality gate")
@@ -191,31 +142,58 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         help="eval suite path to run (default: examples/evals)",
     )
     check_parser.add_argument("--output", type=Path, help="write check report JSON to this file")
-    check_parser.add_argument(
-        "--runs-root",
-        type=Path,
-        default=Path(".runs"),
-        help="directory for check episode packages (default: .runs)",
-    )
+    _add_runs_root(check_parser, help_text="directory for check episode packages (default: .runs)")
     check_parser.add_argument(
         "--pytest",
         action="store_true",
         help="also run uv run pytest -q after the eval suite",
     )
-    check_parser.add_argument(
-        "--provider",
-        choices=["fake", "openai", "openai-chat"],
-        default="fake",
-        help="model provider for eval replay (default: fake)",
-    )
-    check_parser.add_argument("--profile", help="provider profile name from .haagent/providers.json")
-    check_parser.add_argument("--model", help="OpenAI model name; only used when --provider openai")
-    check_parser.add_argument(
-        "--base-url",
-        help="OpenAI-compatible Responses API base URL; only used when --provider openai",
+    _add_model_provider(
+        check_parser,
+        provider_help="model provider for eval replay (default: fake)",
     )
     check_parser.set_defaults(handler=lambda args: handle_check(args, runtime))
     return parser
+
+
+def _add_runs_root(parser: argparse.ArgumentParser, *, help_text: str) -> None:
+    parser.add_argument(
+        "--runs-root",
+        type=Path,
+        default=Path(".runs"),
+        help=help_text,
+    )
+
+
+def _add_model_provider(
+    parser: argparse.ArgumentParser,
+    *,
+    choices: list[str] | None = None,
+    default: str | None = "fake",
+    provider_help: str = "model provider to use (default: fake)",
+    model_help: str = "OpenAI model name; only used when --provider openai",
+    base_url_help: str = "OpenAI-compatible Responses API base URL; only used when --provider openai",
+    include_profile: bool = True,
+) -> None:
+    parser.add_argument(
+        "--provider",
+        choices=choices or ["fake", "openai", "openai-chat"],
+        default=default,
+        help=provider_help,
+    )
+    if include_profile:
+        parser.add_argument("--profile", help="provider profile name from .haagent/providers.json")
+    parser.add_argument("--model", help=model_help)
+    parser.add_argument("--base-url", help=base_url_help)
+
+
+def _add_max_turns(parser: argparse.ArgumentParser, *, default: int, help_text: str) -> None:
+    parser.add_argument(
+        "--max-turns",
+        type=_positive_int,
+        default=default,
+        help=help_text,
+    )
 
 
 def _positive_int(value: str) -> int:
