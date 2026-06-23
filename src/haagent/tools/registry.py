@@ -203,7 +203,7 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
                 },
                 "timeout_seconds": {
                     "type": "number",
-                    "description": "optional timeout in seconds",
+                    "description": "optional timeout in seconds; defaults to 60 and must be <= 120",
                 },
                 "cwd": {
                     "type": "string",
@@ -284,7 +284,7 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
                 },
                 "timeout_seconds": {
                     "type": "number",
-                    "description": "optional timeout in seconds",
+                    "description": "optional timeout in seconds; defaults to 60 and must be <= 120",
                 },
             },
             "required": ["command"],

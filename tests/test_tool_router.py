@@ -965,7 +965,7 @@ def test_shell_uses_workspace_root_when_cwd_is_missing(tmp_path: Path) -> None:
     result = shell({"command": _print_cwd_command(), "timeout_seconds": 5}, tmp_path)
 
     assert result["status"] == "success"
-    assert result["stdout"].strip() == str(tmp_path.resolve())
+    assert result["stdout_excerpt"].strip() == str(tmp_path.resolve())
 
 
 def test_shell_uses_workspace_root_when_cwd_is_dot(tmp_path: Path) -> None:
@@ -975,7 +975,7 @@ def test_shell_uses_workspace_root_when_cwd_is_dot(tmp_path: Path) -> None:
     )
 
     assert result["status"] == "success"
-    assert result["stdout"].strip() == str(tmp_path.resolve())
+    assert result["stdout_excerpt"].strip() == str(tmp_path.resolve())
 
 
 def test_shell_runs_in_workspace_relative_subdirectory(tmp_path: Path) -> None:
@@ -988,7 +988,7 @@ def test_shell_runs_in_workspace_relative_subdirectory(tmp_path: Path) -> None:
     )
 
     assert result["status"] == "success"
-    assert result["stdout"].strip() == str(subdir.resolve())
+    assert result["stdout_excerpt"].strip() == str(subdir.resolve())
 
 
 def test_shell_accepts_absolute_cwd_inside_workspace_root(tmp_path: Path) -> None:
@@ -1001,7 +1001,7 @@ def test_shell_accepts_absolute_cwd_inside_workspace_root(tmp_path: Path) -> Non
     )
 
     assert result["status"] == "success"
-    assert result["stdout"].strip() == str(subdir.resolve())
+    assert result["stdout_excerpt"].strip() == str(subdir.resolve())
 
 
 def test_shell_rejects_missing_directory_cwd_with_argument_error(tmp_path: Path) -> None:

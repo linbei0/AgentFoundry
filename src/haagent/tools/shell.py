@@ -9,45 +9,44 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from haagent.runtime.command import run_command
+from haagent.runtime.command import CWD_GUIDANCE, normalize_timeout, resolve_execution_cwd, run_command
 from haagent.tools.base import tool_error
-from haagent.tools.file_tools import resolve_workspace_path
-
-
-CWD_GUIDANCE = (
-    'cwd is relative to workspace_root; use "." or omit cwd for workspace root'
-)
 
 
 def shell(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     """运行 shell 命令，捕获 stdout/stderr/exit_code，并把失败结构化返回。"""
     command = args.get("command")
     if not isinstance(command, str) or not command:
-        return tool_error("invalid_arguments", "command must be a non-empty string")
+        return tool_error("tool_argument_invalid", "command must be a non-empty string")
 
     cwd_arg = args.get("cwd")
     if cwd_arg is not None and not isinstance(cwd_arg, str):
-        return tool_error("invalid_arguments", f"cwd must be a string; {CWD_GUIDANCE}")
-    cwd_result = _resolve_cwd(cwd_arg, workspace_root)
-    if isinstance(cwd_result, dict):
-        return cwd_result
-    cwd = cwd_result
+        return tool_error("tool_argument_invalid", f"cwd must be a string; {CWD_GUIDANCE}")
+    cwd_result = resolve_execution_cwd(cwd_arg, workspace_root)
+    if isinstance(cwd_result, str):
+        return tool_error("tool_argument_invalid", cwd_result)
 
-    timeout_seconds = float(args.get("timeout_seconds", 60))
-    if timeout_seconds <= 0:
-        return tool_error("tool_argument_invalid", "timeout_seconds must be positive")
+    timeout_result = normalize_timeout(args.get("timeout_seconds"))
+    if isinstance(timeout_result, str):
+        return tool_error("tool_argument_invalid", timeout_result)
 
-    command_result = run_command(command, cwd, timeout_seconds)
+    command_result = run_command(command, cwd_result, timeout_result)
     result = {
         "status": "success" if command_result.status == "success" else "error",
         "exit_code": command_result.exit_code,
-        "stdout": command_result.stdout,
-        "stderr": command_result.stderr,
+        "stdout_excerpt": command_result.stdout_excerpt,
+        "stderr_excerpt": command_result.stderr_excerpt,
+        "stdout_truncated": command_result.stdout_truncated,
+        "stderr_truncated": command_result.stderr_truncated,
+        "truncated": command_result.truncated,
+        "timeout": command_result.timeout,
+        "redacted": command_result.redacted,
+        "timeout_seconds": command_result.timeout_seconds,
     }
     if command_result.status == "timeout":
         result["error"] = {
             "type": "timeout",
-            "message": f"command timed out after {timeout_seconds} seconds",
+            "message": f"command timed out after {timeout_result} seconds",
         }
     elif command_result.status == "failed":
         result["error"] = {
@@ -55,20 +54,3 @@ def shell(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
             "message": f"command exited with code {command_result.exit_code}",
         }
     return result
-
-
-def _resolve_cwd(cwd_arg: str | None, workspace_root: Path) -> Path | dict[str, Any]:
-    if cwd_arg in (None, "."):
-        cwd_arg = "."
-
-    cwd = resolve_workspace_path(cwd_arg, workspace_root)
-    if cwd is None:
-        return tool_error(
-            "tool_argument_invalid",
-            f"cwd must stay inside workspace_root; {CWD_GUIDANCE}",
-        )
-    if not cwd.exists():
-        return tool_error("tool_argument_invalid", f"cwd does not exist; {CWD_GUIDANCE}")
-    if not cwd.is_dir():
-        return tool_error("tool_argument_invalid", f"cwd must be a directory; {CWD_GUIDANCE}")
-    return cwd

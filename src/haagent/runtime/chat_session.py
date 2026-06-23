@@ -621,8 +621,10 @@ def _tool_result_summary(tool_name: str, result: dict[str, object]) -> dict[str,
     if tool_name == "shell":
         return {
             "exit_code": result.get("exit_code"),
-            "stdout_chars": len(str(result.get("stdout", ""))),
-            "stderr_chars": len(str(result.get("stderr", ""))),
+            "stdout_chars": len(str(result.get("stdout_excerpt", ""))),
+            "stderr_chars": len(str(result.get("stderr_excerpt", ""))),
+            "timeout": bool(result.get("timeout")),
+            "truncated": bool(result.get("truncated")),
         }
     return {
         "status": str(result.get("status", "unknown")),

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from haagent.runtime.command import redact_secret_like_text
+
 
 OBSERVATION_EXCERPT_CHAR_LIMIT = 240
 
@@ -188,16 +190,19 @@ def _shell_observation_summary(
     args: dict[str, Any],
     result: dict[str, Any],
 ) -> dict[str, object]:
-    stdout_excerpt, stdout_truncated = _compact_excerpt(_string_value(result.get("stdout")))
-    stderr_excerpt, stderr_truncated = _compact_excerpt(_string_value(result.get("stderr")))
+    stdout_source = _first_present(result.get("stdout_excerpt"), result.get("stdout"))
+    stderr_source = _first_present(result.get("stderr_excerpt"), result.get("stderr"))
+    stdout_excerpt, stdout_truncated = _compact_excerpt(_string_value(stdout_source))
+    stderr_excerpt, stderr_truncated = _compact_excerpt(_string_value(stderr_source))
     return {
         "status": _string_value(result.get("status")),
         "command": _string_value(args.get("command")),
         "cwd": _string_value(args.get("cwd"), default="."),
         "exit_code": result.get("exit_code"),
+        "timeout": bool(result.get("timeout")),
         "stdout_excerpt": stdout_excerpt,
         "stderr_excerpt": stderr_excerpt,
-        "truncated": stdout_truncated or stderr_truncated,
+        "truncated": bool(result.get("truncated")) or stdout_truncated or stderr_truncated,
     }
 
 
@@ -334,8 +339,9 @@ def _generic_observation_summary(
 
 
 def _compact_excerpt(value: str) -> tuple[str, bool]:
-    truncated = len(value) > OBSERVATION_EXCERPT_CHAR_LIMIT
-    return value[:OBSERVATION_EXCERPT_CHAR_LIMIT], truncated
+    safe_value, redacted = redact_secret_like_text(value)
+    truncated = len(safe_value) > OBSERVATION_EXCERPT_CHAR_LIMIT
+    return safe_value[:OBSERVATION_EXCERPT_CHAR_LIMIT], truncated or redacted
 
 
 def _dict_or_empty(value: object) -> dict[str, Any]:

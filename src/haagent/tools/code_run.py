@@ -12,12 +12,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from haagent.runtime.command import (
+    CWD_GUIDANCE,
+    build_output_summary,
+    normalize_timeout,
+    resolve_execution_cwd,
+)
 from haagent.tools.base import tool_error
-from haagent.tools.file_tools import resolve_workspace_path
-
-
-CWD_GUIDANCE = 'cwd is relative to workspace_root; use "." or omit cwd for workspace root'
-OUTPUT_EXCERPT_CHAR_LIMIT = 2400
 
 
 def code_run(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
@@ -28,13 +29,13 @@ def code_run(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     cwd_arg = args.get("cwd")
     if cwd_arg is not None and not isinstance(cwd_arg, str):
         return tool_error("tool_argument_invalid", f"cwd must be a string; {CWD_GUIDANCE}")
-    cwd_result = _resolve_cwd(cwd_arg, workspace_root)
-    if isinstance(cwd_result, dict):
-        return cwd_result
+    cwd_result = resolve_execution_cwd(cwd_arg, workspace_root)
+    if isinstance(cwd_result, str):
+        return tool_error("tool_argument_invalid", cwd_result)
 
-    timeout_seconds = float(args.get("timeout_seconds", 60))
-    if timeout_seconds <= 0:
-        return tool_error("tool_argument_invalid", "timeout_seconds must be positive")
+    timeout_result = normalize_timeout(args.get("timeout_seconds"))
+    if isinstance(timeout_result, str):
+        return tool_error("tool_argument_invalid", timeout_result)
 
     root = workspace_root.resolve()
     tmp_dir = root / ".haagent-tmp"
@@ -49,32 +50,43 @@ def code_run(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=timeout_seconds,
+            timeout=timeout_result,
         )
     except subprocess.TimeoutExpired as error:
-        stdout_excerpt, stdout_truncated = _excerpt(_decode_timeout_output(error.stdout))
-        stderr_excerpt, stderr_truncated = _excerpt(_decode_timeout_output(error.stderr))
+        output = build_output_summary(
+            _decode_timeout_output(error.stdout),
+            _decode_timeout_output(error.stderr),
+        )
         return {
             "status": "error",
             "exit_code": None,
-            "stdout_excerpt": stdout_excerpt,
-            "stderr_excerpt": stderr_excerpt,
-            "truncated": stdout_truncated or stderr_truncated,
+            "stdout_excerpt": output["stdout_excerpt"],
+            "stderr_excerpt": output["stderr_excerpt"],
+            "stdout_truncated": output["stdout_truncated"],
+            "stderr_truncated": output["stderr_truncated"],
+            "truncated": output["truncated"],
+            "timeout": True,
+            "redacted": output["redacted"],
+            "timeout_seconds": timeout_result,
             "script_path": script_path.relative_to(root).as_posix(),
             "error": {
                 "type": "timeout",
-                "message": f"python code timed out after {timeout_seconds} seconds",
+                "message": f"python code timed out after {timeout_result} seconds",
             },
         }
 
-    stdout_excerpt, stdout_truncated = _excerpt(completed.stdout)
-    stderr_excerpt, stderr_truncated = _excerpt(completed.stderr)
+    output = build_output_summary(completed.stdout, completed.stderr)
     result = {
         "status": "success" if completed.returncode == 0 else "error",
         "exit_code": completed.returncode,
-        "stdout_excerpt": stdout_excerpt,
-        "stderr_excerpt": stderr_excerpt,
-        "truncated": stdout_truncated or stderr_truncated,
+        "stdout_excerpt": output["stdout_excerpt"],
+        "stderr_excerpt": output["stderr_excerpt"],
+        "stdout_truncated": output["stdout_truncated"],
+        "stderr_truncated": output["stderr_truncated"],
+        "truncated": output["truncated"],
+        "timeout": False,
+        "redacted": output["redacted"],
+        "timeout_seconds": timeout_result,
         "script_path": script_path.relative_to(root).as_posix(),
     }
     if completed.returncode != 0:
@@ -83,25 +95,6 @@ def code_run(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
             "message": f"python code exited with code {completed.returncode}",
         }
     return result
-
-
-def _resolve_cwd(cwd_arg: str | None, workspace_root: Path) -> Path | dict[str, Any]:
-    if cwd_arg in (None, "."):
-        cwd_arg = "."
-
-    cwd = resolve_workspace_path(cwd_arg, workspace_root)
-    if cwd is None:
-        return tool_error("tool_argument_invalid", f"cwd must stay inside workspace_root; {CWD_GUIDANCE}")
-    if not cwd.exists():
-        return tool_error("tool_argument_invalid", f"cwd does not exist; {CWD_GUIDANCE}")
-    if not cwd.is_dir():
-        return tool_error("tool_argument_invalid", f"cwd must be a directory; {CWD_GUIDANCE}")
-    return cwd
-
-
-def _excerpt(value: str) -> tuple[str, bool]:
-    truncated = len(value) > OUTPUT_EXCERPT_CHAR_LIMIT
-    return value[:OUTPUT_EXCERPT_CHAR_LIMIT], truncated
 
 
 def _decode_timeout_output(value: str | bytes | None) -> str:

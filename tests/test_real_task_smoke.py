@@ -202,7 +202,7 @@ def test_real_task_smoke_runs_script_validation(tmp_path: Path) -> None:
     assert result.status == "completed"
     call = _tool_calls(result.episode_path)[0]
     assert call["tool_name"] == "shell"
-    assert call["result"]["stdout"].strip() == "check ok"
+    assert call["result"]["stdout_excerpt"].strip() == "check ok"
 
 
 def test_real_task_smoke_request_user_input_then_writes_requested_file(tmp_path: Path) -> None:
