@@ -27,6 +27,7 @@ from haagent.runtime.chat_session import (
     ChatSessionError,
     ChatTurnResult,
 )
+from haagent.runtime.checks import run_quality_checks
 from haagent.runtime.dogfood import render_dogfood_report, run_dogfood_tasks, skipped_dogfood_report
 from haagent.runtime.episode_validator import (
     EpisodeValidationError,
@@ -241,6 +242,48 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         help="OpenAI-compatible Responses API base URL; only used when --provider openai",
     )
+
+    check_parser = subparsers.add_parser("check", help="run the local HaAgent quality gate")
+    check_parser.add_argument(
+        "--eval-path",
+        type=Path,
+        default=PROJECT_ROOT / "examples" / "evals",
+        help="eval suite path to run (default: examples/evals)",
+    )
+    check_parser.add_argument(
+        "--output",
+        type=Path,
+        help="write check report JSON to this file",
+    )
+    check_parser.add_argument(
+        "--runs-root",
+        type=Path,
+        default=Path(".runs"),
+        help="directory for check episode packages (default: .runs)",
+    )
+    check_parser.add_argument(
+        "--pytest",
+        action="store_true",
+        help="also run uv run pytest -q after the eval suite",
+    )
+    check_parser.add_argument(
+        "--provider",
+        choices=["fake", "openai", "openai-chat"],
+        default="fake",
+        help="model provider for eval replay (default: fake)",
+    )
+    check_parser.add_argument(
+        "--profile",
+        help="provider profile name from .haagent/providers.json",
+    )
+    check_parser.add_argument(
+        "--model",
+        help="OpenAI model name; only used when --provider openai",
+    )
+    check_parser.add_argument(
+        "--base-url",
+        help="OpenAI-compatible Responses API base URL; only used when --provider openai",
+    )
     return parser
 
 
@@ -318,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "dogfood":
         return _handle_dogfood(args)
+    if args.command == "check":
+        return _handle_check(args)
 
     if args.command == "inspect":
         try:
@@ -799,6 +844,51 @@ def _handle_eval(args: argparse.Namespace) -> int:
         print(f"eval_report={args.output}")
     _print_eval_summary(report)
     return 0 if report["failed_count"] == 0 and report["error_count"] == 0 else 1
+
+
+def _handle_check(args: argparse.Namespace) -> int:
+    try:
+        model_gateway = _build_run_model_gateway(args)
+        report = run_quality_checks(
+            eval_path=args.eval_path,
+            runs_root=args.runs_root,
+            model_gateway=model_gateway,
+            run_pytest=bool(args.pytest),
+            cwd=Path.cwd(),
+        )
+    except (ProviderProfileError, EvalRunnerError) as error:
+        print(f"error: {error}")
+        return 1
+
+    if args.output is not None:
+        if not args.output.parent.exists():
+            print(f"error: output parent directory does not exist: {args.output.parent}")
+            return 1
+        args.output.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"check_report={args.output}")
+    _print_check_summary(report)
+    return 0 if report["status"] == "passed" else 1
+
+
+def _print_check_summary(report: dict[str, Any]) -> None:
+    eval_report = report["eval_report"]
+    print(f"status={report['status']}")
+    print(f"eval_total={eval_report['total_count']}")
+    print(f"eval_passed={eval_report['passed_count']}")
+    print(f"eval_failed={eval_report['failed_count']}")
+    print(f"eval_error={eval_report['error_count']}")
+    for result in eval_report.get("results", []):
+        if not isinstance(result, dict) or result.get("status") == "passed":
+            continue
+        print(f"failure_case={result.get('case_path')}")
+        print(f"failure_reason={_summary_value(str(result.get('failure_reason', '')))}")
+    pytest_report = report.get("pytest")
+    if isinstance(pytest_report, dict):
+        print(f"pytest_exit_code={pytest_report['exit_code']}")
+        print(f"pytest_summary={_summary_value(str(pytest_report.get('summary', 'none')))}")
 
 
 def _print_eval_summary(report: dict[str, Any]) -> None:
