@@ -6,13 +6,12 @@ haagent/cli_commands.py - CLI 子命令处理器
 
 from __future__ import annotations
 
-import argparse
 import json
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
@@ -27,25 +26,18 @@ from haagent.cli_render import (
     read_chat_interaction,
     run_chat_repl,
 )
+from haagent.cli_runtime import CliRuntime, SmokeDefinition
 from haagent.models.provider_profile import ProviderProfileError, load_provider_profile
-from haagent.runtime.chat_session import AgentSession, CHAT_MAX_TURNS, ChatSessionError
+from haagent.runtime.chat_session import CHAT_MAX_TURNS, ChatSessionError
 from haagent.runtime.checks import run_quality_checks
 from haagent.runtime.dogfood import render_dogfood_report, run_dogfood_tasks, skipped_dogfood_report
 from haagent.runtime.episode_validator import EpisodeValidationError, load_inspect_episode_package
 from haagent.runtime.eval_export import export_eval_case
 from haagent.runtime.eval_runner import EvalRunnerError, run_eval_path
-from haagent.runtime.orchestrator import RunOrchestrator
 
 
 AUTHORING_ALLOWED_TOOLS = ["file_list", "file_read", "file_search", "apply_patch", "shell"]
 AUTHORING_APPROVED_TOOLS = ["apply_patch", "shell"]
-
-
-@dataclass(frozen=True)
-class SmokeDefinition:
-    name: str
-    task_path: Path
-    requires_profile: bool
 
 
 @dataclass(frozen=True)
@@ -58,35 +50,10 @@ class SmokeResult:
     reason: str | None = None
 
 
-def smoke_definitions(project_root: Path) -> list[SmokeDefinition]:
-    return [
-        SmokeDefinition(
-            name="hello",
-            task_path=project_root / "examples/tasks/hello.yaml",
-            requires_profile=False,
-        ),
-        SmokeDefinition(
-            name="real_file_read",
-            task_path=project_root / "examples/tasks/openai_chat_file_read_smoke.yaml",
-            requires_profile=True,
-        ),
-        SmokeDefinition(
-            name="real_edit_verify",
-            task_path=project_root / "examples/tasks/openai_chat_edit_smoke.yaml",
-            requires_profile=True,
-        ),
-    ]
-
-
-def handle_run(
-    args: argparse.Namespace,
-    *,
-    build_gateway: Callable[[argparse.Namespace], Any],
-    orchestrator_cls: type = RunOrchestrator,
-) -> int:
+def handle_run(args, runtime: CliRuntime) -> int:
     generated_task_dir: tempfile.TemporaryDirectory[str] | None = None
     try:
-        model_gateway = build_gateway(args)
+        model_gateway = runtime.build_run_model_gateway(args)
         task_path, generated_task_dir = run_task_path(args)
     except ProviderProfileError as error:
         print(f"error: {error}")
@@ -96,13 +63,13 @@ def handle_run(
         return 2
     try:
         if model_gateway is not None:
-            result = orchestrator_cls(
+            result = runtime.orchestrator_cls(
                 runs_root=args.runs_root,
                 model_gateway=model_gateway,
                 max_turns=args.max_turns,
             ).run(task_path)
         else:
-            result = orchestrator_cls(
+            result = runtime.orchestrator_cls(
                 runs_root=args.runs_root,
                 max_turns=args.max_turns,
             ).run(task_path)
@@ -113,27 +80,22 @@ def handle_run(
             generated_task_dir.cleanup()
 
 
-def handle_chat(
-    args: argparse.Namespace,
-    *,
-    build_gateway: Callable[[argparse.Namespace], Any],
-    session_cls: type = AgentSession,
-) -> int:
+def handle_chat(args, runtime: CliRuntime) -> int:
     try:
-        model_gateway = build_gateway(args)
+        model_gateway = runtime.build_run_model_gateway(args)
     except ProviderProfileError as error:
         print(f"error: {error}")
         return 1
     try:
         if args.resume is None:
-            session = session_cls(
+            session = runtime.session_cls(
                 workspace_root=args.workspace_root if args.workspace_root is not None else Path.cwd(),
                 runs_root=Path(".runs"),
                 model_gateway=model_gateway,
                 max_turns=CHAT_MAX_TURNS,
             )
         else:
-            session = session_cls.resume(
+            session = runtime.session_cls.resume(
                 args.resume,
                 runs_root=Path(".runs"),
                 model_gateway=model_gateway,
@@ -154,16 +116,10 @@ def handle_chat(
     return 0 if result.status == "completed" else 1
 
 
-def handle_smoke(
-    args: argparse.Namespace,
-    *,
-    definitions: list[SmokeDefinition],
-    gateway_from_profile: Callable[[Any], Any],
-    orchestrator_cls: type = RunOrchestrator,
-) -> int:
+def handle_smoke(args, runtime: CliRuntime) -> int:
     selected = [
         definition
-        for definition in definitions
+        for definition in runtime.smoke_definitions()
         if not definition.requires_profile or args.profile is not None
     ]
     exit_code = 0
@@ -171,8 +127,7 @@ def handle_smoke(
         result = run_smoke_definition(
             definition,
             args,
-            gateway_from_profile=gateway_from_profile,
-            orchestrator_cls=orchestrator_cls,
+            runtime=runtime,
         )
         print_smoke_result(result)
         if result.status != "completed":
@@ -180,13 +135,9 @@ def handle_smoke(
     return exit_code
 
 
-def handle_dogfood(
-    args: argparse.Namespace,
-    *,
-    build_dogfood_gateway: Callable[[argparse.Namespace], Any],
-) -> int:
+def handle_dogfood(args, runtime: CliRuntime) -> int:
     try:
-        model_gateway = build_dogfood_gateway(args)
+        model_gateway = runtime.build_dogfood_model_gateway(args)
     except ProviderProfileError as error:
         print(render_dogfood_report(skipped_dogfood_report(str(error))))
         return 0
@@ -203,7 +154,7 @@ def handle_dogfood(
     return 0 if report.status == "completed" else 1
 
 
-def handle_inspect(args: argparse.Namespace) -> int:
+def handle_inspect(args) -> int:
     try:
         print(render_episode_summary(args.episode_path))
     except EpisodeInspectError as error:
@@ -212,13 +163,9 @@ def handle_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-def handle_eval(
-    args: argparse.Namespace,
-    *,
-    build_gateway: Callable[[argparse.Namespace], Any],
-) -> int:
+def handle_eval(args, runtime: CliRuntime) -> int:
     try:
-        model_gateway = build_gateway(args)
+        model_gateway = runtime.build_run_model_gateway(args)
         report = run_eval_path(
             args.eval_path,
             runs_root=args.runs_root,
@@ -241,13 +188,9 @@ def handle_eval(
     return 0 if report["failed_count"] == 0 and report["error_count"] == 0 else 1
 
 
-def handle_check(
-    args: argparse.Namespace,
-    *,
-    build_gateway: Callable[[argparse.Namespace], Any],
-) -> int:
+def handle_check(args, runtime: CliRuntime) -> int:
     try:
-        model_gateway = build_gateway(args)
+        model_gateway = runtime.build_run_model_gateway(args)
         report = run_quality_checks(
             eval_path=args.eval_path,
             runs_root=args.runs_root,
@@ -272,12 +215,11 @@ def handle_check(
     return 0 if report["status"] == "passed" else 1
 
 
-def handle_export_eval(
-    episode_paths: list[Path],
-    output_path: Path | None,
-    output_dir: Path | None,
-) -> int:
+def handle_export_eval(args) -> int:
     """处理 eval case 单文件和批量导出命令。"""
+    episode_paths = args.episode_paths
+    output_path = args.output
+    output_dir = args.output_dir
     if len(episode_paths) == 1:
         return export_single_eval_case(episode_paths[0], output_path, output_dir)
     if output_path is not None:
@@ -324,7 +266,7 @@ def handle_export_eval(
 
 
 def run_task_path(
-    args: argparse.Namespace,
+    args,
 ) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:
     if args.task_yaml is not None:
         return args.task_yaml, None
@@ -374,15 +316,14 @@ def write_authoring_task_yaml(
 
 def run_smoke_definition(
     definition: SmokeDefinition,
-    args: argparse.Namespace,
+    args,
     *,
-    gateway_from_profile: Callable[[Any], Any],
-    orchestrator_cls: type = RunOrchestrator,
+    runtime: CliRuntime,
 ) -> SmokeResult:
     model_gateway = None
     if definition.requires_profile:
         try:
-            model_gateway = gateway_from_profile(load_provider_profile(args.profile))
+            model_gateway = runtime.gateway_from_profile(load_provider_profile(args.profile))
         except ProviderProfileError as error:
             return SmokeResult(
                 name=definition.name,
@@ -392,7 +333,7 @@ def run_smoke_definition(
                 failure_category="Provider Profile Error",
                 reason=str(error),
             )
-    result = orchestrator_cls(
+    result = runtime.orchestrator_cls(
         runs_root=args.runs_root,
         model_gateway=model_gateway,
         max_turns=args.max_turns,

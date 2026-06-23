@@ -226,8 +226,8 @@ def test_cli_smoke_with_profile_runs_fake_and_real_tasks(
             )
             return FakeResult(self._runs_root / f"episode-{len(calls)}")
 
-    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FakeOpenAIChatGateway)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "chat_gateway_cls", FakeOpenAIChatGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [

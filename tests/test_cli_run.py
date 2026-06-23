@@ -177,7 +177,7 @@ def test_cli_run_uses_default_runs_root_and_prints_result(
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(["run", str(task_path)])
 
@@ -290,7 +290,7 @@ def test_cli_run_goal_entry_generates_current_task_contract(
             calls["task_text"] = received_task_path.read_text(encoding="utf-8")
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -366,7 +366,7 @@ def test_cli_run_task_yaml_entry_still_ignores_goal_entry_arguments(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -402,7 +402,7 @@ def test_cli_run_uses_default_max_turns(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(["run", str(task_path)])
 
@@ -431,7 +431,7 @@ def test_cli_run_passes_custom_max_turns(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(["run", str(task_path), "--max-turns", "12"])
 
@@ -453,7 +453,7 @@ def test_cli_run_accepts_custom_runs_root(tmp_path: Path, monkeypatch) -> None:
             calls["task_path"] = received_task_path
             return FakeResult(custom_runs / "episode-1")
 
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(["run", str(task_path), "--runs-root", str(custom_runs)])
 
@@ -477,7 +477,7 @@ def test_cli_run_explicit_fake_provider_keeps_default_gateway_path(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(["run", str(task_path), "--provider", "fake"])
 
@@ -501,7 +501,7 @@ def test_cli_run_fake_provider_ignores_base_url(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -546,8 +546,8 @@ def test_cli_run_openai_provider_passes_gateway_to_orchestrator(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "OpenAIResponsesGateway", FakeOpenAIGateway)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "responses_gateway_cls", FakeOpenAIGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         ["run", str(task_path), "--provider", "openai", "--model", "gpt-test"],
@@ -593,8 +593,8 @@ def test_cli_run_openai_provider_passes_base_url_to_gateway(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "OpenAIResponsesGateway", FakeOpenAIGateway)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "responses_gateway_cls", FakeOpenAIGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -646,8 +646,8 @@ def test_cli_run_base_url_argument_takes_priority_over_environment(
         def run(self, received_task_path: Path) -> FakeResult:
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "OpenAIResponsesGateway", FakeOpenAIGateway)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "responses_gateway_cls", FakeOpenAIGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -697,8 +697,8 @@ def test_cli_run_openai_chat_provider_passes_gateway_to_orchestrator(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FakeOpenAIChatGateway)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "chat_gateway_cls", FakeOpenAIChatGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -750,8 +750,8 @@ def test_cli_run_openai_chat_provider_passes_custom_max_turns(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FakeOpenAIChatGateway)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "chat_gateway_cls", FakeOpenAIChatGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -827,8 +827,8 @@ def test_cli_run_profile_creates_gateway_from_local_config(
             calls["task_path"] = received_task_path
             return FakeResult(tmp_path / ".runs" / "episode-1")
 
-    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FakeOpenAIChatGateway)
-    monkeypatch.setattr(cli, "RunOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "chat_gateway_cls", FakeOpenAIChatGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "orchestrator_cls", FakeOrchestrator)
 
     exit_code = cli.main(
         [
@@ -961,7 +961,7 @@ verification_commands: []
             assert secret not in model_input
             return ModelResponse("done", [])
 
-    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FinalGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "chat_gateway_cls", FinalGateway)
 
     run_exit = cli.main(
         [

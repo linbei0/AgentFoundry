@@ -260,7 +260,7 @@ def test_cli_chat_profile_does_not_leak_secret(
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CHAT_SECRET", "sk-secret-value-that-must-not-leak")
-    monkeypatch.setattr(cli, "OpenAIChatCompletionsGateway", FakeProfileGateway)
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "chat_gateway_cls", FakeProfileGateway)
 
     exit_code = cli.main(["chat", "Use profile", "--profile", "local"])
 
@@ -536,7 +536,7 @@ def test_cli_chat_repl_status_shows_working_state_without_full_content(
     capsys,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: WriteThenDoneGateway())
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "build_run_model_gateway", lambda args: WriteThenDoneGateway())
     inputs = iter(["Write notes", "y", ":status", ":quit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -560,7 +560,7 @@ def test_cli_chat_resume_restores_session_state(tmp_path: Path, monkeypatch, cap
         max_turns=20,
     )
     session.run_prompt("first")
-    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: RecordingGateway())
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "build_run_model_gateway", lambda args: RecordingGateway())
     inputs = iter([":status", ":quit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -816,7 +816,7 @@ def test_cli_chat_single_prompt_prints_progress_events_without_secret_content(
     monkeypatch,
     capsys,
 ) -> None:
-    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: WriteThenDoneGateway())
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "build_run_model_gateway", lambda args: WriteThenDoneGateway())
     inputs = iter(["y"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -843,7 +843,7 @@ def test_cli_chat_repl_prints_events_and_still_accepts_quit(
     capsys,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: WriteThenDoneGateway())
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "build_run_model_gateway", lambda args: WriteThenDoneGateway())
     inputs = iter(["Write notes", "y", ":quit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -865,7 +865,7 @@ def test_cli_chat_event_output_hides_full_code_and_long_stdout(
     monkeypatch,
     capsys,
 ) -> None:
-    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: CodeRunThenDoneGateway())
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "build_run_model_gateway", lambda args: CodeRunThenDoneGateway())
     inputs = iter(["y"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -883,7 +883,7 @@ def test_cli_chat_event_output_hides_full_code_and_long_stdout(
 
 def test_cli_chat_repl_answers_user_input_request(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "_build_run_model_gateway", lambda args: ClarifyThenDoneGateway())
+    monkeypatch.setattr(cli.DEFAULT_RUNTIME, "build_run_model_gateway", lambda args: ClarifyThenDoneGateway())
     inputs = iter(["Inspect", "README.md", ":quit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
