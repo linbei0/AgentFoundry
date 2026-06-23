@@ -183,6 +183,7 @@ def test_file_read_supports_offset_and_limit(tmp_path: Path) -> None:
     result = router.dispatch("file_read", {"path": "notes.txt", "offset": 1, "limit": 2})
 
     assert result["status"] == "success"
+    assert result["path"] == "notes.txt"
     assert result["content"] == "one\ntwo\n"
     assert result["offset"] == 1
     assert result["limit"] == 2
@@ -334,7 +335,7 @@ def test_file_search_finds_matching_text_and_writes_trace(tmp_path: Path) -> Non
     result = router.dispatch("file_search", {"query": "needle"})
 
     assert result["status"] == "success"
-    assert any("alpha.txt" in match["path"] for match in result["matches"])
+    assert result["matches"][0]["path"] == "alpha.txt"
     trace_lines = (writer.path / "tool-calls.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(trace_lines) == 1
     assert json.loads(trace_lines[0])["tool_name"] == "file_search"
@@ -685,10 +686,20 @@ def test_code_run_cwd_is_workspace_bound(tmp_path: Path) -> None:
         "code_run",
         {"code": "from pathlib import Path\nprint(Path.cwd().name)", "cwd": "pkg", "timeout_seconds": 5},
     )
+    absolute_success = router.dispatch(
+        "code_run",
+        {
+            "code": "from pathlib import Path\nprint(Path.cwd().name)",
+            "cwd": str(subdir.resolve()),
+            "timeout_seconds": 5,
+        },
+    )
     escaped = router.dispatch("code_run", {"code": "print('x')", "cwd": "..", "timeout_seconds": 5})
 
     assert success["status"] == "success"
     assert success["stdout_excerpt"].strip() == "pkg"
+    assert absolute_success["status"] == "success"
+    assert absolute_success["stdout_excerpt"].strip() == "pkg"
     assert escaped["status"] == "error"
     assert escaped["error"]["type"] == "tool_argument_invalid"
 
@@ -942,6 +953,19 @@ def test_shell_runs_in_workspace_relative_subdirectory(tmp_path: Path) -> None:
 
     result = shell(
         {"command": _print_cwd_command(), "cwd": "src", "timeout_seconds": 5},
+        tmp_path,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == str(subdir.resolve())
+
+
+def test_shell_accepts_absolute_cwd_inside_workspace_root(tmp_path: Path) -> None:
+    subdir = tmp_path / "src"
+    subdir.mkdir()
+
+    result = shell(
+        {"command": _print_cwd_command(), "cwd": str(subdir.resolve()), "timeout_seconds": 5},
         tmp_path,
     )
 

@@ -29,6 +29,19 @@ def test_run_command_records_non_zero_exit(tmp_path: Path) -> None:
     assert result.timeout_seconds == 5
 
 
+def test_run_command_replaces_invalid_utf8_output(tmp_path: Path) -> None:
+    result = run_command(
+        "python -c \"import sys; sys.stdout.buffer.write(bytes([0xd5])); sys.stderr.buffer.write(bytes([0xff]))\"",
+        cwd=tmp_path,
+        timeout_seconds=5,
+    )
+
+    assert result.status == "success"
+    assert result.exit_code == 0
+    assert "\ufffd" in result.stdout
+    assert "\ufffd" in result.stderr
+
+
 def test_run_command_records_timeout(tmp_path: Path) -> None:
     result = run_command(
         "python -c \"import time; time.sleep(1)\"",

@@ -122,10 +122,10 @@ def file_search(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     if rg:
         # 使用 JSON 输出避免 Windows 盘符冒号破坏 path:line:column 解析。
         command = [rg, "--json", "--", query, str(root)]
-        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if completed.returncode not in (0, 1):
             return tool_error("search_failed", completed.stderr.strip() or "ripgrep failed")
-        return {"status": "success", "matches": _parse_rg_json(completed.stdout)}
+        return {"status": "success", "matches": _parse_rg_json(completed.stdout, workspace_root)}
 
     matches = []
     for path in root.rglob("*"):
@@ -136,7 +136,7 @@ def file_search(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
                 if query in line:
                     matches.append(
                         {
-                            "path": str(path),
+                            "path": path.relative_to(workspace_root.resolve()).as_posix(),
                             "line": line_number,
                             "column": line.find(query) + 1,
                             "text": line,
@@ -277,7 +277,7 @@ def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     selected = lines[start_index:end_index]
     return {
         "status": "success",
-        "path": str(path),
+        "path": path.relative_to(workspace_root.resolve()).as_posix(),
         "offset": offset,
         "limit": limit,
         "keyword": keyword,
@@ -631,8 +631,9 @@ def _similar_workspace_paths(path_arg: str, workspace_root: Path) -> list[str]:
     return [relative for _, relative in sorted(candidates, key=lambda item: (-item[0], item[1]))[:5]]
 
 
-def _parse_rg_json(output: str) -> list[dict[str, Any]]:
+def _parse_rg_json(output: str, workspace_root: Path) -> list[dict[str, Any]]:
     """解析 ripgrep JSON 事件流，只保留 match 事件。"""
+    root = workspace_root.resolve()
     matches = []
     for line in output.splitlines():
         event = json.loads(line)
@@ -642,7 +643,7 @@ def _parse_rg_json(output: str) -> list[dict[str, Any]]:
         submatches = data.get("submatches") or [{"start": 0}]
         matches.append(
             {
-                "path": data["path"]["text"],
+                "path": Path(data["path"]["text"]).resolve().relative_to(root).as_posix(),
                 "line": data["line_number"],
                 "column": submatches[0]["start"] + 1,
                 "text": data["lines"]["text"].rstrip("\n"),

@@ -87,6 +87,39 @@ class ToolHungryGateway:
         return ModelResponse("Changed add to return a + b and verification passed.", [])
 
 
+class InBandVerifyHungryGateway:
+    provider_name = "in-band-verify-hungry"
+
+    def __init__(self) -> None:
+        self.tool_schemas_seen = []
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        self.tool_schemas_seen.append(list(tool_schemas))
+        if len(self.tool_schemas_seen) == 1:
+            return ModelResponse(
+                "patch",
+                [
+                    ToolCall(
+                        "apply_patch_set",
+                        {
+                            "replacements": [
+                                {
+                                    "path": "src/app.py",
+                                    "old_text": "return text.upper()",
+                                    "new_text": 'return text.upper() + "!"',
+                                },
+                            ],
+                        },
+                    ),
+                ],
+            )
+        if len(self.tool_schemas_seen) == 2:
+            return ModelResponse("verify", [ToolCall("shell", {"command": "python -m pytest -q"})])
+        if tool_schemas:
+            return ModelResponse("keep checking", [ToolCall("file_list", {"path": "."})])
+        return ModelResponse("Changed shout and pytest passed.", [])
+
+
 class NoToolGateway:
     provider_name = "no-tool"
 
@@ -1175,6 +1208,58 @@ policy:
     assert "shell" in final_model_input
     assert "return a - b" in final_model_input
     assert "return a + b" in final_model_input
+
+
+def test_orchestrator_disables_tools_after_successful_in_band_shell_verification_without_declared_commands(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task_path = tmp_path / "task.yaml"
+    runs_dir = tmp_path / ".runs"
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        "def shout(text: str) -> str:\n    return text.upper()\n",
+        encoding="utf-8",
+    )
+    write_task(
+        task_path,
+        ["apply_patch_set", "shell", "file_list"],
+        verification_commands=[],
+        policy_block="""
+policy:
+  approval_allowed_tools:
+    - apply_patch_set
+    - shell
+  approved_tools:
+    - apply_patch_set
+    - shell
+""".strip(),
+    )
+    gateway = InBandVerifyHungryGateway()
+
+    def successful_shell(args, workspace_root):
+        return {
+            "status": "success",
+            "exit_code": 0,
+            "stdout": "1 passed\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr("haagent.tools.router.shell", successful_shell)
+
+    result = RunOrchestrator(
+        runs_root=runs_dir,
+        model_gateway=gateway,
+        max_turns=4,
+    ).run(task_path)
+
+    assert result.status is RunStatus.COMPLETED
+    assert gateway.tool_schemas_seen[2] == []
+    tool_calls = [
+        json.loads(line)
+        for line in (result.episode_path / "tool-calls.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["tool_name"] for record in tool_calls] == ["apply_patch_set", "shell"]
 
 
 def test_orchestrator_does_not_finalize_after_unmatched_shell_success(

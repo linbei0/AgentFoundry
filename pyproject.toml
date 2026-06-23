@@ -32,4 +32,5 @@ markers = [
     "workflow: cross-module runtime or CLI workflow tests",
     "slow: timeout or intentionally slower tests",
     "smoke: smoke-style tests that should be easy to deselect during fast local runs",
+    "real_llm: manual tests that call a real model and are skipped unless --real-llm is provided",
 ]

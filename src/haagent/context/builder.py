@@ -33,6 +33,14 @@ CONTEXT_CHARACTER_LIMIT = 12000
 PROJECT_INSTRUCTIONS_CHAR_LIMIT = 2000
 SESSION_SUMMARY_CHAR_LIMIT = 1000
 AUDIT_SOURCE_EXCLUSION_REASON = "Audit evidence is stored in the episode and is not sent to the model by default."
+TOOL_WORKFLOW_HINTS = [
+    "Prefer context_find before file_search when the user describes functionality without paths.",
+    "After context_find, use file_read on the most relevant candidate before editing.",
+    "Use apply_patch_set for related edits across multiple files or multiple replacements.",
+    "Use apply_patch only for a single isolated replacement.",
+    'Use workspace-relative paths in tool arguments; use cwd=\'.\' or omit cwd for the workspace root.',
+    "After file changes, read changed files or run verification before claiming completion.",
+]
 
 
 class ContextBuildError(RuntimeError):
@@ -138,6 +146,8 @@ class ContextBuilder:
                     f"- {tool}: {TOOL_REGISTRY[tool].description}"
                     for tool in self._task.allowed_tools
                 ],
+                "tool_workflow:",
+                *_format_list(self._tool_workflow_hints()),
                 "acceptance_criteria:",
                 *_format_list(self._task.acceptance_criteria),
                 "verification_commands:",
@@ -161,6 +171,12 @@ class ContextBuilder:
             ContextSource("task", "goal", "Goal from task.yaml", "The model needs the task goal."),
             ContextSource("task", "constraints", "Constraints from task.yaml", "The model must obey task constraints."),
             ContextSource("task", "allowed_tools", "Allowed tools from task.yaml", "The model needs the allowed tool list."),
+            ContextSource(
+                "tool_workflow",
+                "editing_workflow",
+                "Concise tool sequencing guidance",
+                "The model needs stable guidance for context discovery, editing, and verification.",
+            ),
             ContextSource(
                 "task",
                 "acceptance_criteria",
@@ -254,6 +270,8 @@ class ContextBuilder:
             return "\n".join(["Session Summary:", *self._format_session_summary()])
         if source.source_type == "task":
             return _task_source_content(source.name, self._task)
+        if source.source_type == "tool_workflow":
+            return "\n".join(["tool_workflow:", *_format_list(self._tool_workflow_hints())])
         if source.source_type == "tool_catalog":
             return f"- {source.name}: {TOOL_REGISTRY[source.name].description}"
         if source.source_type == "plan":
@@ -370,6 +388,21 @@ class ContextBuilder:
         if self._plan is None:
             return ["- none"]
         return _format_list(self._plan["planned_steps"])
+
+    def _tool_workflow_hints(self) -> list[str]:
+        allowed_tools = set(self._task.allowed_tools)
+        hints: list[str] = []
+        if {"context_find", "file_read"} <= allowed_tools:
+            hints.extend(TOOL_WORKFLOW_HINTS[:2])
+        if "apply_patch_set" in allowed_tools:
+            hints.append(TOOL_WORKFLOW_HINTS[2])
+        if "apply_patch" in allowed_tools:
+            hints.append(TOOL_WORKFLOW_HINTS[3])
+        if allowed_tools & {"shell", "code_run"}:
+            hints.append(TOOL_WORKFLOW_HINTS[4])
+        if allowed_tools & {"file_write", "apply_patch", "apply_patch_set"}:
+            hints.append(TOOL_WORKFLOW_HINTS[5])
+        return hints or ["Use the allowed tools only as needed for the task."]
 
     def _read_project_instructions(self) -> str | None:
         path = self._workspace_root / "AGENTS.md"

@@ -320,7 +320,7 @@ class RunOrchestrator:
                 if _all_declared_verification_commands_passed(
                     task.verification_commands,
                     passed_verification_commands,
-                ):
+                ) or _in_band_verification_passed_after_file_change(guidance_state):
                     observations = list(completion_observations)
                     final_response_requested = True
             else:
@@ -408,6 +408,10 @@ def _verification_loop_limit_evidence(max_turns: int, verification_result) -> st
         f"verification did not pass before max_turns={max_turns}\n"
         f"{_verification_evidence(verification_result)}"
     )
+
+
+def _in_band_verification_passed_after_file_change(guidance_state: LoopGuidanceState) -> bool:
+    return guidance_state.has_file_change and guidance_state.has_verification_evidence
 
 
 def _record_guidance(

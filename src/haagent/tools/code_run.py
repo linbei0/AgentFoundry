@@ -88,8 +88,6 @@ def code_run(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
 def _resolve_cwd(cwd_arg: str | None, workspace_root: Path) -> Path | dict[str, Any]:
     if cwd_arg in (None, "."):
         cwd_arg = "."
-    elif Path(cwd_arg).is_absolute():
-        return tool_error("tool_argument_invalid", f"cwd must be relative to workspace_root; {CWD_GUIDANCE}")
 
     cwd = resolve_workspace_path(cwd_arg, workspace_root)
     if cwd is None:

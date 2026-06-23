@@ -59,6 +59,28 @@ def test_guidance_for_successful_context_find_selects_candidate_to_read() -> Non
     assert "src/app.py" in guidance.message
 
 
+def test_guidance_for_file_read_after_file_change_pushes_final_answer() -> None:
+    state = LoopGuidanceState(has_file_change=True)
+
+    guidance = guidance_for_observation(
+        {
+            "tool_name": "file_read",
+            "args": {"path": "README.md"},
+            "result": {
+                "status": "success",
+                "path": "README.md",
+                "content": "# Demo\n\nTiny demo.\n\nTiny project.\n",
+            },
+        },
+        state,
+    )
+
+    assert guidance is not None
+    assert "If the read-back content satisfies the request" in guidance.message
+    assert "produce the final answer" in guidance.message
+    assert "do not keep editing" in guidance.message
+
+
 def test_guidance_for_empty_context_find_changes_keywords_or_asks_user() -> None:
     guidance = guidance_for_observation(
         {

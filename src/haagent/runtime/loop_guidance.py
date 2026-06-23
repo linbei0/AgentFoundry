@@ -55,6 +55,7 @@ def guidance_for_observation(
             tool_name=tool_name,
         )
     if status == "success":
+        had_file_change = state.has_file_change
         state.consecutive_failures = 0
         state.successful_tool_count += 1
         state.successful_tool_names.append(tool_name)
@@ -62,9 +63,15 @@ def guidance_for_observation(
             state.has_file_change = True
         if tool_name in {"shell", "code_run"} and result.get("exit_code") == 0:
             state.has_verification_evidence = True
+        guidance = _success_guidance(tool_name, args, result)
+        if tool_name == "file_read" and had_file_change:
+            guidance = (
+                "If the read-back content satisfies the request, produce the final answer now; "
+                "do not keep editing or repeat file_read. Otherwise make one specific next fix."
+            )
         return LoopGuidance(
             status="continue",
-            message=_limit(_success_guidance(tool_name, args, result)),
+            message=_limit(guidance),
             trigger="tool_success",
             tool_name=tool_name,
         )

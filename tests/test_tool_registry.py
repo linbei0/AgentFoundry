@@ -100,7 +100,7 @@ def test_context_find_schema_supports_natural_language_lookup() -> None:
     schemas = export_tool_schemas(["context_find"])
     schema = schemas[0]
 
-    assert schema["description"] == "find relevant workspace files and snippets from a natural language query"
+    assert "primary choice" in schema["description"]
     assert schema["parameters"]["required"] == ["query"]
     assert set(schema["parameters"]["properties"]) == {"query", "file_glob", "max_results", "max_chars"}
     assert TOOL_REGISTRY["context_find"].risk_level == "low"
@@ -138,6 +138,7 @@ def test_apply_patch_set_schema_describes_atomic_replacements() -> None:
     schema = schemas[0]
 
     assert "atomically" in schema["description"]
+    assert "Prefer this over repeated apply_patch calls" in schema["description"]
     assert schema["parameters"]["required"] == ["replacements"]
     assert schema["parameters"]["properties"]["replacements"]["type"] == "array"
     assert TOOL_REGISTRY["apply_patch_set"].risk_level == "high"

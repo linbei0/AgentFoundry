@@ -37,6 +37,7 @@ def run_command(command: str, cwd: Path, timeout_seconds: float) -> CommandResul
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as error:

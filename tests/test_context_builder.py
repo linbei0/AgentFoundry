@@ -108,7 +108,7 @@ def test_context_builder_writes_context_files_and_manifest(tmp_path: Path) -> No
 def test_context_builder_model_input_contains_tool_usage(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     builder = ContextBuilder(
-        task=make_task(),
+        task=make_task(["context_find", "file_read", "apply_patch", "apply_patch_set", "shell"]),
         workspace_root=tmp_path,
         provider_name="fake",
         episode_writer=writer,
@@ -118,8 +118,11 @@ def test_context_builder_model_input_contains_tool_usage(tmp_path: Path) -> None
 
     model_input = (writer.path / "contexts" / "0001.txt").read_text(encoding="utf-8")
     assert "goal: Build context" in model_input
-    assert "fake_tool: deterministic test tool" in model_input
+    assert "context_find: primary choice for locating relevant workspace files" in model_input
     assert "file_read: read a workspace text file with offset, limit, or keyword context" in model_input
+    assert "Prefer context_find before file_search when the user describes functionality without paths." in model_input
+    assert "Use apply_patch_set for related edits across multiple files or multiple replacements." in model_input
+    assert "Use workspace-relative paths in tool arguments; use cwd='.' or omit cwd for the workspace root." in model_input
     assert "verification_commands:" in model_input
     assert "Plan:" in model_input
     assert "Observations:" in model_input

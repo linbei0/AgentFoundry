@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from haagent.cli_inspect import EpisodeInspectError, render_episode_summary
 from haagent.models.gateway import OpenAIChatCompletionsGateway, OpenAIResponsesGateway
 from haagent.models.provider_profile import ProviderProfile, ProviderProfileError, load_provider_profile
 from haagent.runtime.chat_session import AgentSession, CHAT_MAX_TURNS, ChatEvent, ChatTurnResult
+from haagent.runtime.dogfood import render_dogfood_report, run_dogfood_tasks, skipped_dogfood_report
 from haagent.runtime.episode_validator import (
     EpisodeValidationError,
     load_inspect_episode_package,
@@ -138,6 +140,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum model/tool turns per smoke task (default: 12)",
     )
 
+    dogfood_parser = subparsers.add_parser(
+        "dogfood",
+        help="run manual real-model dogfood tasks outside default CI",
+    )
+    dogfood_parser.add_argument(
+        "--runs-root",
+        type=Path,
+        help="directory for dogfood episode packages; defaults to a temporary directory",
+    )
+    dogfood_parser.add_argument(
+        "--profile",
+        help="real provider profile name from .haagent/providers.json",
+    )
+    dogfood_parser.add_argument(
+        "--provider",
+        choices=["openai", "openai-chat"],
+        help="real provider to use when --profile is omitted",
+    )
+    dogfood_parser.add_argument(
+        "--model",
+        help="model name for --provider dogfood runs",
+    )
+    dogfood_parser.add_argument(
+        "--base-url",
+        help="OpenAI-compatible base URL for --provider dogfood runs",
+    )
+    dogfood_parser.add_argument(
+        "--max-turns",
+        type=_positive_int,
+        default=16,
+        help="maximum model/tool turns per dogfood task (default: 16)",
+    )
+    dogfood_parser.add_argument(
+        "--no-auto-approve",
+        action="store_true",
+        help="deny high-risk tool approvals instead of auto-granting them",
+    )
+
     inspect_parser = subparsers.add_parser("inspect", help="inspect an episode package")
     inspect_parser.add_argument("episode_path", type=Path, help="path to an episode directory")
 
@@ -220,6 +260,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "smoke":
         return _handle_smoke(args)
+
+    if args.command == "dogfood":
+        return _handle_dogfood(args)
 
     if args.command == "inspect":
         try:
@@ -334,6 +377,39 @@ def _handle_smoke(args: argparse.Namespace) -> int:
         if result.status != "completed":
             exit_code = 1
     return exit_code
+
+
+def _handle_dogfood(args: argparse.Namespace) -> int:
+    try:
+        model_gateway = _build_dogfood_model_gateway(args)
+    except ProviderProfileError as error:
+        print(render_dogfood_report(skipped_dogfood_report(str(error))))
+        return 0
+    if model_gateway is None:
+        print(render_dogfood_report(skipped_dogfood_report("provide --profile or --provider to run real dogfood")))
+        return 0
+    report = run_dogfood_tasks(
+        model_gateway,
+        runs_root=args.runs_root,
+        max_turns=args.max_turns,
+        auto_approve=not args.no_auto_approve,
+    )
+    print(render_dogfood_report(report))
+    return 0 if report.status == "completed" else 1
+
+
+def _build_dogfood_model_gateway(args: argparse.Namespace):
+    if args.profile is not None:
+        if args.provider is not None or args.model is not None or args.base_url is not None:
+            raise ProviderProfileError(
+                "--profile cannot be combined with --provider, --model, or --base-url",
+            )
+        return _gateway_from_profile(load_provider_profile(args.profile))
+    if args.provider is None:
+        return None
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ProviderProfileError("OPENAI_API_KEY is not set; dogfood skipped")
+    return _build_run_model_gateway(args)
 
 
 def _run_smoke_definition(definition: SmokeDefinition, args: argparse.Namespace) -> SmokeResult:

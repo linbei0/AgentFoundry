@@ -44,6 +44,15 @@ SLOW_NODE_KEYWORDS = {
 }
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--real-llm",
+        action="store_true",
+        default=False,
+        help="run manual real-model dogfood tests; skipped by default",
+    )
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """为测试选择命令提供稳定 marker，不把分层噪音写进每个用例。"""
     for item in items:

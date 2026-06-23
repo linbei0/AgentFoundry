@@ -88,7 +88,10 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "context_find": ToolDefinition(
         name="context_find",
-        description="find relevant workspace files and snippets from a natural language query",
+        description=(
+            "primary choice for locating relevant workspace files and snippets from a natural language "
+            "query when the user describes functionality without paths"
+        ),
         risk_level="low",
         parameters={
             "type": "object",
@@ -242,7 +245,8 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         name="apply_patch_set",
         description=(
             "apply multiple unique text replacements atomically after reading current file context; "
-            "no files are written if any replacement does not match exactly once"
+            "no files are written if any replacement does not match exactly once. "
+            "Prefer this over repeated apply_patch calls for related multi-file or multi-site edits"
         ),
         risk_level="high",
         parameters={
