@@ -87,6 +87,22 @@ def load_provider_profile(
     )
 
 
+def load_provider_profile_record(
+    name: str,
+    *,
+    config_path: Path | None = None,
+) -> ProviderProfileRecord:
+    """读取不含真实 API key 的 provider profile 配置。"""
+    record = _load_profile_record(name, config_path=config_path)
+    return ProviderProfileRecord(
+        name=_required_string(record, "name"),
+        provider=_required_provider(record),
+        base_url=_required_string(record, "base_url"),
+        model=_required_string(record, "model"),
+        api_key_env=_required_string(record, "api_key_env"),
+    )
+
+
 def load_active_provider_profile(
     *,
     environ: Mapping[str, str] | None = None,
@@ -96,6 +112,14 @@ def load_active_provider_profile(
         load_active_profile_name(),
         config_path=user_provider_profile_path(),
         environ=environ,
+    )
+
+
+def load_active_provider_profile_record() -> ProviderProfileRecord:
+    """读取 active profile 的非敏感配置，用于状态展示。"""
+    return load_provider_profile_record(
+        load_active_profile_name(),
+        config_path=user_provider_profile_path(),
     )
 
 
