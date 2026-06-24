@@ -5,6 +5,8 @@ description = "Local personal AI assistant runtime."
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0.0",
+    "rich>=13.0.0",
+    "textual>=0.80.0",
 ]
 
 [project.scripts]

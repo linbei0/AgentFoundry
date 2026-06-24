@@ -20,6 +20,7 @@ from haagent.cli_commands import (
     handle_sessions,
     handle_setup,
     handle_smoke,
+    handle_tui,
 )
 from haagent.cli_runtime import CliRuntime
 
@@ -58,6 +59,15 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
     )
     _add_runs_root(sessions_parser, help_text="directory for assistant session packages (default: .runs)")
     sessions_parser.set_defaults(handler=handle_sessions)
+
+    tui_parser = subparsers.add_parser("tui", help="open the HaAgent terminal UI")
+    tui_parser.add_argument(
+        "--workspace-root",
+        type=Path,
+        help="workspace root for the TUI session (default: current directory)",
+    )
+    _add_runs_root(tui_parser, help_text="directory for assistant session packages (default: .runs)")
+    tui_parser.set_defaults(handler=handle_tui)
 
     run_parser = subparsers.add_parser("run", help="run a task.yaml file")
     run_parser.add_argument("task_yaml", nargs="?", type=Path, help="path to task.yaml")

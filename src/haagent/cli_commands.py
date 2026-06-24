@@ -186,6 +186,15 @@ def handle_sessions(args) -> int:
     return 0
 
 
+def handle_tui(args) -> int:
+    from haagent.app.assistant_service import AssistantService
+    from haagent.tui.app import run_tui
+
+    workspace_root = args.workspace_root if args.workspace_root is not None else Path.cwd()
+    service = AssistantService(workspace_root=workspace_root, runs_root=args.runs_root)
+    return run_tui(service)
+
+
 def handle_smoke(args, runtime: CliRuntime) -> int:
     selected = [
         definition

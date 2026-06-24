@@ -1,0 +1,178 @@
+"""
+tests/test_tui_app.py - HaAgent TUI 垂直切片测试
+
+验证 TUI adapter 通过 AssistantService 风格接口展示状态、运行 prompt 和接收事件。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+
+from haagent import cli
+from haagent.app.assistant_service import AssistantWorkspaceStatus
+from haagent.runtime.chat_session import ChatEvent
+from haagent.tui.app import HaAgentTuiApp
+
+
+class FakeAssistantService:
+    def __init__(
+        self,
+        *,
+        workspace_root: Path,
+        profile_name: str | None = "local",
+        provider: str | None = "openai-chat",
+        model: str | None = "deepseek-chat",
+        api_key_env: str | None = "DEEPSEEK_API_KEY",
+        api_key_available: bool = True,
+        profile_error: str | None = None,
+        block_until_released: bool = False,
+    ) -> None:
+        self.workspace_root = workspace_root
+        self.profile_name = profile_name
+        self.provider = provider
+        self.model = model
+        self.api_key_env = api_key_env
+        self.api_key_available = api_key_available
+        self.profile_error = profile_error
+        self.block_until_released = block_until_released
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.prompts: list[str] = []
+
+    def get_workspace_status(self) -> AssistantWorkspaceStatus:
+        return AssistantWorkspaceStatus(
+            workspace_root=self.workspace_root,
+            runs_root=self.workspace_root / ".runs",
+            profile_name=self.profile_name,
+            provider=self.provider,
+            base_url="https://api.deepseek.com",
+            model=self.model,
+            api_key_env=self.api_key_env,
+            api_key_available=self.api_key_available,
+            profile_error=self.profile_error,
+            current_session_id="session-test",
+            current_turn_count=len(self.prompts),
+        )
+
+    def run_prompt_events(self, prompt: str, *, event_sink=None):
+        self.prompts.append(prompt)
+        self.started.set()
+        if self.block_until_released:
+            self.release.wait(timeout=2)
+        if event_sink is not None:
+            event_sink(
+                ChatEvent(
+                    event_type="assistant_message",
+                    session_id="session-test",
+                    turn_index=len(self.prompts),
+                    message="assistant message",
+                    payload={"content": f"assistant: {prompt}"},
+                ),
+            )
+        return SimpleNamespace(status="completed")
+
+
+def _text(app: HaAgentTuiApp, selector: str) -> str:
+    return str(app.query_one(selector).content)
+
+
+def test_tui_parser_accepts_explicit_command() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["tui", "--workspace-root", "workspace", "--runs-root", "runs"])
+
+    assert args.command == "tui"
+    assert args.workspace_root == Path("workspace")
+    assert args.runs_root == Path("runs")
+
+
+def test_tui_app_starts_and_shows_status(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)):
+            status = _text(app, "#status-bar")
+            side = _text(app, "#side-bar")
+            assert str(tmp_path) in status
+            assert "profile: local" in status
+            assert "openai-chat/deepseek-chat" in status
+            assert "key: ok" in status
+            assert "DEEPSEEK_API_KEY" in status
+            assert "session-test" in status
+            assert "Profile" in side
+            assert "base_url: https://api.deepseek.com" in side
+
+    asyncio.run(run())
+
+
+def test_tui_profile_missing_shows_setup_message(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            profile_name=None,
+            provider=None,
+            model=None,
+            api_key_env=None,
+            api_key_available=False,
+            profile_error="未找到默认模型配置，请先运行 haagent setup",
+        )
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)):
+            conversation = _text(app, "#conversation")
+            assert "未找到默认模型配置" in conversation
+            assert "uv run haagent setup" in conversation
+
+    asyncio.run(run())
+
+
+def test_tui_api_key_missing_shows_env_name(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, api_key_available=False)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)):
+            status = _text(app, "#status-bar")
+            conversation = _text(app, "#conversation")
+            assert "key: missing" in status
+            assert "DEEPSEEK_API_KEY" in status
+            assert "DEEPSEEK_API_KEY" in conversation
+
+    asyncio.run(run())
+
+
+def test_tui_submit_prompt_calls_service_and_renders_assistant_event(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "Summarize this folder"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert service.prompts == ["Summarize this folder"]
+            conversation = _text(app, "#conversation")
+            assert "You" in conversation
+            assert "Summarize this folder" in conversation
+            assert "assistant: Summarize this folder" in conversation
+
+    asyncio.run(run())
+
+
+def test_tui_running_state_does_not_block_ui(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, block_until_released=True)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "Long task"
+            await pilot.press("enter")
+            await asyncio.to_thread(service.started.wait, 2)
+            assert "state: running" in _text(app, "#status-bar")
+            assert app.query_one("#prompt-input") is input_widget
+            service.release.set()
+            await pilot.pause(0.2)
+            assert "state: idle" in _text(app, "#status-bar")
+
+    asyncio.run(run())
