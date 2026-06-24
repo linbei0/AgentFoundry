@@ -10,9 +10,10 @@ from pathlib import Path
 import yaml
 
 from haagent import cli
+from haagent.cli_render import print_chat_event
 from haagent.models.gateway import ModelResponse, ToolCall
 from haagent.runtime import chat_session
-from haagent.runtime.chat_session import AgentSession, ChatSessionError
+from haagent.runtime.chat_session import AgentSession, ChatEvent, ChatSessionError
 from haagent.runtime.human_interaction import HumanInteractionResponse
 from haagent.runtime.task_contract import load_task
 
@@ -30,6 +31,16 @@ class RecordingGateway:
         if task.goal == "first" and not observations:
             return ModelResponse("listing", [ToolCall("file_list", {})])
         return ModelResponse(f"done: {task.goal}", [])
+
+
+class LongAnswerGateway:
+    provider_name = "long-answer"
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def generate(self, task, model_input, tool_schemas, observations):
+        return ModelResponse(self.content, [])
 
 
 class WriteThenDoneGateway:
@@ -794,6 +805,43 @@ def test_agent_session_events_show_single_turn_order_and_tool_success(tmp_path: 
     assert events[5].payload["result_summary"]["bytes_written"] == len("SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT")
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "SECRET_WRITE_CONTENT_SHOULD_NOT_PRINT"
     assert (result.episode_path / "tool-calls.jsonl").exists()
+
+
+def test_agent_session_assistant_message_event_payload_keeps_full_content(tmp_path: Path) -> None:
+    long_answer = "HaAgent 可以做很多事。" * 80
+    events = []
+    session = AgentSession(
+        workspace_root=tmp_path,
+        runs_root=tmp_path / ".runs",
+        model_gateway=LongAnswerGateway(long_answer),
+        max_turns=20,
+    )
+
+    result = session.run_prompt_events("介绍能力", event_sink=events.append)
+
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert result.status == "completed"
+    assert result.final_response == long_answer
+    assert assistant_event.payload["content"] == long_answer
+    assert "[truncated]" not in str(assistant_event.payload["content"])
+    assert "[truncated]" in assistant_event.message
+
+
+def test_print_chat_event_summarizes_long_assistant_message(capsys) -> None:
+    long_answer = "HaAgent 可以做很多事。" * 80
+    print_chat_event(
+        ChatEvent(
+            event_type="assistant_message",
+            session_id="session-test",
+            turn_index=1,
+            message="short summary",
+            payload={"content": long_answer},
+        ),
+    )
+
+    output = capsys.readouterr().out
+    assert "[truncated]" in output
+    assert long_answer not in output
 
 
 def test_agent_session_user_input_request_continues_with_answer(tmp_path: Path) -> None:

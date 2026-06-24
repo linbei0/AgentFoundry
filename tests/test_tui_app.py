@@ -15,6 +15,7 @@ from haagent import cli
 from haagent.app.assistant_service import AssistantWorkspaceStatus
 from haagent.runtime.chat_session import ChatEvent
 from haagent.tui.app import HaAgentTuiApp
+from textual.widgets import RichLog
 
 
 class FakeAssistantService:
@@ -33,6 +34,7 @@ class FakeAssistantService:
         credential_store_error: str | None = None,
         profile_error: str | None = None,
         block_until_released: bool = False,
+        assistant_content: str | None = None,
         failure_event: ChatEvent | None = None,
     ) -> None:
         self.workspace_root = workspace_root
@@ -47,6 +49,7 @@ class FakeAssistantService:
         self.credential_store_error = credential_store_error
         self.profile_error = profile_error
         self.block_until_released = block_until_released
+        self.assistant_content = assistant_content
         self.failure_event = failure_event
         self.started = threading.Event()
         self.release = threading.Event()
@@ -86,14 +89,17 @@ class FakeAssistantService:
                     session_id="session-test",
                     turn_index=len(self.prompts),
                     message="assistant message",
-                    payload={"content": f"assistant: {prompt}"},
+                    payload={"content": self.assistant_content or f"assistant: {prompt}"},
                 ),
             )
         return SimpleNamespace(status="completed")
 
 
 def _text(app: HaAgentTuiApp, selector: str) -> str:
-    return str(app.query_one(selector).content)
+    widget = app.query_one(selector)
+    if isinstance(widget, RichLog):
+        return "\n".join("".join(segment.text for segment in line) for line in widget.lines)
+    return str(widget.content)
 
 
 def test_tui_parser_accepts_explicit_command() -> None:
@@ -121,7 +127,7 @@ def test_tui_app_starts_and_shows_status(tmp_path: Path) -> None:
             assert "session-test" in status
             assert "Profile" in side
             assert "base_url: https://api.deepseek.com" in side
-            assert "Ctrl+Q 退出" in str(app.query_one("#conversation").render())
+            assert "Ctrl+Q 退出" in _text(app, "#conversation")
             footer = _text(app, "#footer-bar")
             assert "[Ctrl+Q]退出" in footer
             assert "[q]退出" not in footer
@@ -236,6 +242,62 @@ def test_tui_submit_prompt_calls_service_and_renders_assistant_event(tmp_path: P
     asyncio.run(run())
 
 
+def test_tui_conversation_auto_scrolls_to_latest_content(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(80, 12)) as pilot:
+            conversation = app.query_one("#conversation")
+            for index in range(30):
+                app._append_block("Assistant", f"line {index}")
+            app._refresh_conversation()
+            await pilot.pause()
+            assert conversation.max_scroll_y > 0
+            assert conversation.scroll_y == conversation.max_scroll_y
+            assert "line 29" in _text(app, "#conversation")
+
+    asyncio.run(run())
+
+
+def test_tui_conversation_wraps_long_messages_for_scroll_height(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 20)) as pilot:
+            conversation = app.query_one("#conversation")
+            long_reply = (
+                "# 我能做什么？ 我是 **HaAgent**，一个运行在当前工作目录下的本地个人 AI 助手。"
+                "我可以读取文件、整理内容、编辑文档、分析项目、运行命令，并支持多轮对话。"
+            ) * 8
+            app._append_block("Assistant", long_reply)
+            app._refresh_conversation()
+            await pilot.pause()
+            longest_line = max(len(line) for line in _text(app, "#conversation").splitlines())
+            assert longest_line <= conversation.content_size.width
+            assert conversation.virtual_size.height > len(app._conversation_lines)
+            assert conversation.scroll_y == conversation.max_scroll_y
+
+    asyncio.run(run())
+
+
+def test_tui_renders_full_long_assistant_message_from_event_sink(tmp_path: Path) -> None:
+    async def run() -> None:
+        long_reply = ("HaAgent 可以读取文件、整理内容、编辑文档、分析项目。" * 40) + "完整结尾"
+        service = FakeAssistantService(workspace_root=tmp_path, assistant_content=long_reply)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 20)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "介绍能力"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            conversation = _text(app, "#conversation")
+            assert "[truncated]" not in conversation
+            assert "完整结尾" in conversation
+            assert app.query_one("#conversation").scroll_y == app.query_one("#conversation").max_scroll_y
+
+    asyncio.run(run())
+
+
 def test_tui_failure_event_shows_reason_episode_and_sidebar_summary(tmp_path: Path) -> None:
     async def run() -> None:
         episode_path = tmp_path / ".runs" / "episode-failed"
@@ -267,7 +329,7 @@ def test_tui_failure_event_shows_reason_episode_and_sidebar_summary(tmp_path: Pa
             assert "stage=executing" in conversation
             assert "category=Loop Limit Failure" in conversation
             assert "reason=exceeded max_turns=20" in conversation
-            assert str(episode_path) in conversation
+            assert str(episode_path) in conversation.replace("\n", "")
             assert "Last Failure" in side
             assert "Loop Limit Failure" in side
             assert str(episode_path) in side

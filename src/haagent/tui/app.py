@@ -12,7 +12,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Input, Static
+from textual.widgets import Input, RichLog, Static
 
 from haagent.app.assistant_service import AssistantService, AssistantWorkspaceStatus
 from haagent.runtime.chat_session import ChatEvent
@@ -74,6 +74,8 @@ class HaAgentTuiApp(App[None]):
         ("ctrl+q", "quit", "退出"),
         ("q", "quit", "退出"),
         ("?", "help", "帮助"),
+        ("pageup", "conversation_page_up", "上翻"),
+        ("pagedown", "conversation_page_down", "下翻"),
     ]
 
     def __init__(self, service: AssistantService) -> None:
@@ -81,17 +83,19 @@ class HaAgentTuiApp(App[None]):
         self.service = service
         self._state = "idle"
         self._conversation_lines: list[str] = []
+        self._conversation_rendered_count = 0
+        self._conversation_placeholder_rendered = False
         self._tool_lines: list[str] = []
         self._last_failure: dict[str, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="status-bar")
         with Horizontal(id="main"):
-            yield Static("", id="conversation")
+            yield RichLog(id="conversation", wrap=True, auto_scroll=True)
             yield Static("", id="side-bar")
         with Vertical(id="input-panel"):
             yield Input(placeholder="输入 prompt，Enter 发送", id="prompt-input")
-        yield Static(Text("[Enter]发送 [Tab]焦点 [?]帮助 [Ctrl+Q]退出"), id="footer-bar")
+        yield Static(Text("[Enter]发送 [PgUp/PgDn]滚动 [Tab]焦点 [?]帮助 [Ctrl+Q]退出"), id="footer-bar")
 
     def on_mount(self) -> None:
         self._show_initial_configuration_state()
@@ -118,6 +122,12 @@ class HaAgentTuiApp(App[None]):
 
     def action_quit(self) -> None:
         self.exit(None)
+
+    def action_conversation_page_up(self) -> None:
+        self.query_one("#conversation", RichLog).scroll_page_up(animate=False, force=True)
+
+    def action_conversation_page_down(self) -> None:
+        self.query_one("#conversation", RichLog).scroll_page_down(animate=False, force=True)
 
     @work(thread=True, exclusive=True)
     def _run_prompt(self, prompt: str) -> None:
@@ -212,8 +222,25 @@ class HaAgentTuiApp(App[None]):
         self.query_one("#side-bar", Static).update(self._side_bar(status))
 
     def _refresh_conversation(self) -> None:
-        content = "\n".join(self._conversation_lines) if self._conversation_lines else "Ready. 输入 prompt 后按 Enter 发送；Ctrl+Q 退出。"
-        self.query_one("#conversation", Static).update(Text(content))
+        conversation = self.query_one("#conversation", RichLog)
+        if not self._conversation_lines:
+            if not self._conversation_placeholder_rendered:
+                conversation.clear()
+                conversation.write(Text("Ready. 输入 prompt 后按 Enter 发送；Ctrl+Q 退出。"), scroll_end=True, animate=False)
+                self._conversation_placeholder_rendered = True
+            return
+        if self._conversation_placeholder_rendered or self._conversation_rendered_count > len(self._conversation_lines):
+            conversation.clear()
+            self._conversation_rendered_count = 0
+            self._conversation_placeholder_rendered = False
+        for line in self._conversation_lines[self._conversation_rendered_count :]:
+            conversation.write(Text(line), scroll_end=True, animate=False)
+        self._conversation_rendered_count = len(self._conversation_lines)
+        self.call_after_refresh(self._scroll_conversation_to_end)
+
+    def _scroll_conversation_to_end(self) -> None:
+        conversation = self.query_one("#conversation", RichLog)
+        conversation.scroll_to(y=conversation.max_scroll_y, animate=False, immediate=True, force=True)
 
     def _status_line(self, status: AssistantWorkspaceStatus) -> str:
         profile = status.profile_name or "missing"

@@ -137,7 +137,7 @@ def print_chat_event(event: ChatEvent) -> None:
     elif event.event_type == "assistant_message":
         content = event.payload.get("content")
         if content:
-            pieces.append(f"message={shell_token(str(content))}")
+            pieces.append(f"message={shell_token(summary_value(str(content)))}")
     elif event.event_type == "guardrail_triggered":
         for key in ["scope", "rule_id", "severity", "message"]:
             value = event.payload.get(key)

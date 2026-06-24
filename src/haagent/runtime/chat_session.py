@@ -574,7 +574,7 @@ def _runtime_event_payload(event_type: str, payload: dict[str, object]) -> dict[
     if event_type == "assistant_message":
         return {
             "model_turn": payload.get("turn"),
-            "content": _summary_value(str(payload.get("content", ""))),
+            "content": str(payload.get("content", "")),
         }
     if event_type == "guardrail_triggered":
         return {
