@@ -159,10 +159,10 @@ def format_working_state_for_model(value: object) -> str:
         return ""
     lines = [
         "Working State:",
-        f"current_goal: {state.current_goal or 'none'}",
-        "key_findings:",
+        f"last_user_request: {state.current_goal or 'none'}",
+        "assistant_findings:",
         *_format_list(state.key_findings),
-        "completed_actions:",
+        "assistant_actions:",
         *_format_list(state.completed_actions),
         "next_steps:",
         *_format_list(state.next_steps),
@@ -185,7 +185,7 @@ def _state_from_value(value: object) -> WorkingState:
 def _tool_action_summary(event: dict[str, object]) -> str:
     tool_name = str(event.get("tool_name", "unknown"))
     result = event.get("result") if isinstance(event.get("result"), dict) else {}
-    parts = [f"tool {tool_name}", f"status={result.get('status', 'unknown')}"]
+    parts = [f"actor=assistant", f"tool={tool_name}", f"status={result.get('status', 'unknown')}"]
     if tool_name in {"shell", "code_run"} and result.get("exit_code") is not None:
         parts.append(f"exit_code={result.get('exit_code')}")
     if tool_name in {"file_read", "file_write", "apply_patch"} and result.get("path"):
@@ -199,7 +199,7 @@ def _tool_failure_summary(event: dict[str, object]) -> str:
     tool_name = str(event.get("tool_name", "unknown"))
     error = event.get("error") if isinstance(event.get("error"), dict) else {}
     error_type = str(error.get("type", "unknown"))
-    return _bounded_text(f"tool {tool_name} failed type={error_type}")
+    return _bounded_text(f"actor=assistant tool={tool_name} status=failed type={error_type}")
 
 
 def _next_steps_from_result(result: Any) -> list[str]:

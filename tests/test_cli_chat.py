@@ -600,7 +600,9 @@ def test_agent_session_resume_restores_working_state_into_next_context(tmp_path:
         (second.episode_path / "contexts" / "0001.json").read_text(encoding="utf-8"),
     )
     assert "Working State:" in model_input
-    assert "current_goal: first" in model_input
+    assert "last_user_request: first" in model_input
+    assert "assistant_actions:" in model_input
+    assert "actor=assistant tool=file_list status=success" in model_input
     assert "tool-calls.jsonl" not in model_input
     assert '"event": "model_call"' not in model_input
     assert any(source["source_type"] == "working_state" for source in context_manifest["sources"])

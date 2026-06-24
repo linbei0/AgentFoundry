@@ -224,12 +224,38 @@ def test_context_builder_includes_bounded_working_state_source_and_budget(tmp_pa
         source for source in context_manifest["sources"] if source["source_type"] == "working_state"
     )
     assert "Working State:" in result.model_input
-    assert "current_goal: Understand the project" in result.model_input
+    assert "last_user_request: Understand the project" in result.model_input
     assert "- README explains setup" in result.model_input
     assert working_state_source["name"] == "working_state"
     assert working_state_source["budget"]["included_in_model_input"] is True
     assert working_state_source["budget"]["model_input_char_count"] <= 1200
     assert _has_complete_budget(working_state_source)
+
+
+def test_context_builder_labels_prior_tool_actions_as_assistant_actions(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    working_state = {
+        "current_goal": "介绍这个项目",
+        "key_findings": ["HaAgent 是本地个人 AI 助手。"],
+        "completed_actions": ["actor=assistant tool=file_read status=success path=docs/harness-requirements.md"],
+        "next_steps": ["Continue from this completed chat turn if the user asks a follow-up."],
+        "last_updated_turn": 1,
+    }
+    builder = ContextBuilder(
+        task=make_task(),
+        workspace_root=tmp_path,
+        provider_name="fake",
+        episode_writer=writer,
+        session_summary='- user_request: "介绍这个项目"\n  assistant_final_response: HaAgent 是本地个人 AI 助手。',
+        working_state=working_state,
+    )
+
+    result = builder.build()
+
+    assert "Session Summary:" in result.model_input
+    assert "user_request" in result.model_input
+    assert "assistant_actions:" in result.model_input
+    assert "actor=assistant tool=file_read status=success path=docs/harness-requirements.md" in result.model_input
 
 
 def test_context_builder_truncates_long_working_state_and_excludes_trace_text(tmp_path: Path) -> None:

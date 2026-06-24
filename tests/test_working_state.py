@@ -62,7 +62,44 @@ def test_working_state_update_summarizes_turn_without_full_tool_output(tmp_path)
     assert updated.key_findings
     assert secret_output not in model_text
     assert secret_output not in raw_text
-    assert "tool shell status=success exit_code=0" in model_text
+    assert "assistant_actions:" in model_text
+    assert "actor=assistant tool=shell status=success exit_code=0" in model_text
+
+
+def test_working_state_distinguishes_user_request_from_assistant_tool_actions(tmp_path) -> None:
+    state = empty_working_state()
+    result = ChatTurnResult(
+        session_id="session-test",
+        turn_index=1,
+        status="completed",
+        episode_path=tmp_path / ".runs" / "episode",
+        provider="fake",
+        final_response="Summarized the project.",
+        verification_status="not_run",
+    )
+
+    updated = update_working_state(
+        state,
+        prompt="介绍这个项目",
+        result=result,
+        runtime_events=[
+            {
+                "event_type": "tool_finished",
+                "tool_name": "file_read",
+                "result": {
+                    "status": "success",
+                    "path": "docs/harness-requirements.md",
+                },
+            },
+        ],
+    )
+
+    model_text = format_working_state_for_model(updated)
+
+    assert "last_user_request: 介绍这个项目" in model_text
+    assert "assistant_actions:" in model_text
+    assert "actor=assistant tool=file_read status=success path=docs/harness-requirements.md" in model_text
+    assert "user viewed" not in model_text
 
 
 def test_working_state_model_text_is_bounded() -> None:

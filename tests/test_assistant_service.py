@@ -251,6 +251,7 @@ def test_run_prompt_events_forwards_chat_events(tmp_path: Path, monkeypatch) -> 
 def test_session_creation_requires_usable_active_profile(tmp_path: Path, monkeypatch) -> None:
     _set_home(monkeypatch, tmp_path / "home")
     _write_user_profile(Path.home())
+    monkeypatch.setattr(provider_profile, "DEFAULT_CREDENTIAL_STORE", FakeCredentialStore({}))
     service = _service(tmp_path)
 
     with pytest.raises(AssistantServiceError, match="DEEPSEEK_API_KEY"):

@@ -16,7 +16,7 @@
     },
     "context_contains": [
       "Working State:",
-      "current_goal:",
+      "last_user_request:",
       "last_updated_turn: 1"
     ],
     "context_not_contains": [

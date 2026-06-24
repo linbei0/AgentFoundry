@@ -456,10 +456,10 @@ def _write_chat_task_yaml(path: Path, request: str, workspace_root: Path) -> Non
 def _turn_summary(prompt: str, result: ChatTurnResult) -> str:
     return "\n".join(
         [
-            f"- request: {_summary_value(prompt, 160)}",
+            f"- user_request: {_summary_value(prompt, 160)}",
             f"  status: {result.status}",
             f"  episode_path: {result.episode_path}",
-            f"  final_response: {_summary_value(result.final_response, 220)}",
+            f"  assistant_final_response: {_summary_value(result.final_response, 220)}",
             f"  verification: {result.verification_status}",
         ],
     )
