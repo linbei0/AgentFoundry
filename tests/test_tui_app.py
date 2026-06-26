@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from haagent import cli
 from haagent.app.assistant_service import AssistantWorkspaceStatus
+from haagent.memory import CandidateEvidence, MemoryCandidate, MemoryRecord
 from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
 from haagent.tui.app import HaAgentTuiApp
@@ -39,6 +40,8 @@ class FakeAssistantService:
         failure_event: ChatEvent | None = None,
         interaction_request: HumanInteractionRequest | None = None,
         extra_events: list[ChatEvent] | None = None,
+        memory_candidates: list[MemoryCandidate] | None = None,
+        memory_error: Exception | None = None,
     ) -> None:
         self.workspace_root = workspace_root
         self.profile_name = profile_name
@@ -56,10 +59,14 @@ class FakeAssistantService:
         self.failure_event = failure_event
         self.interaction_request = interaction_request
         self.extra_events = list(extra_events or [])
+        self.memory_candidates = list(memory_candidates or [])
+        self.memory_error = memory_error
         self.started = threading.Event()
         self.release = threading.Event()
         self.prompts: list[str] = []
         self.interaction_responses: list[HumanInteractionResponse] = []
+        self.confirmed_candidate_ids: list[str] = []
+        self.rejected_candidate_ids: list[tuple[str, str]] = []
 
     def get_workspace_status(self) -> AssistantWorkspaceStatus:
         return AssistantWorkspaceStatus(
@@ -130,6 +137,48 @@ class FakeAssistantService:
                 ),
             )
         return SimpleNamespace(status="completed")
+
+    def list_memory_candidates(self, status: str | None = "pending") -> list[MemoryCandidate]:
+        if self.memory_error is not None:
+            raise self.memory_error
+        if status is None:
+            return list(self.memory_candidates)
+        return [candidate for candidate in self.memory_candidates if candidate.status == status]
+
+    def get_memory_candidate(self, candidate_id: str) -> MemoryCandidate:
+        if self.memory_error is not None:
+            raise self.memory_error
+        for candidate in self.memory_candidates:
+            if candidate.candidate_id == candidate_id:
+                return candidate
+        raise RuntimeError(f"memory candidate not found: {candidate_id}")
+
+    def confirm_memory_candidate(self, candidate_id: str) -> MemoryRecord:
+        candidate = self.get_memory_candidate(candidate_id)
+        self.confirmed_candidate_ids.append(candidate_id)
+        self.memory_candidates = [item for item in self.memory_candidates if item.candidate_id != candidate_id]
+        return MemoryRecord(
+            memory_id="mem_" + candidate_id,
+            scope=candidate.scope,
+            category=candidate.category,
+            title=candidate.title,
+            body=candidate.body,
+            evidence=candidate.evidence,
+            source_candidate_id=candidate.candidate_id,
+            content_hash="hash",
+            created_at="2026-06-26T00:00:00+00:00",
+            updated_at="2026-06-26T00:00:00+00:00",
+            tags=list(candidate.tags),
+        )
+
+    def reject_memory_candidate(self, candidate_id: str, reason: str) -> MemoryCandidate:
+        candidate = self.get_memory_candidate(candidate_id)
+        self.rejected_candidate_ids.append((candidate_id, reason))
+        self.memory_candidates = [item for item in self.memory_candidates if item.candidate_id != candidate_id]
+        raw = candidate.to_dict()
+        raw["status"] = "rejected"
+        raw["updated_at"] = "2026-06-26T00:00:00+00:00"
+        return MemoryCandidate.from_dict(raw)
 
 
 def _text(app: HaAgentTuiApp, selector: str) -> str:
@@ -213,6 +262,32 @@ def _user_input_request() -> HumanInteractionRequest:
         reason="Need target file",
         risk_level="low",
         args_summary={"question": "Which file should I inspect?", "reason": "Need target file"},
+    )
+
+
+def _memory_candidate(candidate_id: str = "cand_abc123") -> MemoryCandidate:
+    return MemoryCandidate(
+        candidate_id=candidate_id,
+        scope="user",
+        category="user_preferences",
+        title="用户身份与爱好",
+        body="用户叫小明，喜欢唱跳rap篮球。",
+        evidence=CandidateEvidence(
+            source_type="extraction",
+            evidence_summary="用户明确要求记住自己的名字和爱好。",
+            session_id="session-test",
+            turn_index=1,
+            episode_path=".runs/episode-test",
+            source_summary="用户明确要求记住自己的名字和爱好。",
+            basis="用户说：我叫小明，喜欢唱跳rap篮球，记住我的爱好。",
+            category_rationale="这是跨 workspace 可复用的用户偏好和身份信息。",
+        ),
+        source="extraction",
+        status="pending",
+        created_at="2026-06-26T00:00:00+00:00",
+        updated_at="2026-06-26T00:00:00+00:00",
+        tags=["profile"],
+        risk_flags=[],
     )
 
 
@@ -515,6 +590,136 @@ def test_tui_interaction_reused_event_does_not_enter_pending_interaction(tmp_pat
             assert "state: idle" in _text(app, "#status-bar")
 
     asyncio.run(run())
+
+
+def test_tui_memory_candidate_event_shows_notice(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            memory_candidates=[_memory_candidate()],
+            extra_events=[
+                ChatEvent(
+                    event_type="memory_candidates_created",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="memory candidates created",
+                    payload={
+                        "count": 1,
+                        "message": "发现 1 条可记忆候选，已放入候选队列，等待你确认。",
+                    },
+                ),
+            ],
+        )
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "记住我的爱好"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            conversation = _text(app, "#conversation")
+            assert "发现 1 条可记忆候选，已放入候选队列，等待你确认。" in conversation
+            assert "Memory Candidates" in _text(app, "#side-bar")
+            assert "cand_abc123" in _text(app, "#side-bar")
+            assert "[a/y]确认" in _text(app, "#footer-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_memory_panel_lists_and_shows_candidate_details(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            side = _text(app, "#side-bar")
+            footer = _text(app, "#footer-bar")
+            assert "Memory Candidates" in side
+            assert "cand_abc123" in side
+            assert "用户身份与爱好" in side
+            assert "[Enter]详情" in footer
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            side = _text(app, "#side-bar")
+            assert "source_summary: 用户明确要求记住自己的名字和爱好。" in side
+            assert "basis: 用户说：我叫小明，喜欢唱跳rap篮球，记住我的爱好。" in side
+            assert "category_rationale: 这是跨 workspace 可复用的用户偏好和身份信息。" in side
+
+    asyncio.run(run())
+
+
+def test_tui_memory_mode_is_readable_without_sidebar(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(90, 30)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            conversation = _text(app, "#conversation")
+            assert "Memory Candidates" in conversation
+            assert "cand_abc123" in conversation
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            conversation = _text(app, "#conversation")
+            assert "Memory Candidate Detail" in conversation
+            assert "basis: 用户说：我叫小明，喜欢唱跳rap篮球，记住我的爱好。" in conversation
+
+    asyncio.run(run())
+
+
+def test_tui_memory_confirm_uses_service_and_removes_pending_candidate(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            await pilot.press("a")
+            await pilot.pause(0.1)
+            assert service.confirmed_candidate_ids == ["cand_abc123"]
+            assert "Memory confirmed: cand_abc123" in _text(app, "#conversation")
+            assert "no pending candidates" in _text(app, "#side-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_memory_reject_uses_service_and_removes_pending_candidate(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            await pilot.press("r")
+            await pilot.pause(0.1)
+            assert service.rejected_candidate_ids == [("cand_abc123", "rejected from TUI")]
+            assert "Memory rejected: cand_abc123" in _text(app, "#conversation")
+            assert "no pending candidates" in _text(app, "#side-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_memory_panel_shows_empty_and_load_errors(tmp_path: Path) -> None:
+    async def empty_run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            assert "no pending candidates" in _text(app, "#side-bar")
+
+    async def error_run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, memory_error=RuntimeError("queue broken"))
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            assert "Memory candidates unavailable: queue broken" in _text(app, "#conversation")
+
+    asyncio.run(empty_run())
+    asyncio.run(error_run())
 
 
 def test_tui_approval_summary_redacts_secret_like_text(tmp_path: Path) -> None:

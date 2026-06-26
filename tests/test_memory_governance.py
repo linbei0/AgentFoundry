@@ -142,7 +142,7 @@ def test_candidate_requires_evidence(tmp_path: Path) -> None:
         )
 
 
-def test_uncertain_candidate_is_flagged_and_blocked_until_edited(tmp_path: Path) -> None:
+def test_uncertain_words_are_not_phrase_flagged_or_blocked(tmp_path: Path) -> None:
     queue = CandidateQueue(tmp_path / ".runs" / "sessions" / "session-test")
     store = MemoryStore(workspace_root=tmp_path, user_memory_root=tmp_path / "user-memory")
     candidate = store.create_candidate(
@@ -155,17 +155,9 @@ def test_uncertain_candidate_is_flagged_and_blocked_until_edited(tmp_path: Path)
         source="agent_proposed",
     )
 
-    assert "unverified_claim" in candidate.risk_flags
-    with pytest.raises(MemoryGovernanceError, match="unverified_claim"):
-        store.confirm_candidate(queue, candidate.candidate_id)
-
-    record = store.confirm_candidate(
-        queue,
-        candidate.candidate_id,
-        edited_title="Package manager",
-        edited_body="HaAgent uses uv.",
-    )
-    assert record.body == "HaAgent uses uv."
+    assert "unverified_claim" not in candidate.risk_flags
+    record = store.confirm_candidate(queue, candidate.candidate_id)
+    assert record.body == "HaAgent 可能 uses uv."
 
 
 def test_title_body_secret_can_commit_after_safe_user_edit(tmp_path: Path) -> None:

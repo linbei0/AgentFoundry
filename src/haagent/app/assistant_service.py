@@ -34,6 +34,15 @@ from haagent.runtime.chat_session import (
     list_sessions,
 )
 from haagent.runtime.human_interaction import HumanInteractionHandler
+from haagent.memory import (
+    CandidateQueue,
+    CandidateQueueError,
+    MemoryCandidate,
+    MemoryRecord,
+    MemoryStore,
+    MemoryStoreError,
+)
+from haagent.memory.governance import MemoryGovernanceError
 
 
 GatewayFactory = Callable[[ProviderProfile], ModelGateway]
@@ -211,9 +220,50 @@ class AssistantService:
             interaction_handler=interaction_handler,
         )
 
+    def list_memory_candidates(self, status: str | None = "pending") -> list[MemoryCandidate]:
+        queue = self._memory_queue()
+        return queue.list(status=status)
+
+    def get_memory_candidate(self, candidate_id: str) -> MemoryCandidate:
+        return self._memory_queue().get(candidate_id)
+
+    def confirm_memory_candidate(self, candidate_id: str) -> MemoryRecord:
+        try:
+            return self._memory_store().confirm_candidate(
+                self._memory_queue(),
+                candidate_id,
+                actor="user",
+            )
+        except (CandidateQueueError, MemoryStoreError, MemoryGovernanceError) as error:
+            raise AssistantServiceError(str(error)) from error
+
+    def reject_memory_candidate(self, candidate_id: str, reason: str) -> MemoryCandidate:
+        try:
+            return self._memory_store().reject_candidate(
+                self._memory_queue(),
+                candidate_id,
+                reason=reason,
+                actor="user",
+            )
+        except (CandidateQueueError, MemoryStoreError, MemoryGovernanceError) as error:
+            raise AssistantServiceError(str(error)) from error
+
     def _build_model_gateway(self) -> ModelGateway:
         profile = load_active_provider_profile(environ=self.environ)
         return self.gateway_factory(profile)
+
+    def _memory_queue(self) -> CandidateQueue:
+        if self._session is None:
+            latest = find_latest_session(self.runs_root, self.workspace_root)
+            if latest is None:
+                raise AssistantServiceError("当前 workspace 没有可审查的 memory candidate session")
+            session_path = latest.session_path
+        else:
+            session_path = self._session.session_path
+        return CandidateQueue(session_path)
+
+    def _memory_store(self) -> MemoryStore:
+        return MemoryStore(workspace_root=self.workspace_root)
 
 
 def _gateway_from_profile(profile: ProviderProfile) -> ModelGateway:

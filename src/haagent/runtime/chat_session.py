@@ -281,6 +281,17 @@ class AgentSession:
                 memory_extraction_status=extraction_result.status,
                 memory_extraction_reason=extraction_result.reason,
             )
+            self._emit_chat_event(
+                event_sink,
+                event_type="memory_extraction_warning",
+                turn_index=turn_index,
+                message="memory extraction failed",
+                payload={
+                    "status": extraction_result.status,
+                    "reason": extraction_result.reason,
+                    "message": f"Memory extraction failed: {extraction_result.reason}",
+                },
+            )
         if turn_result.status != "completed":
             self._emit_chat_event(
                 event_sink,
@@ -601,12 +612,17 @@ def _runtime_event_payload(event_type: str, payload: dict[str, object]) -> dict[
         }
     if event_type == "tool_failed":
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-        return {
+        result = {
             "model_turn": payload.get("turn"),
             "tool_name": str(payload.get("tool_name", "unknown")),
             "error_type": str(error.get("type", "unknown")),
             "message": _summary_value(str(error.get("message", ""))),
+            "error": {
+                "type": str(error.get("type", "unknown")),
+                "message": _summary_value(str(error.get("message", ""))),
+            },
         }
+        return result
     if event_type in {"approval_requested", "approval_granted", "approval_denied"}:
         args_summary = payload.get("args_summary") if isinstance(payload.get("args_summary"), dict) else {}
         return {

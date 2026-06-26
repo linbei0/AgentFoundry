@@ -14,6 +14,11 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from haagent.memory.path_policy import (
+    MEMORY_STORE_PATH_ERROR,
+    MEMORY_STORE_PATH_MESSAGE,
+    is_workspace_memory_store_path,
+)
 from haagent.tools.base import tool_error
 
 
@@ -250,7 +255,13 @@ def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
         result["suggestions"] = _similar_workspace_paths(path_arg, workspace_root)
         return result
     if not path.is_file():
-        return tool_error("tool_argument_invalid", f"path must be a file: {path_arg}; {PATH_GUIDANCE}")
+        result = tool_error("tool_argument_invalid", f"path must be a file: {path_arg}; {PATH_GUIDANCE}")
+        if path.is_dir():
+            result["suggested_tool"] = {
+                "name": "file_list",
+                "args": {"path": path.relative_to(workspace_root.resolve()).as_posix(), "max_depth": 1},
+            }
+        return result
 
     offset = int(args.get("offset", 0))
     limit = int(args.get("limit", 200))
@@ -301,6 +312,8 @@ def file_write(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     path = resolve_workspace_path(path_arg, workspace_root)
     if path is None:
         return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    if is_workspace_memory_store_path(path, workspace_root):
+        return tool_error(MEMORY_STORE_PATH_ERROR, MEMORY_STORE_PATH_MESSAGE)
     if not path.parent.exists():
         return tool_error("tool_argument_invalid", f"parent directory does not exist: {path_arg}; {PATH_GUIDANCE}")
     if not path.parent.is_dir():
@@ -340,6 +353,8 @@ def apply_patch(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     path = resolve_workspace_path(path_arg, workspace_root)
     if path is None:
         return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    if is_workspace_memory_store_path(path, workspace_root):
+        return tool_error(MEMORY_STORE_PATH_ERROR, MEMORY_STORE_PATH_MESSAGE)
     if not path.exists():
         return tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
     if not path.is_file():
@@ -392,6 +407,15 @@ def apply_patch_set(args: dict[str, Any], workspace_root: Path) -> dict[str, Any
             return _patch_set_error(
                 "tool_argument_invalid",
                 f"path must stay inside workspace_root; {PATH_GUIDANCE}",
+                summaries,
+                replacements,
+                index,
+                path_arg,
+            )
+        if is_workspace_memory_store_path(path, workspace_root):
+            return _patch_set_error(
+                MEMORY_STORE_PATH_ERROR,
+                MEMORY_STORE_PATH_MESSAGE,
                 summaries,
                 replacements,
                 index,

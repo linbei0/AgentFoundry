@@ -264,6 +264,20 @@ def test_file_read_missing_path_returns_short_argument_error(tmp_path: Path) -> 
     assert str(tmp_path) not in result["error"]["message"]
 
 
+def test_file_read_directory_error_suggests_file_list(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_read"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_read", {"path": "src"})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "tool_argument_invalid"
+    assert result["error"]["message"] == "path must be a file: src; path is relative to workspace_root"
+    assert result["suggested_tool"] == {"name": "file_list", "args": {"path": "src", "max_depth": 1}}
+
+
 def test_file_list_defaults_to_workspace_root_and_writes_trace(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
@@ -669,6 +683,295 @@ def test_file_write_denied_before_handler(tmp_path: Path) -> None:
     record = _read_single_tool_call(writer)
     assert record["policy"]["action"] == "deny"
     assert record["policy"]["approval"]["reason"] == "approval not allowed for high risk tool file_write"
+
+
+def test_file_write_blocks_formal_memory_store_path_after_approval(tmp_path: Path) -> None:
+    memory_dir = tmp_path / ".haagent" / "memory"
+    memory_dir.mkdir(parents=True)
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch(
+        "file_write",
+        {
+            "path": ".haagent/memory/facts.jsonl",
+            "content": '{"title":"用户偏好","body":"以后用中文回答。"}\n',
+            "mode": "create",
+        },
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "memory_store_path_denied"
+    assert "候选确认流程" in result["error"]["message"]
+    assert not (memory_dir / "facts.jsonl").exists()
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "file_write"
+    assert record["status"] == "error"
+    assert record["error"]["type"] == "memory_store_path_denied"
+
+
+def test_file_write_allows_profile_named_workspace_file_after_approval(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch(
+        "file_write",
+        {
+            "path": "user_profile.md",
+            "content": "# 用户档案\n\n- 名字：小明\n- 爱好：唱跳rap篮球\n",
+            "mode": "create",
+        },
+    )
+
+    assert result["status"] == "success"
+    assert (tmp_path / "user_profile.md").read_text(encoding="utf-8").startswith("# 用户档案")
+
+
+def test_file_write_allows_memory_named_workspace_file_after_approval(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch(
+        "file_write",
+        {
+            "path": "memory.md",
+            "content": "plain text with no profile vocabulary",
+            "mode": "create",
+        },
+    )
+
+    assert result["status"] == "success"
+    assert (tmp_path / "memory.md").read_text(encoding="utf-8") == "plain text with no profile vocabulary"
+
+
+def test_apply_patch_blocks_formal_memory_store_path(tmp_path: Path) -> None:
+    target = tmp_path / ".haagent" / "memory" / "facts.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text('{"title":"old"}\n', encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["apply_patch"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["apply_patch"],
+        approved_tools=["apply_patch"],
+    )
+
+    result = router.dispatch(
+        "apply_patch",
+        {
+            "path": ".haagent/memory/facts.jsonl",
+            "old_text": '{"title":"old"}\n',
+            "new_text": '{"title":"new"}\n',
+        },
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "memory_store_path_denied"
+    assert target.read_text(encoding="utf-8") == '{"title":"old"}\n'
+
+
+def test_apply_patch_set_blocks_formal_memory_store_path_without_partial_write(tmp_path: Path) -> None:
+    memory_target = tmp_path / ".haagent" / "memory" / "facts.jsonl"
+    memory_target.parent.mkdir(parents=True)
+    memory_target.write_text('{"title":"old"}\n', encoding="utf-8")
+    normal_target = tmp_path / "notes.txt"
+    normal_target.write_text("old normal\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["apply_patch_set"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["apply_patch_set"],
+        approved_tools=["apply_patch_set"],
+    )
+
+    result = router.dispatch(
+        "apply_patch_set",
+        {
+            "replacements": [
+                {"path": "notes.txt", "old_text": "old normal\n", "new_text": "new normal\n"},
+                {
+                    "path": ".haagent/memory/facts.jsonl",
+                    "old_text": '{"title":"old"}\n',
+                    "new_text": '{"title":"new"}\n',
+                },
+            ],
+        },
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "memory_store_path_denied"
+    assert memory_target.read_text(encoding="utf-8") == '{"title":"old"}\n'
+    assert normal_target.read_text(encoding="utf-8") == "old normal\n"
+
+
+def test_shell_does_not_scan_command_for_formal_memory_api_strings(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["shell"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["shell"],
+        approved_tools=["shell"],
+    )
+    calls = []
+
+    def handler(args):
+        calls.append(args)
+        return {"status": "success"}
+
+    router._handlers["shell"] = handler
+
+    result = router.dispatch(
+        "shell",
+        {
+            "command": (
+                "python -c \"from haagent.memory.store import MemoryStore; "
+                "MemoryStore(workspace_root='x').confirm_candidate(queue, 'cand_1')\""
+            ),
+            "timeout_seconds": 5,
+        },
+    )
+
+    assert result["status"] == "success"
+    assert calls == [
+        {
+            "command": (
+                "python -c \"from haagent.memory.store import MemoryStore; "
+                "MemoryStore(workspace_root='x').confirm_candidate(queue, 'cand_1')\""
+            ),
+            "timeout_seconds": 5,
+        }
+    ]
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "shell"
+    assert record["status"] == "success"
+
+
+def test_code_run_does_not_scan_code_for_formal_memory_api_strings(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["code_run"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["code_run"],
+        approved_tools=["code_run"],
+    )
+    calls = []
+
+    def handler(args):
+        calls.append(args)
+        return {"status": "success"}
+
+    router._handlers["code_run"] = handler
+
+    result = router.dispatch(
+        "code_run",
+        {
+            "code": (
+                "from haagent.memory.candidates import CandidateQueue\n"
+                "from haagent.memory.store import MemoryStore\n"
+                "store = MemoryStore(workspace_root='x')\n"
+                "store.create_candidate(CandidateQueue('s'), scope='user', category='facts')\n"
+            ),
+            "timeout_seconds": 5,
+        },
+    )
+
+    assert result["status"] == "success"
+    assert calls == [
+        {
+            "code": (
+                "from haagent.memory.candidates import CandidateQueue\n"
+                "from haagent.memory.store import MemoryStore\n"
+                "store = MemoryStore(workspace_root='x')\n"
+                "store.create_candidate(CandidateQueue('s'), scope='user', category='facts')\n"
+            ),
+            "timeout_seconds": 5,
+        }
+    ]
+
+
+def test_file_write_allows_normal_readme_creation(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch(
+        "file_write",
+        {"path": "README.md", "content": "# Project\n\n普通项目说明。\n", "mode": "create"},
+    )
+
+    assert result["status"] == "success"
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "# Project\n\n普通项目说明。\n"
+
+
+def test_file_write_allows_memory_like_content_in_normal_project_file(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch(
+        "file_write",
+        {
+            "path": "README.md",
+            "content": "# Project\n\n用户偏好：以后用中文回答。\n",
+            "mode": "create",
+        },
+    )
+
+    assert result["status"] == "success"
+    assert (tmp_path / "README.md").exists()
+
+
+def test_file_write_secret_content_is_blocked_by_guardrail_not_memory_routing(tmp_path: Path) -> None:
+    secret = "sk-test1234567890abcdef1234567890abcdef"
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch(
+        "file_write",
+        {"path": "memories.json", "content": f'{{"token":"{secret}"}}', "mode": "create"},
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "guardrail_denied"
+    assert not (tmp_path / "memories.json").exists()
 
 
 def test_code_run_success_nonzero_timeout_and_truncation(tmp_path: Path) -> None:

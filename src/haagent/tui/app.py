@@ -13,11 +13,13 @@ from typing import Any
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, RichLog, Static
 
 from haagent.app.assistant_service import AssistantService, AssistantWorkspaceStatus
+from haagent.memory import MemoryCandidate
 from haagent.runtime.command import redact_secret_like_text
 from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import (
@@ -98,6 +100,16 @@ class ToolApprovalModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class PromptInput(Input):
+    def on_key(self, event: events.Key) -> None:
+        if event.key != "m" or self.value:
+            return
+        app = self.app
+        if isinstance(app, HaAgentTuiApp) and app._pending_interaction is None:
+            event.stop()
+            app.action_toggle_memory()
+
+
 class HaAgentTuiApp(App[None]):
     CSS = """
     Screen {
@@ -154,6 +166,11 @@ class HaAgentTuiApp(App[None]):
         ("ctrl+q", "quit", "退出"),
         ("q", "quit", "退出"),
         ("?", "help", "帮助"),
+        Binding("m", "toggle_memory", "记忆", priority=True),
+        ("enter", "memory_enter", "详情"),
+        ("a", "confirm_memory", "确认记忆"),
+        ("y", "confirm_memory", "确认记忆"),
+        ("r", "reject_memory", "拒绝记忆"),
         ("escape", "cancel_interaction", "取消"),
         ("pageup", "conversation_page_up", "上翻"),
         ("pagedown", "conversation_page_down", "下翻"),
@@ -170,6 +187,12 @@ class HaAgentTuiApp(App[None]):
         self._last_failure: dict[str, str] | None = None
         self._pending_interaction: _PendingInteraction | None = None
         self._default_prompt_placeholder = "输入 prompt，Enter 发送"
+        self._memory_mode = False
+        self._memory_detail_mode = False
+        self._memory_candidates: list[MemoryCandidate] = []
+        self._memory_selected = 0
+        self._memory_error: str | None = None
+        self._memory_notice: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="status-bar")
@@ -177,10 +200,11 @@ class HaAgentTuiApp(App[None]):
             yield RichLog(id="conversation", wrap=True, auto_scroll=True)
             yield Static("", id="side-bar")
         with Vertical(id="input-panel"):
-            yield Input(placeholder=self._default_prompt_placeholder, id="prompt-input")
+            yield PromptInput(placeholder=self._default_prompt_placeholder, id="prompt-input")
         yield Static(Text("[Enter]发送 [PgUp/PgDn]滚动 [Tab]焦点 [?]帮助 [Ctrl+Q]退出"), id="footer-bar")
 
     def on_mount(self) -> None:
+        self.query_one("#side-bar", Static).can_focus = True
         self._show_initial_configuration_state()
         self._refresh()
         self._update_responsive_layout()
@@ -188,6 +212,25 @@ class HaAgentTuiApp(App[None]):
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive_layout(width=event.size.width)
+
+    def on_key(self, event: events.Key) -> None:
+        if self._pending_interaction is not None:
+            return
+        prompt_input = self.query_one("#prompt-input", Input)
+        if not prompt_input.has_focus or prompt_input.value:
+            return
+        if event.key == "m":
+            event.stop()
+            self.action_toggle_memory()
+        elif event.key == "enter" and self._memory_mode:
+            event.stop()
+            self.action_memory_enter()
+        elif event.key in {"a", "y"} and self._memory_mode:
+            event.stop()
+            self.action_confirm_memory()
+        elif event.key == "r" and self._memory_mode:
+            event.stop()
+            self.action_reject_memory()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         prompt = event.value.strip()
@@ -203,7 +246,10 @@ class HaAgentTuiApp(App[None]):
         self._run_prompt(prompt)
 
     def action_help(self) -> None:
-        self._append_block("Help", "Enter 发送，Tab 切换焦点，Ctrl+Q 退出。")
+        self._append_block(
+            "Help",
+            "Enter 发送，Tab 切换焦点，m 记忆候选，Enter 详情，a/y 确认，r 拒绝，Esc 返回，Ctrl+Q 退出。",
+        )
         self._refresh_conversation()
 
     def action_quit(self) -> None:
@@ -216,9 +262,66 @@ class HaAgentTuiApp(App[None]):
         self.query_one("#conversation", RichLog).scroll_page_down(animate=False, force=True)
 
     def action_cancel_interaction(self) -> None:
+        if self._memory_mode:
+            if self._memory_detail_mode:
+                self._memory_detail_mode = False
+            else:
+                self._memory_mode = False
+                self.query_one("#prompt-input", Input).focus()
+            self._refresh()
+            return
         if self._pending_interaction is None:
             return
         self._complete_interaction(HumanInteractionResponse(approved=False, answer=""))
+
+    def action_toggle_memory(self) -> None:
+        self._memory_mode = not self._memory_mode
+        self._memory_detail_mode = False
+        if self._memory_mode:
+            self._load_memory_candidates()
+            self.query_one("#prompt-input", Input).value = ""
+            self.query_one("#side-bar", Static).focus()
+        else:
+            self.query_one("#prompt-input", Input).focus()
+        self._refresh()
+
+    def action_memory_enter(self) -> None:
+        if not self._memory_mode or not self._memory_candidates:
+            return
+        self._memory_detail_mode = not self._memory_detail_mode
+        self._refresh()
+
+    def action_confirm_memory(self) -> None:
+        if not self._memory_mode or not self._memory_candidates:
+            return
+        candidate = self._selected_memory_candidate()
+        try:
+            self.service.confirm_memory_candidate(candidate.candidate_id)
+        except Exception as error:
+            self._memory_notice = f"Memory confirm failed: {error}"
+            self._append_block("Memory warning", f"Memory confirm failed: {error}")
+        else:
+            self._memory_notice = f"Memory confirmed: {candidate.candidate_id}"
+            self._append_line(f"Memory confirmed: {candidate.candidate_id}")
+        self._memory_detail_mode = False
+        self._load_memory_candidates()
+        self._refresh()
+
+    def action_reject_memory(self) -> None:
+        if not self._memory_mode or not self._memory_candidates:
+            return
+        candidate = self._selected_memory_candidate()
+        try:
+            self.service.reject_memory_candidate(candidate.candidate_id, "rejected from TUI")
+        except Exception as error:
+            self._memory_notice = f"Memory reject failed: {error}"
+            self._append_block("Memory warning", f"Memory reject failed: {error}")
+        else:
+            self._memory_notice = f"Memory rejected: {candidate.candidate_id}"
+            self._append_line(f"Memory rejected: {candidate.candidate_id}")
+        self._memory_detail_mode = False
+        self._load_memory_candidates()
+        self._refresh()
 
     @work(thread=True, exclusive=True)
     def _run_prompt(self, prompt: str) -> None:
@@ -279,6 +382,19 @@ class HaAgentTuiApp(App[None]):
                 self._append_line(f"Answer declined: {tool_name}")
             else:
                 self._append_line(f"Answer submitted: {tool_name}")
+        elif event_type == "memory_candidates_created":
+            message = _payload_text(
+                payload,
+                "message",
+                event.message or "发现可记忆候选，已放入候选队列，等待你确认。",
+            )
+            self._append_block("Memory", message)
+            self._memory_notice = message
+            self._memory_mode = True
+            self._memory_detail_mode = False
+            self._load_memory_candidates(silent=True)
+        elif event_type == "memory_extraction_warning":
+            self._append_block("Memory warning", _payload_text(payload, "message", event.message))
         elif event_type == "failure":
             self._state = "failed"
             reason = _payload_text(payload, "reason", event.message)
@@ -373,9 +489,16 @@ class HaAgentTuiApp(App[None]):
         self.query_one("#status-bar", Static).update(self._status_line(status))
         self._refresh_conversation()
         self.query_one("#side-bar", Static).update(self._side_bar(status))
+        self.query_one("#footer-bar", Static).update(Text(self._footer_text()))
 
     def _refresh_conversation(self) -> None:
         conversation = self.query_one("#conversation", RichLog)
+        if self._memory_mode:
+            conversation.clear()
+            conversation.write(Text(self._memory_panel_text()), scroll_end=True, animate=False)
+            self._conversation_placeholder_rendered = False
+            self._conversation_rendered_count = 0
+            return
         if not self._conversation_lines:
             if not self._conversation_placeholder_rendered:
                 conversation.clear()
@@ -410,6 +533,8 @@ class HaAgentTuiApp(App[None]):
         )
 
     def _side_bar(self, status: AssistantWorkspaceStatus) -> str:
+        if self._memory_mode:
+            return self._memory_side_bar()
         profile = status.profile_name or "missing"
         provider = status.provider or "-"
         base_url = status.base_url or "-"
@@ -439,6 +564,52 @@ class HaAgentTuiApp(App[None]):
             "Last Failure\n"
             f"{failure_summary}"
         )
+
+    def _load_memory_candidates(self, *, silent: bool = False) -> None:
+        try:
+            self._memory_candidates = self.service.list_memory_candidates(status="pending")
+            self._memory_error = None
+            if self._memory_selected >= len(self._memory_candidates):
+                self._memory_selected = max(0, len(self._memory_candidates) - 1)
+        except Exception as error:
+            self._memory_candidates = []
+            self._memory_error = str(error)
+            if not silent:
+                self._append_block("Memory warning", f"Memory candidates unavailable: {error}")
+
+    def _selected_memory_candidate(self) -> MemoryCandidate:
+        return self._memory_candidates[self._memory_selected]
+
+    def _memory_side_bar(self) -> str:
+        return self._memory_panel_text()
+
+    def _memory_panel_text(self) -> str:
+        prefix = []
+        if self._memory_notice:
+            prefix = ["Memory", f"  {self._memory_notice}", ""]
+        if self._memory_error:
+            return "\n".join(
+                [*prefix, "Memory Candidates", f"  Memory candidates unavailable: {self._memory_error}"],
+            )
+        if not self._memory_candidates:
+            return "\n".join([*prefix, "Memory Candidates", "  no pending candidates"])
+        if self._memory_detail_mode:
+            return "\n".join([*prefix, _memory_candidate_detail(self._selected_memory_candidate())])
+        lines = [*prefix, "Memory Candidates"]
+        for index, candidate in enumerate(self._memory_candidates):
+            marker = ">" if index == self._memory_selected else " "
+            lines.append(
+                f"{marker} {candidate.candidate_id} [{candidate.scope}/{candidate.category}] {candidate.title}",
+            )
+        lines.extend(["", "Enter 详情  a/y 确认  r 拒绝  Esc 返回"])
+        return "\n".join(lines)
+
+    def _footer_text(self) -> str:
+        if self._memory_mode:
+            if self._memory_detail_mode:
+                return "[Esc]返回列表 [a/y]确认 [r]拒绝 [?]帮助 [Ctrl+Q]退出"
+            return "[Enter]详情 [a/y]确认 [r]拒绝 [Esc]返回聊天 [?]帮助 [Ctrl+Q]退出"
+        return "[Enter]发送 [PgUp/PgDn]滚动 [m]记忆 [Tab]焦点 [?]帮助 [Ctrl+Q]退出"
 
     def _append_block(self, title: str, body: str) -> None:
         self._conversation_lines.append(f"{title}\n  {body}")
@@ -473,6 +644,31 @@ def _approval_body(request: HumanInteractionRequest) -> str:
             "高风险内容首版只展示摘要，不展示完整 patch、stdout 或 stderr。",
         ],
     )
+    return "\n".join(lines)
+
+
+def _memory_candidate_detail(candidate: MemoryCandidate) -> str:
+    evidence = candidate.evidence
+    lines = [
+        "Memory Candidate Detail",
+        f"candidate_id: {candidate.candidate_id}",
+        f"status: {candidate.status}",
+        f"scope: {candidate.scope}",
+        f"category: {candidate.category}",
+        f"title: {candidate.title}",
+        f"body: {candidate.body}",
+        f"source: {candidate.source}",
+        f"created_at: {candidate.created_at}",
+        f"tags: {', '.join(candidate.tags) if candidate.tags else 'none'}",
+        f"risk_flags: {', '.join(candidate.risk_flags) if candidate.risk_flags else 'none'}",
+        "",
+        "Evidence",
+        f"source_type: {evidence.source_type}",
+        f"source_summary: {evidence.source_summary or 'none'}",
+        f"basis: {evidence.basis or 'none'}",
+        f"category_rationale: {evidence.category_rationale or 'none'}",
+        f"episode_path: {evidence.episode_path or 'none'}",
+    ]
     return "\n".join(lines)
 
 

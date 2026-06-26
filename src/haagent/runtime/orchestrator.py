@@ -50,7 +50,7 @@ from haagent.runtime.plan import build_plan
 from haagent.runtime.state import RunStatus
 from haagent.runtime.task_contract import TaskLoadError, load_task, resolve_workspace_root
 from haagent.runtime.workspace_preflight import build_workspace_preflight
-from haagent.tools.base import ToolRoutingError
+from haagent.tools.base import ToolRoutingError, tool_error
 from haagent.tools.registry import export_tool_schemas
 from haagent.tools.router import ToolRouter
 from haagent.verification.engine import DEFAULT_COMMAND_TIMEOUT_SECONDS, VerificationEngine
@@ -309,7 +309,8 @@ class RunOrchestrator:
                 messages.append(build_assistant_message(model_response.content, assistant_tool_calls))
 
                 turn_broke_early = False
-                for tool_call in tool_calls_with_ids:
+                pending_suggestion_messages: list[str] = []
+                for tool_index, tool_call in enumerate(tool_calls_with_ids):
                     self._emit_event(
                         {
                             "event_type": "tool_started",
@@ -329,15 +330,14 @@ class RunOrchestrator:
                     )
                     if tool_result.get("status") == "error":
                         error = tool_result.get("error") or {}
-                        self._emit_event(
-                            {
-                                "event_type": "tool_failed",
-                                "turn": turn,
-                                "tool_name": tool_call.name,
-                                "args": tool_call.args,
-                                "error": error,
-                            },
-                        )
+                        failed_event = {
+                            "event_type": "tool_failed",
+                            "turn": turn,
+                            "tool_name": tool_call.name,
+                            "args": tool_call.args,
+                            "error": error,
+                        }
+                        self._emit_event(failed_event)
                     observation = {
                         "tool_name": tool_call.name,
                         "args": tool_call.args,
@@ -383,11 +383,47 @@ class RunOrchestrator:
                         if violation is not None:
                             safety_obs = safety_violation_observation(violation.message, violation.recovery_suggestion)
                             writer.append_transcript({"event": "safety_warning", "turn": turn, **safety_obs})
-                            messages.append(build_suggestion_message(str(safety_obs.get("result", {}).get("message", ""))))
+                            pending_suggestion_messages.append(str(safety_obs.get("result", {}).get("message", "")))
                         elif suggestion is not None:
                             _record_suggestion(writer, self._emit_event, turn, suggestion)
-                            messages.append(build_suggestion_message(suggestion.message))
+                            pending_suggestion_messages.append(suggestion.message)
                         turn_broke_early = True
+                        for skipped_call in tool_calls_with_ids[tool_index + 1 :]:
+                            skipped_result = tool_error(
+                                "tool_call_skipped",
+                                "tool call skipped because an earlier tool call in the same assistant message failed.",
+                            )
+                            writer.append_tool_call(
+                                {
+                                    "tool_name": skipped_call.name,
+                                    "args": skipped_call.args,
+                                    "status": "error",
+                                    "result": None,
+                                    "error": skipped_result["error"],
+                                    "policy": None,
+                                    "guardrail": None,
+                                    "duration_seconds": 0.0,
+                                },
+                            )
+                            skipped_observation = {
+                                "tool_name": skipped_call.name,
+                                "args": skipped_call.args,
+                                "result": skipped_result,
+                            }
+                            writer.append_transcript(
+                                {
+                                    "event": "tool_observation",
+                                    "turn": turn,
+                                    **skipped_observation,
+                                },
+                            )
+                            messages.append(
+                                build_tool_result_message(
+                                    skipped_call.id,
+                                    skipped_call.name,
+                                    skipped_result,
+                                ),
+                            )
                         break
 
                     self._emit_event(
@@ -402,7 +438,7 @@ class RunOrchestrator:
                     suggestion = suggestion_for_observation(observation)
                     if suggestion is not None:
                         _record_suggestion(writer, self._emit_event, turn, suggestion)
-                        messages.append(build_suggestion_message(suggestion.message))
+                        pending_suggestion_messages.append(suggestion.message)
 
                     if tool_call.name in {"apply_patch", "apply_patch_set", "file_write"}:
                         completion_observations = [observation]
@@ -418,6 +454,10 @@ class RunOrchestrator:
                         task.verification_commands,
                         passed_verification_commands,
                     )
+
+                for suggestion_message in pending_suggestion_messages:
+                    if suggestion_message:
+                        messages.append(build_suggestion_message(suggestion_message))
 
                 if not turn_broke_early and (
                     _all_declared_verification_commands_passed(
@@ -580,6 +620,8 @@ def _tool_error_is_terminal(tool_result: dict[str, object]) -> bool:
     if error_type in {"patch_text_not_found", "patch_text_not_unique", "code_run_failed", "timeout"}:
         return False
     if tool_result.get("suggestions"):
+        return False
+    if tool_result.get("suggested_tool"):
         return False
     return error_type == "tool_argument_invalid"
 

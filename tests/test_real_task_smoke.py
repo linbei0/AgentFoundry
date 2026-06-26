@@ -334,6 +334,92 @@ def test_real_task_smoke_recovers_from_wrong_file_path_with_suggestions(tmp_path
     assert "loop_suggestion_added" in _transcript_events(result.episode_path)
 
 
+def test_real_task_smoke_recovers_from_file_read_directory_with_file_list_suggestion(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse("read directory by mistake", [ToolCall("file_read", {"path": "src"})]),
+            ModelResponse("list directory after suggestion", [ToolCall("file_list", {"path": "src", "max_depth": 1})]),
+            ModelResponse("The src directory contains app.py.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "看看 src 目录")
+
+    assert result.status == "completed"
+    calls = _tool_calls(result.episode_path)
+    assert [call["tool_name"] for call in calls] == ["file_read", "file_list"]
+    assert calls[0]["error"]["type"] == "tool_argument_invalid"
+    assert calls[0]["result"] is None
+    assert calls[1]["result"]["path"] == "src"
+    assert "loop_suggestion_added" in _transcript_events(result.episode_path)
+
+
+def test_real_task_smoke_keeps_multi_tool_messages_contiguous_before_suggestion(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse(
+                "read two files",
+                [
+                    ToolCall("file_read", {"path": "app.py"}),
+                    ToolCall("file_read", {"path": "README.md"}),
+                ],
+            ),
+            ModelResponse("README read after suggestion.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "读取两个文件")
+
+    assert result.status == "completed"
+    second_call_messages = gateway.calls[1]["messages"]
+    assistant_index = max(
+        index
+        for index, message in enumerate(second_call_messages)
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    after_assistant = second_call_messages[assistant_index + 1 :]
+    assert [message.get("role") for message in after_assistant[:2]] == ["tool", "tool"]
+    assert after_assistant[2]["role"] == "user"
+    assert "suggested path" in str(after_assistant[2]["content"]).lower()
+
+
+def test_real_task_smoke_adds_tool_messages_for_multiple_tool_calls(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse(
+                "read memory path and read file",
+                [
+                    ToolCall(
+                        "shell",
+                        {"command": "cat ~/.haagent/memory/user_preferences.jsonl 2>/dev/null || echo missing"},
+                    ),
+                    ToolCall("file_read", {"path": "README.md"}),
+                ],
+            ),
+            ModelResponse("Observed both tool results.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "检查记忆文件", approvals=True)
+
+    assert result.status == "completed"
+    calls = _tool_calls(result.episode_path)
+    assert [call["tool_name"] for call in calls] == ["shell", "file_read"]
+    assert calls[0]["status"] == "success"
+    assert calls[1]["status"] == "success"
+    second_call_messages = gateway.calls[1]["messages"]
+    assistant_index = max(
+        index
+        for index, message in enumerate(second_call_messages)
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    after_assistant = second_call_messages[assistant_index + 1 :]
+    assert [message.get("role") for message in after_assistant[:2]] == ["tool", "tool"]
+
+
 def test_real_task_smoke_reads_file_after_patch_miss_then_repairs(tmp_path: Path) -> None:
     workspace = _make_project_workspace(tmp_path)
     gateway = ScriptedGateway(

@@ -138,6 +138,25 @@ def test_file_read_error_with_suggestion_uses_suggested_path() -> None:
     assert "src/app.py" in suggestion.message
 
 
+def test_file_read_directory_error_suggests_file_list() -> None:
+    suggestion = suggestion_for_observation(
+        _obs(
+            "file_read",
+            {"path": "src"},
+            {
+                "status": "error",
+                "error": {"type": "tool_argument_invalid", "message": "path must be a file: src"},
+                "suggested_tool": {"name": "file_list", "args": {"path": "src", "max_depth": 1}},
+            },
+        )
+    )
+
+    assert suggestion is not None
+    assert suggestion.trigger == "tool_error"
+    assert "file_list" in suggestion.message
+    assert "src" in suggestion.message
+
+
 def test_apply_patch_miss_suggests_read_before_retry() -> None:
     suggestion = suggestion_for_observation(
         _obs(

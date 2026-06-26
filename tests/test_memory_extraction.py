@@ -7,6 +7,7 @@ tests/test_memory_extraction.py - 长期记忆提取测试
 from __future__ import annotations
 
 import json
+import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +19,9 @@ from haagent.memory.extraction import (
     MemoryExtractor,
 )
 from haagent.memory.retrieval import MemoryRetrievalRequest, MemoryRetriever
-from haagent.models.gateway import ModelResponse
+from haagent.models.gateway import ModelResponse, ToolCall
 from haagent.runtime.chat_session import AgentSession
+from haagent.runtime.human_interaction import HumanInteractionResponse
 
 
 class RecordingGateway:
@@ -92,6 +94,34 @@ def _all_text(path: Path) -> str:
 def test_extraction_does_not_use_phrase_trigger_tables() -> None:
     assert not hasattr(extraction, "MEMORY_TRIGGER_PHRASES")
     assert not hasattr(extraction, "TEMPORARY_PHRASES")
+    assert not (Path(extraction.__file__).with_name("intent.py")).exists()
+
+
+def test_memory_runtime_does_not_ship_heuristic_memory_routing_modules() -> None:
+    assert importlib.util.find_spec("haagent.memory.intent") is None
+    assert importlib.util.find_spec("haagent.memory.artifact_guard") is None
+
+
+def test_source_does_not_contain_legacy_memory_matching_contracts() -> None:
+    forbidden = [
+        "MEMORY_ARTIFACT_FILENAMES",
+        "PROFILE_PATH_TOKENS",
+        "MEMORY_INTERNAL_TARGETS",
+        "MEMORY_INTERNAL_WRITE_OPERATIONS",
+        "memory_artifact_denied",
+        "memory_internal_denied",
+    ]
+    repo_root = Path(__file__).parents[1]
+    offenders: list[str] = []
+    for root in (repo_root / "src", repo_root / "tests"):
+        for path in root.rglob("*.py"):
+            if path == Path(__file__):
+                continue
+            text = path.read_text(encoding="utf-8")
+            for token in forbidden:
+                if token in text:
+                    offenders.append(f"{path.relative_to(repo_root)}: {token}")
+    assert offenders == []
 
 
 def test_explicit_remember_creates_pending_candidate_not_memory(tmp_path: Path) -> None:
@@ -223,7 +253,7 @@ def test_secret_output_does_not_enter_candidate_or_diagnostics(tmp_path: Path) -
     assert secret not in _all_text(tmp_path)
 
 
-def test_unverified_claim_is_rejected_before_queue(tmp_path: Path) -> None:
+def test_uncertain_words_do_not_trigger_phrase_based_rejection(tmp_path: Path) -> None:
     gateway = RecordingGateway(
         json.dumps(
             {
@@ -232,10 +262,10 @@ def test_unverified_claim_is_rejected_before_queue(tmp_path: Path) -> None:
                         "scope": "workspace",
                         "category": "facts",
                         "title": "Maybe package manager",
-                        "body": "HaAgent 可能 uses uv.",
-                        "source_summary": "模型猜测。",
-                        "basis": "没有验证。",
-                        "category_rationale": "事实。",
+                        "body": "HaAgent 可能 uses uv when running tests.",
+                        "source_summary": "用户要求记录一句包含不确定语气的项目事实。",
+                        "basis": "用户原话包含“可能”，但这是可审查候选，不应靠短语表直接拒绝。",
+                        "category_rationale": "候选是否可信由 evidence 和用户确认决定，不由自然语言短语 gate 决定。",
                     }
                 ]
             },
@@ -246,9 +276,11 @@ def test_unverified_claim_is_rejected_before_queue(tmp_path: Path) -> None:
 
     result = MemoryExtractor().extract(request)
 
-    assert result.created_count == 0
-    assert result.rejected_count == 1
-    assert CandidateQueue(request.session_path).list(status="pending") == []
+    pending = CandidateQueue(request.session_path).list(status="pending")
+    assert result.created_count == 1
+    assert result.rejected_count == 0
+    assert len(pending) == 1
+    assert "unverified_claim" not in pending[0].risk_flags
 
 
 def test_duplicate_confirmed_or_pending_memory_is_not_queued_again(tmp_path: Path) -> None:
@@ -428,6 +460,148 @@ def test_agent_session_emits_candidate_notice(tmp_path: Path) -> None:
     assert result.memory_candidates_created == 1
     assert "memory_candidates=1" in result.output_lines()
     assert any(event.event_type == "memory_candidates_created" for event in events)
+
+
+def test_memory_request_keeps_regular_tools_available_and_extracts_candidate(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    gateway = SequentialGateway(
+        [
+            ModelResponse("我会把这作为候选记忆等待你确认。", []),
+            ModelResponse(
+                json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "scope": "user",
+                                "category": "user_preferences",
+                                "title": "用户身份与爱好",
+                                "body": "用户叫小明，爱好是唱跳rap篮球。",
+                                "source_summary": "用户明确要求记住自己的名字和爱好。",
+                                "basis": "用户说：我叫小明，爱好是唱跳rap篮球，记住我的爱好。",
+                                "category_rationale": "这是跨 workspace 可复用的用户偏好和身份信息。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                [],
+            ),
+        ],
+    )
+    session = AgentSession(workspace_root=workspace, runs_root=tmp_path / ".runs", model_gateway=gateway)
+
+    result = session.run_prompt("我叫小明，爱好是唱跳rap篮球，记住我的爱好")
+
+    assert result.status == "completed"
+    assert result.memory_candidates_created == 1
+    assert {tool["name"] for tool in gateway.calls[0]["tool_schemas"]}
+    pending = CandidateQueue(session.session_path).list(status="pending")
+    assert len(pending) == 1
+    assert pending[0].scope == "user"
+    assert pending[0].category == "user_preferences"
+    records = MemoryStore(workspace_root=workspace).list_records(scope="user", category="user_preferences")
+    assert all(record.source_candidate_id != pending[0].candidate_id for record in records)
+
+
+def test_food_preference_memory_request_is_handled_by_extraction_not_phrase_routing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    gateway = SequentialGateway(
+        [
+            ModelResponse("我会把你的喜好作为候选记忆等待你确认。", []),
+            ModelResponse(
+                json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "scope": "user",
+                                "category": "user_preferences",
+                                "title": "饮食喜好",
+                                "body": "用户爱吃包子。",
+                                "source_summary": "用户明确要求记住自己的饮食喜好。",
+                                "basis": "用户说：我爱吃包子，记住我的喜好。",
+                                "category_rationale": "这是跨 workspace 可复用的用户偏好。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                [],
+            ),
+        ],
+    )
+    session = AgentSession(workspace_root=workspace, runs_root=tmp_path / ".runs", model_gateway=gateway)
+
+    result = session.run_prompt("我爱吃包子，记住我的喜好")
+
+    assert result.status == "completed"
+    assert result.memory_candidates_created == 1
+    assert {tool["name"] for tool in gateway.calls[0]["tool_schemas"]}
+    assert CandidateQueue(session.session_path).list(status="pending")[0].title == "饮食喜好"
+
+
+def test_agent_session_allows_profile_file_write_then_extracts_pending_candidate(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    gateway = SequentialGateway(
+        [
+            ModelResponse(
+                "Writing profile.",
+                [
+                    ToolCall(
+                        name="file_write",
+                        args={
+                            "path": "user_profile.md",
+                            "content": "# 用户档案\n\n- 名字：小明\n- 爱好：唱跳rap篮球\n",
+                            "mode": "create",
+                        },
+                        id="call_profile",
+                    ),
+                ],
+            ),
+            ModelResponse("我会把这些作为候选记忆等待你确认。", []),
+            ModelResponse(
+                json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "scope": "user",
+                                "category": "user_preferences",
+                                "title": "用户身份与爱好",
+                                "body": "用户叫小明，喜欢唱跳rap篮球。",
+                                "source_summary": "用户提供了自己的名字和爱好。",
+                                "basis": "用户说：请整理这个个人资料：我叫小明，喜欢唱跳rap篮球。",
+                                "category_rationale": "这是跨 workspace 可复用的用户偏好和身份信息。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                [],
+            ),
+        ],
+    )
+    session = AgentSession(workspace_root=workspace, runs_root=tmp_path / ".runs", model_gateway=gateway)
+    events = []
+
+    result = session.run_prompt_events(
+        "请整理这个个人资料：我叫小明，喜欢唱跳rap篮球",
+        event_sink=events.append,
+        interaction_handler=lambda request: HumanInteractionResponse(approved=True),
+    )
+
+    assert result.status == "completed"
+    assert result.memory_candidates_created == 1
+    assert (workspace / "user_profile.md").read_text(encoding="utf-8").startswith("# 用户档案")
+    pending = CandidateQueue(session.session_path).list(status="pending")
+    assert len(pending) == 1
+    assert pending[0].scope == "user"
+    assert pending[0].category == "user_preferences"
+    store = MemoryStore(workspace_root=workspace)
+    records = store.list_records(scope="user", category="user_preferences")
+    assert all(record.source_candidate_id != pending[0].candidate_id for record in records)
+    assert not [event for event in events if event.event_type == "tool_failed"]
 
 
 def test_memory_cli_lists_confirms_and_rejects_candidates(tmp_path: Path, monkeypatch, capsys) -> None:

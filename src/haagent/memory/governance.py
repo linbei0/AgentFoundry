@@ -27,18 +27,6 @@ SECRET_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"(?i)\b(api[_-]?key|token|password|cookie|secret)\b\s*[:=]\s*['\"]?[^'\"\s]{8,}"),
 ]
-UNCERTAIN_PHRASES = (
-    "可能",
-    "也许",
-    "似乎",
-    "大概",
-    "猜测",
-    "不确定",
-    "maybe",
-    "might",
-    "probably",
-    "looks like",
-)
 
 
 class MemoryGovernanceError(RuntimeError):
@@ -130,9 +118,6 @@ def text_risk_flags(title: str, body: str) -> list[str]:
     flags: list[str] = []
     if scan_secrets(text):
         flags.append("possible_secret")
-    lowered = text.lower()
-    if any(phrase in lowered for phrase in UNCERTAIN_PHRASES):
-        flags.append("unverified_claim")
     return flags
 
 

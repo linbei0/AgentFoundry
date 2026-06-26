@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # Virtual environments
 .venv/
@@ -18,10 +21,13 @@ dist/
 .runs/
 .smoke-runs/
 .runs-verify/
+.haagent/
+.haagent-tmp/
+tmp-debug-memory/
 
 # Local environment files
 .env
 .env.*
 
-# docs
-/docs/
+# Local agent/editor state
+.claude/

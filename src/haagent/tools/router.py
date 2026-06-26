@@ -91,19 +91,17 @@ class ToolRouter:
                         policy_decision,
                         interaction_handler,
                     )
+                elif validation_error := _validate_args(tool_name, args):
+                    result = validation_error
+                elif guardrail_result := check_tool_input(tool_name, args):
+                    result = tool_error(
+                        "guardrail_denied",
+                        guardrail_evidence(guardrail_result),
+                    )
+                elif tool_name == "request_user_input":
+                    result = self._request_user_input(args, interaction_handler)
                 else:
-                    validation_error = _validate_args(tool_name, args)
-                    if validation_error:
-                        result = validation_error
-                    elif guardrail_result := check_tool_input(tool_name, args):
-                        result = tool_error(
-                            "guardrail_denied",
-                            guardrail_evidence(guardrail_result),
-                        )
-                    elif tool_name == "request_user_input":
-                        result = self._request_user_input(args, interaction_handler)
-                    else:
-                        result = self._handlers[tool_name](args)
+                    result = self._handlers[tool_name](args)
         except Exception as error:
             result = tool_error(type(error).__name__, str(error))
 
