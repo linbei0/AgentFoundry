@@ -22,6 +22,7 @@ from haagent.context.messages import (
 )
 from haagent.models.fake import FakeModelGateway
 from haagent.models.gateway import ModelCallError, ModelGateway, ToolCall
+from haagent.runtime.cancellation import CancellationToken, RunCancelled
 from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.failure import FailureCategory
 from haagent.runtime.guardrails import (
@@ -73,6 +74,7 @@ class RunOrchestrator:
         working_state: dict[str, object] | None = None,
         event_sink: Callable[[dict[str, object]], None] | None = None,
         interaction_handler: HumanInteractionHandler | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> None:
         self._runs_root = runs_root
         self._model_gateway = model_gateway or FakeModelGateway()
@@ -81,10 +83,15 @@ class RunOrchestrator:
         self._working_state = working_state
         self._event_sink = event_sink
         self._interaction_handler = interaction_handler
+        self._cancellation_token = cancellation_token
 
     def _emit_event(self, event: dict[str, object]) -> None:
         if self._event_sink is not None:
             self._event_sink(event)
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancellation_token is not None:
+            self._cancellation_token.raise_if_cancelled()
 
     def run(self, task_path: Path) -> RunResult:
         """执行一次 run，并把所有阶段变化写入 transcript.jsonl。"""
@@ -98,6 +105,7 @@ class RunOrchestrator:
         transition(RunStatus.CREATED)
 
         try:
+            self._raise_if_cancelled()
             task = load_task(task_path)
             workspace_candidate = _workspace_root_candidate(task.workspace_root, task_path)
             writer.write_workspace_preflight(build_workspace_preflight(workspace_candidate))
@@ -113,6 +121,7 @@ class RunOrchestrator:
                 workspace_root,
                 command_timeout_seconds=DEFAULT_COMMAND_TIMEOUT_SECONDS,
             )
+            self._raise_if_cancelled()
             plan = build_plan(task)
             writer.write_plan(plan)
             writer.append_transcript(
@@ -166,6 +175,7 @@ class RunOrchestrator:
             final_response_requested = False
 
             for turn in range(1, self._max_turns + 1):
+                self._raise_if_cancelled()
                 tool_schemas = [] if final_response_requested else export_tool_schemas(task.allowed_tools)
 
                 writer.append_transcript(
@@ -181,6 +191,7 @@ class RunOrchestrator:
                     messages=messages,
                     tool_schemas=tool_schemas,
                 )
+                self._raise_if_cancelled()
                 output_guardrail = (
                     check_assistant_output(model_response.content)
                     if not model_response.tool_calls
@@ -254,6 +265,7 @@ class RunOrchestrator:
                     transition(RunStatus.VERIFYING)
                     if verification_engine is None:
                         verification_engine = VerificationEngine(writer, workspace_root)
+                    self._raise_if_cancelled()
                     verification_result = verification_engine.run(task.verification_commands)
                     if verification_result.status == "success":
                         transition(RunStatus.COMPLETED)
@@ -311,6 +323,7 @@ class RunOrchestrator:
                 turn_broke_early = False
                 pending_suggestion_messages: list[str] = []
                 for tool_index, tool_call in enumerate(tool_calls_with_ids):
+                    self._raise_if_cancelled()
                     self._emit_event(
                         {
                             "event_type": "tool_started",
@@ -328,6 +341,7 @@ class RunOrchestrator:
                             else None
                         ),
                     )
+                    self._raise_if_cancelled()
                     if tool_result.get("status") == "error":
                         error = tool_result.get("error") or {}
                         failed_event = {
@@ -482,6 +496,16 @@ class RunOrchestrator:
                     },
                 )
                 return _finish_run(writer, RunStatus.FAILED, state_history)
+        except RunCancelled as error:
+            transition(RunStatus.CANCELLED)
+            writer.write_failure_attribution(
+                {
+                    "stage": state_history[-2].value if len(state_history) > 1 else "created",
+                    "category": FailureCategory.RUNTIME.value,
+                    "evidence": str(error),
+                },
+            )
+            return _finish_run(writer, RunStatus.CANCELLED, state_history)
         except ToolRoutingError as error:
             transition(RunStatus.FAILED)
             writer.write_failure_attribution(

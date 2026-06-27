@@ -33,11 +33,11 @@ class FileReferenceOverlay(ModalScreen[str | None]):
             event.stop()
             self.dismiss(None)
             return
-        if key in {"up", "k"}:
+        if key == "up":
             event.stop()
             self._move(-1)
             return
-        if key in {"down", "j"}:
+        if key == "down":
             event.stop()
             self._move(1)
             return
@@ -82,5 +82,5 @@ class FileReferenceOverlay(ModalScreen[str | None]):
         for index, match in enumerate(self.matches):
             marker = ">" if index == self.selected_index else " "
             lines.append(f"{marker} {match.display_path}")
-        lines.extend(["", "↑/↓ j/k 移动  Enter 插入引用  Esc 关闭"])
+        lines.extend(["", "↑/↓ 移动  Enter 插入引用  Esc 关闭"])
         return "\n".join(lines)

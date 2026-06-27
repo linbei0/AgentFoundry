@@ -529,8 +529,8 @@ def _validate_cross_file_consistency(
     failure_status = failure_record["status"]
     if failure_status == "success" and episode_status != RunStatus.COMPLETED.value:
         raise EpisodeValidationError("failure.json status success requires episode status completed")
-    if failure_status == "failed" and episode_status != RunStatus.FAILED.value:
-        raise EpisodeValidationError("failure.json status failed requires episode status failed")
+    if failure_status == "failed" and episode_status not in {RunStatus.FAILED.value, RunStatus.CANCELLED.value}:
+        raise EpisodeValidationError("failure.json status failed requires episode status failed or cancelled")
 
     environment_workspace_root = environment.get("workspace_root")
     if (

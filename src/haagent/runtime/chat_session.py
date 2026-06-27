@@ -18,6 +18,7 @@ import yaml
 
 from haagent.models.gateway import ModelGateway
 from haagent.memory.extraction import MemoryExtractionRequest, MemoryExtractor
+from haagent.runtime.cancellation import CancellationToken
 from haagent.runtime.episode_validator import (
     EpisodeValidationError,
     load_inspect_episode_package,
@@ -146,6 +147,7 @@ class AgentSession:
         self.turn_count = 0
         self._summaries: list[str] = []
         self._working_state = empty_working_state()
+        self._current_cancellation_token: CancellationToken | None = None
         self.session_path = self.runs_root / "sessions" / self.session_id
         self._created_at = datetime.now(UTC).isoformat()
         self._write_session_metadata()
@@ -178,6 +180,7 @@ class AgentSession:
         except WorkingStateError as error:
             raise ChatSessionError(str(error)) from error
         instance.session_path = session_path
+        instance._current_cancellation_token = None
         instance._created_at = str(metadata["created_at"])
         return instance
 
@@ -222,6 +225,7 @@ class AgentSession:
             payload={"prompt": _summary_value(clean_prompt, 160)},
         )
         runtime_events: list[dict[str, object]] = []
+        self._current_cancellation_token = CancellationToken()
 
         def on_runtime_event(event: dict[str, object]) -> None:
             runtime_events.append(event)
@@ -238,6 +242,7 @@ class AgentSession:
                 working_state=self._working_state.to_dict() if not self._working_state.is_empty() else None,
                 event_sink=on_runtime_event,
                 interaction_handler=interaction_handler,
+                cancellation_token=self._current_cancellation_token,
             ).run(task_path)
 
         turn_result = self._build_turn_result(clean_prompt, result)
@@ -325,7 +330,12 @@ class AgentSession:
                 message="chat session finished",
                 payload={"status": turn_result.status},
             )
+        self._current_cancellation_token = None
         return turn_result
+
+    def cancel_current_run(self) -> None:
+        if self._current_cancellation_token is not None:
+            self._current_cancellation_token.cancel()
 
     def _run_memory_extraction(
         self,
@@ -700,9 +710,22 @@ def _tool_result_summary(tool_name: str, result: dict[str, object]) -> dict[str,
             "bytes_written": result.get("bytes_written"),
             "created": result.get("created"),
         }
+    if tool_name == "apply_patch":
+        return {
+            "path": _summary_value(str(result.get("path", "")), 160),
+            "replacements": result.get("replacements"),
+        }
+    if tool_name == "apply_patch_set":
+        paths = result.get("paths") if isinstance(result.get("paths"), list) else []
+        return {
+            "paths": [_summary_value(str(path), 160) for path in paths],
+            "replacement_count": result.get("replacement_count"),
+        }
     if tool_name == "code_run":
         return {
             "exit_code": result.get("exit_code"),
+            "stdout_excerpt": _summary_value(str(result.get("stdout_excerpt", "")), 300),
+            "stderr_excerpt": _summary_value(str(result.get("stderr_excerpt", "")), 300),
             "stdout_chars": len(str(result.get("stdout_excerpt", ""))),
             "stderr_chars": len(str(result.get("stderr_excerpt", ""))),
             "truncated": bool(result.get("truncated")),
@@ -710,6 +733,8 @@ def _tool_result_summary(tool_name: str, result: dict[str, object]) -> dict[str,
     if tool_name == "shell":
         return {
             "exit_code": result.get("exit_code"),
+            "stdout_excerpt": _summary_value(str(result.get("stdout_excerpt", "")), 300),
+            "stderr_excerpt": _summary_value(str(result.get("stderr_excerpt", "")), 300),
             "stdout_chars": len(str(result.get("stdout_excerpt", ""))),
             "stderr_chars": len(str(result.get("stderr_excerpt", ""))),
             "timeout": bool(result.get("timeout")),

@@ -93,6 +93,12 @@ class AssistantSessionSummary:
     session_path: Path
 
 
+@dataclass(frozen=True)
+class AssistantCancelResult:
+    status: str
+    reason: str
+
+
 class AssistantService:
     def __init__(
         self,
@@ -219,6 +225,12 @@ class AssistantService:
             include_session_events=include_session_events,
             interaction_handler=interaction_handler,
         )
+
+    def cancel_current_run(self) -> AssistantCancelResult:
+        if self._session is None:
+            return AssistantCancelResult(status="idle", reason="no_active_session")
+        self._session.cancel_current_run()
+        return AssistantCancelResult(status="cancelled", reason="user_cancelled")
 
     def list_memory_candidates(self, status: str | None = "pending") -> list[MemoryCandidate]:
         queue = self._memory_queue()

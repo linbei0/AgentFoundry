@@ -58,7 +58,7 @@ class CommandSuggestionState:
         for index, command in enumerate(visible):
             marker = ">" if index == min(self.selected_index, len(visible) - 1) else " "
             lines.append(f"{marker} {command.token:<12} {command.description}")
-        lines.extend(["", "输入过滤  ↑/↓ j/k 移动  Enter 执行  Esc 关闭"])
+        lines.extend(["", "输入过滤  ↑/↓ 移动  Enter 执行  Esc 关闭"])
         return "\n".join(lines)
 
 
@@ -76,11 +76,11 @@ class CommandSuggestionOverlay(ModalScreen[SlashCommand | None]):
             event.stop()
             self.dismiss(None)
             return
-        if key in {"up", "k"}:
+        if key == "up":
             event.stop()
             self._set_state(self.state.move(-1))
             return
-        if key in {"down", "j"}:
+        if key == "down":
             event.stop()
             self._set_state(self.state.move(1))
             return

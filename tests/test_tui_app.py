@@ -18,12 +18,15 @@ from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
 from haagent.tui.app import HaAgentTuiApp
 from haagent.tui.commands import SlashCommandResult, command_registry, parse_slash_command
+from haagent.tui.changes import changed_files_from_tool_event, path_stays_in_workspace
+from haagent.tui.failures import failure_next_steps
 from haagent.tui.file_refs import fuzzy_file_matches, path_reference_token
 from haagent.tui.keys import footer_text, help_body, key_help_lines
 from haagent.tui.renderers import memory_panel_text, status_line
 from haagent.tui.search import ConversationSearchState
 from haagent.tui.sessions import SessionOverlayState
 from haagent.tui.state import ResponsiveLayout, layout_for_size
+from haagent.tui.tool_timeline import ToolTimelineState, redact_mapping_for_display
 from haagent.tui.widgets import PromptInput
 from textual.widgets import RichLog, TextArea
 
@@ -82,6 +85,7 @@ class FakeAssistantService:
         self.created_sessions: list[str] = []
         self.resumed_sessions: list[str] = []
         self.continued_latest_count = 0
+        self.cancelled_count = 0
 
     def get_workspace_status(self) -> AssistantWorkspaceStatus:
         return AssistantWorkspaceStatus(
@@ -105,14 +109,17 @@ class FakeAssistantService:
     def run_prompt_events(self, prompt: str, *, event_sink=None, interaction_handler=None):
         self.prompts.append(prompt)
         self.started.set()
-        if self.block_until_released:
-            self.release.wait(timeout=2)
         if event_sink is not None:
             if self.failure_event is not None:
                 event_sink(self.failure_event)
                 return SimpleNamespace(status="failed")
             for extra_event in self.extra_events:
                 event_sink(extra_event)
+        if self.block_until_released:
+            self.release.wait(timeout=2)
+        if self.cancelled_count:
+            return SimpleNamespace(status="cancelled")
+        if event_sink is not None:
             if self.interaction_request is not None:
                 request = self.interaction_request
                 event_sink(_interaction_requested_event(request, len(self.prompts)))
@@ -171,6 +178,12 @@ class FakeAssistantService:
         if self.sessions:
             self.current_session_id = self.sessions[0].session_id
         return self._session_status(self.current_session_id)
+
+    def cancel_current_run(self):
+        self.cancelled_count += 1
+        self.block_until_released = False
+        self.release.set()
+        return SimpleNamespace(status="cancelled", reason="user_cancelled")
 
     def list_sessions(self) -> list[AssistantSessionSummary]:
         return list(self.sessions)
@@ -476,6 +489,127 @@ def test_tui_file_reference_fuzzy_search_stays_inside_workspace(tmp_path: Path) 
     assert token == '@file("docs/Project Plan.md")'
 
 
+def test_tui_tool_timeline_state_tracks_started_done_failed_and_redacts_secret(tmp_path: Path) -> None:
+    secret = "sk-test1234567890abcdef1234567890abcdef"
+    state = ToolTimelineState()
+
+    state.apply_event(
+        ChatEvent(
+            event_type="tool_started",
+            session_id="session-test",
+            turn_index=1,
+            message="starting tool shell",
+            payload={
+                "tool_name": "shell",
+                "args_summary": {"command": f"echo {secret}", "cwd": "."},
+                "reason": "Run check",
+            },
+        ),
+    )
+    state.apply_event(
+        ChatEvent(
+            event_type="tool_finished",
+            session_id="session-test",
+            turn_index=1,
+            message="finished tool shell",
+            payload={
+                "tool_name": "shell",
+                "status": "success",
+                "result_summary": {"exit_code": 0, "stdout_excerpt": f"ok {secret}", "stderr_excerpt": ""},
+                "episode_path": str(tmp_path / ".runs" / "episode-ok"),
+            },
+        ),
+    )
+    state.apply_event(
+        ChatEvent(
+            event_type="tool_failed",
+            session_id="session-test",
+            turn_index=1,
+            message="failed tool file_read",
+            payload={
+                "tool_name": "file_read",
+                "args_summary": {"path": "missing.md"},
+                "error_type": "tool_argument_invalid",
+                "message": "path does not exist: missing.md",
+            },
+        ),
+    )
+
+    rendered = state.render()
+    detail = state.selected_item().detail_text()
+
+    assert "shell" in rendered
+    assert "done" in rendered
+    assert "file_read" in rendered
+    assert "failed" in rendered
+    assert secret not in rendered
+    assert secret not in detail
+    assert "[REDACTED_TOKEN]" in detail
+
+
+def test_tui_changed_file_summary_extracts_file_write_and_patch_without_git(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    write_summary = changed_files_from_tool_event(
+        "file_write",
+        args_summary={"path": "notes/today.md", "mode": "create", "content_chars": 20},
+        result_summary={"path": str(workspace / "notes" / "today.md"), "mode": "create", "bytes_written": 20, "created": True},
+        workspace_root=workspace,
+    )
+    patch_summary = changed_files_from_tool_event(
+        "apply_patch_set",
+        args_summary={"paths": ["docs/a.md", "docs/b.md"], "replacement_count": 2},
+        result_summary={"paths": ["docs/a.md", "docs/b.md"], "replacement_count": 2},
+        workspace_root=workspace,
+    )
+
+    assert [item.path for item in write_summary] == ["notes/today.md"]
+    assert write_summary[0].change_type == "added"
+    assert "20 bytes" in write_summary[0].summary
+    assert [item.path for item in patch_summary] == ["docs/a.md", "docs/b.md"]
+    assert all(item.change_type == "modified" for item in patch_summary)
+
+
+def test_tui_workspace_path_containment_is_normalized(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    inside = workspace / "docs" / "plan.md"
+    outside = tmp_path / "outside.md"
+
+    assert path_stays_in_workspace("docs/plan.md", workspace)
+    assert path_stays_in_workspace(str(inside), workspace)
+    assert not path_stays_in_workspace("../outside.md", workspace)
+    assert not path_stays_in_workspace(str(outside), workspace)
+
+
+def test_tui_failure_next_steps_are_conservative() -> None:
+    steps = failure_next_steps(
+        failed_stage="executing",
+        failure_category="Tool Argument Failure",
+        reason="path does not exist",
+        episode_path=".runs/episode-failed",
+    )
+    joined = "\n".join(steps)
+
+    assert "查看工具详情" in joined
+    assert "重试" in joined
+    assert "调整请求" in joined
+    assert ".runs/episode-failed" in joined
+    assert "修复完成" not in joined
+    assert "一定是" not in joined
+
+
+def test_tui_redact_mapping_for_display_hides_secret_values() -> None:
+    secret = "sk-test1234567890abcdef1234567890abcdef"
+
+    text = redact_mapping_for_display({"command": f"echo {secret}", "path": "notes.md"})
+
+    assert secret not in text
+    assert "[REDACTED_TOKEN]" in text
+    assert "notes.md" in text
+
+
 def test_tui_parser_accepts_explicit_command() -> None:
     parser = cli.build_parser()
 
@@ -718,6 +852,22 @@ def test_tui_q_does_not_exit_while_prompt_input_is_focused(tmp_path: Path) -> No
     asyncio.run(run_existing_input())
 
 
+def test_tui_plain_s_does_not_open_sessions_or_search(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            assert input_widget.has_focus
+            await pilot.press("s")
+            await pilot.pause(0.1)
+            assert input_widget.value == "s"
+            assert "Sessions" not in _all_text(app)
+            assert "Search" not in _all_text(app)
+
+    asyncio.run(run())
+
+
 def test_tui_help_uses_modal_without_polluting_conversation(tmp_path: Path) -> None:
     async def run() -> None:
         service = FakeAssistantService(workspace_root=tmp_path)
@@ -748,7 +898,8 @@ def test_tui_help_modal_is_contextual_for_memory_modes(tmp_path: Path) -> None:
             await pilot.press("?")
             await pilot.pause(0.1)
             assert "记忆候选列表" in _all_text(app)
-            assert "j/k" in _all_text(app)
+            assert "↑/↓" in _all_text(app)
+            assert "j/k" not in _all_text(app)
             await pilot.press("escape")
             await pilot.pause(0.1)
 
@@ -886,7 +1037,9 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
         service = FakeAssistantService(workspace_root=tmp_path, sessions=sessions)
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("s")
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/sessions"
+            await pilot.press("enter")
             await pilot.pause(0.1)
             assert "Sessions" in _all_text(app)
             await pilot.press("c", "s", "v")
@@ -903,21 +1056,25 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
         service = FakeAssistantService(workspace_root=tmp_path, sessions=sessions)
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("s")
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/sessions"
+            await pilot.press("enter")
             await pilot.pause(0.1)
             await pilot.press("l")
             await pilot.pause(0.1)
             assert service.continued_latest_count == 1
             assert service.current_session_id == "session-alpha"
 
-            await pilot.press("s")
+            input_widget.value = "/sessions"
+            await pilot.press("enter")
             await pilot.pause(0.1)
             await pilot.press("n")
             await pilot.pause(0.1)
             assert service.created_sessions == ["session-new-1"]
             assert "session-new-1" in _text(app, "#side-bar")
 
-            await pilot.press("s")
+            input_widget.value = "/sessions"
+            await pilot.press("enter")
             await pilot.pause(0.1)
             await pilot.press("escape")
             await pilot.pause(0.1)
@@ -1073,6 +1230,277 @@ def test_tui_approval_requested_opens_modal_with_deny_focused(tmp_path: Path) ->
             assert "Tool shell pending approval" in conversation
 
     asyncio.run(run())
+
+
+def test_tui_workbench_shows_phase_timeline_pending_changes_and_failure(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            interaction_request=_approval_request({"command": "uv run pytest -q", "cwd": ".", "timeout_seconds": 30}),
+            extra_events=[
+                ChatEvent(
+                    event_type="tool_started",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="starting tool file_write",
+                    payload={"tool_name": "file_write", "args_summary": {"path": "notes.md", "mode": "create"}},
+                ),
+                ChatEvent(
+                    event_type="tool_finished",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="finished tool file_write",
+                    payload={
+                        "tool_name": "file_write",
+                        "status": "success",
+                        "result_summary": {"path": str(tmp_path / "notes.md"), "mode": "create", "bytes_written": 12, "created": True},
+                        "episode_path": str(tmp_path / ".runs" / "episode-ok"),
+                    },
+                ),
+            ],
+        )
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "写一个 notes"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            side = _text(app, "#side-bar")
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            failed_side = _text(app, "#side-bar")
+
+            assert "Task Workbench" in side
+            assert "Current Phase" in side
+            assert "waiting approval" in side
+            assert "Tool Timeline" in side
+            assert "file_write" in side
+            assert "done" in side
+            assert "Pending Decision" in side
+            assert "shell" in side
+            assert "Changed Files" in side
+            assert "notes.md" in side
+            assert "added" in side
+            assert "Last Failure" in failed_side
+            assert "request_user_input" not in failed_side
+            assert "查看工具详情" in _text(app, "#conversation")
+
+    asyncio.run(run())
+
+
+def test_tui_tool_detail_overlay_opens_scrolls_closes_and_redacts_secret(tmp_path: Path) -> None:
+    async def run() -> None:
+        secret = "sk-test1234567890abcdef1234567890abcdef"
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            extra_events=[
+                ChatEvent(
+                    event_type="tool_started",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="starting tool shell",
+                    payload={
+                        "tool_name": "shell",
+                        "args_summary": {"command": f"echo {secret}", "cwd": "."},
+                        "reason": "检查命令输出",
+                    },
+                ),
+                ChatEvent(
+                    event_type="tool_finished",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="finished tool shell",
+                    payload={
+                        "tool_name": "shell",
+                        "status": "success",
+                        "result_summary": {
+                            "exit_code": 0,
+                            "stdout_excerpt": ("line\n" * 40) + secret,
+                            "stderr_excerpt": "",
+                        },
+                        "episode_path": str(tmp_path / ".runs" / "episode-shell"),
+                    },
+                ),
+            ],
+        )
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "运行命令"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            await pilot.press("tab")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            rendered = _all_text(app)
+            await pilot.press("pagedown")
+            await pilot.pause(0.1)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+
+            assert "Tool Details" in rendered
+            assert "tool name: shell" in rendered
+            assert "status: done" in rendered
+            assert "reason: 检查命令输出" in rendered
+            assert "args:" in rendered
+            assert "stdout:" in rendered
+            assert "episode:" in rendered
+            assert str(tmp_path / ".runs" / "episode-shell") in rendered
+            assert secret not in rendered
+            assert "[REDACTED_TOKEN]" in rendered
+            assert "Tool Details" not in _all_text(app)
+
+    asyncio.run(run())
+
+
+def test_tui_tool_timeline_keyboard_selection_opens_failed_detail(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            extra_events=[
+                ChatEvent(
+                    event_type="tool_started",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="starting tool file_read",
+                    payload={"tool_name": "file_read", "args_summary": {"path": "README.md"}},
+                ),
+                ChatEvent(
+                    event_type="tool_finished",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="finished tool file_read",
+                    payload={"tool_name": "file_read", "status": "success", "result_summary": {"path": "README.md"}},
+                ),
+                ChatEvent(
+                    event_type="tool_failed",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="failed tool file_write",
+                    payload={
+                        "tool_name": "file_write",
+                        "args_summary": {"path": "blocked.md"},
+                        "error_type": "tool_argument_invalid",
+                        "message": "parent directory does not exist",
+                    },
+                ),
+            ],
+        )
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "读取再写入"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            await pilot.press("tab")
+            await pilot.pause(0.1)
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert "> file_write" in _text(app, "#side-bar")
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            rendered = _all_text(app)
+
+            assert "Tool Details" in rendered
+            assert "tool name: file_write" in rendered
+            assert "status: failed" in rendered
+            assert "parent directory does not exist" in rendered
+
+    asyncio.run(run())
+
+
+def test_tui_tools_overlay_available_when_sidebar_collapsed(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            extra_events=[
+                ChatEvent(
+                    event_type="tool_started",
+                    session_id="session-test",
+                    turn_index=1,
+                    message="starting tool file_read",
+                    payload={"tool_name": "file_read", "args_summary": {"path": "README.md"}},
+                ),
+            ],
+        )
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(80, 24)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "读文件"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert app.query_one("#side-bar").has_class("hidden")
+            input_widget.value = "/tools"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            rendered = _all_text(app)
+
+            assert "Task Workbench" in rendered
+            assert "Tool Timeline" in rendered
+            assert "file_read" in rendered
+
+    asyncio.run(run())
+
+
+def test_tui_running_task_can_cancel_and_submit_again(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, block_until_released=True)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "Long task"
+            await pilot.press("enter")
+            await asyncio.to_thread(service.started.wait, 2)
+            await pilot.press("ctrl+x")
+            await pilot.pause(0.2)
+
+            assert service.cancelled_count == 1
+            assert "state: cancelled" in _text(app, "#status-bar")
+            assert "Current Phase" in _text(app, "#side-bar")
+            assert "cancelled" in _text(app, "#side-bar")
+            assert app._pending_interaction is None
+            assert "任务已取消" in _text(app, "#conversation")
+
+            service.started.clear()
+            input_widget.value = "Second task"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert service.prompts[-1] == "Second task"
+
+    asyncio.run(run())
+
+
+def test_tui_layout_sizes_keep_workbench_stable(tmp_path: Path) -> None:
+    async def run_80() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(80, 24)):
+            assert app.query_one("#side-bar").has_class("hidden")
+            assert "/tools" in _text(app, "#footer-bar")
+
+    async def run_120() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)):
+            side = _text(app, "#side-bar")
+            assert "Task Workbench" in side
+            assert "Current Phase" in side
+            assert "Tool Timeline" in side
+            assert "Changed Files" in side
+
+    async def run_200() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(200, 60)):
+            side = _text(app, "#side-bar")
+            assert "Task Workbench" in side
+            assert "Workspace" in side
+            assert "Profile" in side
+
+    asyncio.run(run_80())
+    asyncio.run(run_120())
+    asyncio.run(run_200())
 
 
 def test_tui_approval_allow_returns_approved_true_to_same_prompt(tmp_path: Path) -> None:
@@ -1309,7 +1737,7 @@ def test_tui_memory_navigation_selects_second_candidate_for_confirm_and_reject(t
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("m")
             await pilot.pause(0.1)
-            await pilot.press("j")
+            await pilot.press("down")
             await pilot.pause(0.1)
             assert "> cand_second" in _text(app, "#side-bar")
             await pilot.press("r")
@@ -1349,7 +1777,8 @@ def test_tui_memory_navigation_supports_home_end_and_keeps_selection_after_detai
             await pilot.pause(0.1)
             assert "> cand_first" in _text(app, "#side-bar")
             footer = _text(app, "#footer-bar")
-            assert "[↑/↓ j/k]移动" in footer
+            assert "[↑/↓]移动" in footer
+            assert "j/k" not in footer
             assert "[g/G]首尾" in footer
 
     asyncio.run(run())
@@ -1374,7 +1803,7 @@ def test_tui_memory_navigation_moves_one_candidate_per_keypress(tmp_path: Path) 
             await pilot.pause(0.1)
             assert "> cand_second" in _text(app, "#side-bar")
 
-            await pilot.press("j")
+            await pilot.press("down")
             await pilot.pause(0.1)
             assert "> cand_third" in _text(app, "#side-bar")
 
@@ -1382,9 +1811,35 @@ def test_tui_memory_navigation_moves_one_candidate_per_keypress(tmp_path: Path) 
             await pilot.pause(0.1)
             assert "> cand_second" in _text(app, "#side-bar")
 
-            await pilot.press("k")
+            await pilot.press("up")
             await pilot.pause(0.1)
             assert "> cand_first" in _text(app, "#side-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_j_k_do_not_move_memory_selection(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            memory_candidates=[
+                _memory_candidate("cand_first", "第一条偏好"),
+                _memory_candidate("cand_second", "第二条偏好"),
+            ],
+        )
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            await pilot.press("j")
+            await pilot.pause(0.1)
+            assert "> cand_first" in _text(app, "#side-bar")
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert "> cand_second" in _text(app, "#side-bar")
+            await pilot.press("k")
+            await pilot.pause(0.1)
+            assert "> cand_second" in _text(app, "#side-bar")
 
     asyncio.run(run())
 

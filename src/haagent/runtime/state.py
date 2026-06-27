@@ -16,3 +16,4 @@ class RunStatus(str, Enum):
     VERIFYING = "verifying"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"

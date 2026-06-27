@@ -11,6 +11,9 @@ from typing import Any
 from haagent.app.assistant_service import AssistantWorkspaceStatus
 from haagent.memory import MemoryCandidate
 from haagent.runtime.human_interaction import HumanInteractionRequest
+from haagent.tui.changes import ChangedFileSummary, render_changed_files
+from haagent.tui.failures import FailureView
+from haagent.tui.tool_timeline import ToolTimelineState
 from haagent.tui.utils import safe_summary, short_session, truncate_end, truncate_status_line, workspace_label
 
 
@@ -37,15 +40,32 @@ def side_bar(
     status: AssistantWorkspaceStatus,
     *,
     ui_state: str,
-    tool_lines: list[str],
-    last_failure: dict[str, str] | None,
+    timeline: ToolTimelineState | None = None,
+    changed_files: list[ChangedFileSummary] | None = None,
+    pending_decision: str | None = None,
+    last_failure: FailureView | dict[str, str] | None,
     memory_text: str | None = None,
 ) -> str:
     if memory_text is not None:
         return memory_text
-    tool_summary = "\n".join(f"  {line}" for line in tool_lines[-5:]) or "  none"
     turn_count = status.current_turn_count if status.current_turn_count is not None else 0
+    timeline_text = timeline.render(limit=8) if timeline is not None else "  none"
+    changed_text = render_changed_files(changed_files or [])
     return (
+        "Task Workbench\n"
+        "Current Phase\n"
+        f"  {ui_state}\n\n"
+        "Tool Timeline\n"
+        f"{timeline_text}\n\n"
+        "Pending Decision\n"
+        f"  {pending_decision or 'none'}\n\n"
+        "Changed Files\n"
+        f"{changed_text}\n\n"
+        "Last Failure\n"
+        f"{format_last_failure(last_failure)}\n\n"
+        "Workspace\n"
+        f"  root: {status.workspace_root}\n"
+        f"  runs: {status.runs_root}\n\n"
         "Profile\n"
         f"  name: {status.profile_name or 'missing'}\n"
         f"  provider: {status.provider or '-'}\n"
@@ -57,11 +77,7 @@ def side_bar(
         "Session\n"
         f"  id: {status.current_session_id or '-'}\n"
         f"  turns: {turn_count}\n"
-        f"  state: {ui_state}\n\n"
-        "Tools This Turn\n"
-        f"{tool_summary}\n\n"
-        "Last Failure\n"
-        f"{format_last_failure(last_failure)}"
+        f"  state: {ui_state}"
     )
 
 
@@ -107,7 +123,7 @@ def memory_panel_text(
     for index, candidate in enumerate(candidates):
         marker = ">" if index == selected_index else " "
         lines.append(f"{marker} {candidate.candidate_id} [{candidate.scope}/{candidate.category}] {candidate.title}")
-    lines.extend(["", "↑/↓ j/k 移动  g/G 首尾  Enter 详情  a/y 确认  r 拒绝  Esc 返回"])
+    lines.extend(["", "↑/↓ 移动  g/G 首尾  Enter 详情  a/y 确认  r 拒绝  Esc 返回"])
     return "\n".join(lines)
 
 
@@ -209,9 +225,11 @@ def failure_body(failed_stage: str, category: str, reason: str, episode_path: st
     return "\n".join(lines)
 
 
-def format_last_failure(failure: dict[str, str] | None) -> str:
+def format_last_failure(failure: FailureView | dict[str, str] | None) -> str:
     if failure is None:
         return "  none"
+    if isinstance(failure, FailureView):
+        return failure.summary_text()
     return (
         f"  category: {failure['failure_category']}\n"
         f"  stage: {failure['failed_stage']}\n"

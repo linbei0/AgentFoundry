@@ -74,7 +74,7 @@ class SessionOverlayState:
             marker = ">" if index == min(self.selected_index, len(visible) - 1) else " "
             request = safe_summary(session.first_request or "-", 42)
             lines.append(f"{marker} {session.session_id}  turns:{session.turn_count}  {request}")
-        lines.extend(["", "输入过滤  ↑/↓ j/k 移动  Enter 恢复  l 继续最新  n 新建  Esc 关闭"])
+        lines.extend(["", "输入过滤  ↑/↓ 移动  Enter 恢复  l 继续最新  n 新建  Esc 关闭"])
         return "\n".join(lines)
 
 
@@ -92,11 +92,11 @@ class SessionOverlay(ModalScreen[SessionOverlayResult | None]):
             event.stop()
             self.dismiss(None)
             return
-        if key in {"up", "k"}:
+        if key == "up":
             event.stop()
             self._set_state(self.state.move(-1))
             return
-        if key in {"down", "j"}:
+        if key == "down":
             event.stop()
             self._set_state(self.state.move(1))
             return

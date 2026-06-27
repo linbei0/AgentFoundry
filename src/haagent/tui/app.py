@@ -14,12 +14,14 @@ from haagent.app.assistant_service import AssistantService
 from haagent.memory import MemoryCandidate
 from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
+from haagent.tui.changes import ChangedFileSummary, changed_files_from_tool_event, merge_changed_files
 from haagent.tui.command_suggestions import CommandSuggestionOverlay
 from haagent.tui.commands import command_registry, parse_slash_command
+from haagent.tui.failures import FailureView, failure_from_payload
 from haagent.tui.file_ref_modal import FileReferenceOverlay
 from haagent.tui.file_refs import query_after_at, replace_at_query
 from haagent.tui.keys import APP_BINDINGS, footer_text
-from haagent.tui.modals import HelpModal, ToolApprovalModal
+from haagent.tui.modals import HelpModal, ToolApprovalModal, ToolDetailsModal
 from haagent.tui.renderers import (
     failure_body,
     memory_panel_text,
@@ -28,6 +30,7 @@ from haagent.tui.renderers import (
     status_line,
 )
 from haagent.tui.state import MIN_HEIGHT, MIN_WIDTH, PendingInteraction, layout_for_size
+from haagent.tui.tool_timeline import ToolTimelineState
 from haagent.tui.search_modal import SearchOverlay
 from haagent.tui.sessions import SessionOverlay, SessionOverlayResult
 from haagent.tui.utils import safe_summary
@@ -48,7 +51,10 @@ class HaAgentTuiApp(App[None]):
         self._conversation_rendered_count = 0
         self._conversation_placeholder_rendered = False
         self._tool_lines: list[str] = []
-        self._last_failure: dict[str, str] | None = None
+        self._timeline = ToolTimelineState()
+        self._changed_files: list[ChangedFileSummary] = []
+        self._last_failure: FailureView | None = None
+        self._pending_decision: str | None = None
         self._pending_interaction: PendingInteraction | None = None
         self._default_prompt_placeholder = "输入消息；Enter 发送，Shift+Enter 换行"
         self._memory_mode = False
@@ -89,10 +95,6 @@ class HaAgentTuiApp(App[None]):
         prompt_input = self.query_one("#prompt-input", PromptInput)
         if self._prompt_value(prompt_input):
             return
-        if event.key == "s":
-            event.stop()
-            self.action_open_sessions()
-            return
         if event.key in {"/", "slash"} or event.character == "/":
             event.stop()
             self.action_open_command_suggestions()
@@ -130,6 +132,8 @@ class HaAgentTuiApp(App[None]):
             self._complete_interaction(HumanInteractionResponse(approved=True, answer=prompt))
             return
         self._append_block("You", prompt)
+        if self._state == "cancelled":
+            self._pending_decision = None
         self._state = "running"
         self._refresh()
         self._run_prompt(prompt)
@@ -290,6 +294,10 @@ class HaAgentTuiApp(App[None]):
                 self.action_toggle_memory()
         elif command.action == "tools":
             self.action_focus_tools()
+            if self.query_one("#side-bar", SideBar).has_class("hidden"):
+                self.action_open_tool_details()
+        elif command.action == "cancel_task":
+            self.action_cancel_current_task()
         elif command.action == "new_session":
             self.action_new_session()
         elif command.action == "resume_latest":
@@ -350,28 +358,35 @@ class HaAgentTuiApp(App[None]):
         if event_type == "assistant_message":
             self._append_block("Assistant", payload_text(payload, "content", event.message))
         elif event_type == "tool_started":
-            self._record_tool_line(f"Tool {payload_text(payload, 'tool_name', 'unknown')} ...")
+            self._record_tool_event(event)
         elif event_type == "tool_finished":
-            self._record_tool_line(f"Tool {payload_text(payload, 'tool_name', 'unknown')} done")
+            self._record_tool_event(event)
         elif event_type == "tool_failed":
-            self._record_tool_line(f"Tool {payload_text(payload, 'tool_name', 'unknown')} failed")
+            self._record_tool_event(event)
         elif event_type == "approval_requested":
             self._state = "waiting approval"
             tool_name = payload_text(payload, "tool_name", "unknown")
+            self._pending_decision = f"{tool_name}: {payload_text(payload, 'question', event.message)}"
+            self._timeline.apply_event(event)
             self._tool_lines.append(f"{tool_name} pending approval")
             self._append_line(f"Tool {tool_name} pending approval")
         elif event_type == "user_input_requested":
             self._state = "waiting input"
             question = payload_text(payload, "question", event.message)
+            self._pending_decision = question
             self._set_answer_required(question)
             self._append_block("Answer required", question)
         elif event_type == "approval_granted":
             tool_name = payload_text(payload, "tool_name", "unknown")
             self._state = "running"
+            self._pending_decision = None
+            self._timeline.apply_event(event)
             self._tool_lines.append(f"{tool_name} approved")
             self._append_line(f"Approval granted: {tool_name}")
         elif event_type == "approval_denied":
             tool_name = payload_text(payload, "tool_name", "unknown")
+            self._pending_decision = None
+            self._timeline.apply_event(event)
             self._tool_lines.append(f"{tool_name} denied")
             self._append_line(f"Approval denied: {tool_name}")
         elif event_type == "user_input_received":
@@ -388,9 +403,32 @@ class HaAgentTuiApp(App[None]):
         self._tool_lines.append(line)
         self._append_line(line)
 
+    def _record_tool_event(self, event: ChatEvent) -> None:
+        self._timeline.apply_event(event)
+        tool_name = payload_text(event.payload, "tool_name", "unknown")
+        status = "..."
+        if event.event_type == "tool_finished":
+            status = "done"
+            self._record_changed_files(event)
+        elif event.event_type == "tool_failed":
+            status = "failed"
+        self._record_tool_line(f"Tool {tool_name} {status}")
+
+    def _record_changed_files(self, event: ChatEvent) -> None:
+        status = self.service.get_workspace_status()
+        tool_name = payload_text(event.payload, "tool_name", "unknown")
+        new_items = changed_files_from_tool_event(
+            tool_name,
+            args_summary=event.payload.get("args_summary") if isinstance(event.payload.get("args_summary"), dict) else {},
+            result_summary=event.payload.get("result_summary") if isinstance(event.payload.get("result_summary"), dict) else {},
+            workspace_root=status.workspace_root,
+        )
+        self._changed_files = merge_changed_files(self._changed_files, new_items)
+
     def _handle_user_input_received(self, event: ChatEvent) -> None:
         tool_name = payload_text(event.payload, "tool_name", "request_user_input")
         self._state = "running"
+        self._pending_decision = None
         if event.payload.get("approved") is False:
             self._append_line(f"Answer declined: {tool_name}")
         else:
@@ -410,17 +448,9 @@ class HaAgentTuiApp(App[None]):
 
     def _handle_failure_event(self, event: ChatEvent) -> None:
         self._state = "failed"
-        reason = payload_text(event.payload, "reason", event.message)
-        failed_stage = payload_text(event.payload, "failed_stage", "unknown")
-        category = payload_text(event.payload, "failure_category", "unknown")
-        episode_path = payload_text(event.payload, "episode_path", "unknown")
-        self._last_failure = {
-            "failed_stage": failed_stage,
-            "failure_category": category,
-            "reason": reason,
-            "episode_path": episode_path,
-        }
-        self._append_block("Failure", failure_body(failed_stage, category, reason, episode_path))
+        self._pending_decision = None
+        self._last_failure = failure_from_payload(event.payload, event.message)
+        self._append_block("Failure", self._last_failure.block_text())
 
     def _handle_interaction(self, request: HumanInteractionRequest) -> HumanInteractionResponse:
         pending = PendingInteraction(request)
@@ -449,6 +479,7 @@ class HaAgentTuiApp(App[None]):
         pending.response = response
         pending.done.set()
         self._pending_interaction = None
+        self._pending_decision = None
         self._restore_prompt_input()
         self._state = "running"
         self._refresh()
@@ -469,10 +500,26 @@ class HaAgentTuiApp(App[None]):
         prompt_input.move_cursor(_end_location(value))
 
     def _finish_prompt(self, status: str) -> None:
-        if status == "completed" and self._state not in {"waiting approval", "waiting input"}:
+        if self._state == "cancelled":
+            self._refresh()
+            return
+        if status == "completed" and self._state not in {"waiting approval", "waiting input", "cancelled"}:
             self._state = "idle"
+        elif status == "cancelled":
+            self._state = "cancelled"
         elif status != "completed":
             self._state = "failed"
+            if self._last_failure is None:
+                failed_tool = next((item for item in reversed(self._timeline.items) if item.status == "failed"), None)
+                reason = failed_tool.error_summary if failed_tool is not None else status
+                category = "Tool Failure" if failed_tool is not None else "Runtime Failure"
+                self._last_failure = FailureView(
+                    failed_stage="executing",
+                    failure_category=category,
+                    reason=reason or status,
+                    episode_path=failed_tool.episode_path if failed_tool is not None else "unknown",
+                )
+                self._append_block("Failure", self._last_failure.block_text())
         self._refresh()
 
     def _handle_prompt_error(self, error: Exception) -> None:
@@ -498,7 +545,9 @@ class HaAgentTuiApp(App[None]):
             side_bar(
                 status,
                 ui_state=self._state,
-                tool_lines=self._tool_lines,
+                timeline=self._timeline,
+                changed_files=self._changed_files,
+                pending_decision=self._pending_decision,
                 last_failure=self._last_failure,
                 memory_text=self._memory_panel_text() if self._memory_mode else None,
             ),
@@ -513,6 +562,43 @@ class HaAgentTuiApp(App[None]):
         if self._memory_mode:
             return "memory_detail" if self._memory_detail_mode else "memory_list"
         return "chat"
+
+    def on_side_bar_move_selection(self, message: SideBar.MoveSelection) -> None:
+        if self._memory_mode:
+            return
+        self._timeline.move(message.delta)
+        self._refresh()
+
+    def on_side_bar_open_details(self, message: SideBar.OpenDetails) -> None:
+        if self._memory_mode:
+            return
+        self.action_open_tool_details()
+
+    def action_open_tool_details(self) -> None:
+        item = self._timeline.selected_item()
+        if item is None:
+            self.push_screen(HelpModal("chat"))
+            return
+        self.push_screen(ToolDetailsModal(item), self._defer_prompt_focus)
+
+    def action_cancel_current_task(self) -> None:
+        if self._state not in {"running", "waiting approval", "waiting input"}:
+            return
+        cancel = getattr(self.service, "cancel_current_run", None)
+        if cancel is None:
+            self._append_block("Cancel", "当前 service 未提供可取消协议；本轮不能安全取消。")
+            self._refresh()
+            return
+        cancel()
+        if self._pending_interaction is not None:
+            self._pending_interaction.response = HumanInteractionResponse(approved=False, answer="")
+            self._pending_interaction.done.set()
+            self._pending_interaction = None
+        self._pending_decision = None
+        self._restore_prompt_input()
+        self._state = "cancelled"
+        self._append_block("Cancel", "任务已取消。你可以调整请求后再次提交。")
+        self._refresh()
 
     def _refresh_conversation(self) -> None:
         conversation = self.query_one("#conversation", ConversationView)
@@ -554,10 +640,10 @@ class HaAgentTuiApp(App[None]):
         return self._memory_candidates[self._memory_selected]
 
     def _handle_memory_key(self, key: str) -> bool:
-        if key in {"up", "k"}:
+        if key == "up":
             self.action_memory_up()
             return True
-        if key in {"down", "j"}:
+        if key == "down":
             self.action_memory_down()
             return True
         if key == "g":

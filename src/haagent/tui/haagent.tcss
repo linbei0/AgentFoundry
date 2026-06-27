@@ -53,6 +53,7 @@ Screen {
 
 HelpModal,
 ToolApprovalModal,
+ToolDetailsModal,
 SessionOverlay,
 SearchOverlay,
 CommandSuggestionOverlay,
@@ -62,6 +63,7 @@ FileReferenceOverlay {
 
 #help-dialog,
 #approval-dialog,
+#tool-details-dialog,
 #sessions-dialog,
 #search-dialog,
 #command-suggestions-dialog,
@@ -73,6 +75,7 @@ FileReferenceOverlay {
 }
 
 #help-dialog,
+#tool-details-dialog,
 #sessions-dialog,
 #search-dialog,
 #command-suggestions-dialog,
@@ -85,14 +88,27 @@ FileReferenceOverlay {
 }
 
 #help-title,
-#approval-title {
+#approval-title,
+#tool-details-title {
     text-style: bold;
     margin-bottom: 1;
 }
 
 #help-body,
-#approval-body {
+#approval-body,
+#tool-details-body {
     margin-bottom: 1;
+}
+
+#tool-details-dialog {
+    width: 86;
+    height: 80%;
+    border: solid $primary;
+}
+
+#tool-details-body {
+    height: 1fr;
+    overflow-y: auto;
 }
 
 #approval-buttons {

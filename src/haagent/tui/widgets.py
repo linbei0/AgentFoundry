@@ -17,10 +17,10 @@ class PromptInput(TextArea):
     BINDINGS = [
         Binding("enter", "submit_from_input", "发送", priority=True),
         Binding("shift+enter", "insert_newline_from_input", "换行", priority=True),
-        Binding("s", "open_sessions_from_input", "会话", priority=True),
         Binding("/", "open_command_suggestions_from_input", "命令", priority=True),
         Binding("slash", "open_command_suggestions_from_input", "命令", priority=True),
         Binding("ctrl+f", "open_search_from_input", "搜索", priority=True),
+        Binding("ctrl+x", "cancel_current_task_from_input", "取消任务", priority=True),
     ]
 
     class Submitted(Message):
@@ -55,14 +55,11 @@ class PromptInput(TextArea):
         event.stop()
         app.action_toggle_memory()
 
-    def action_open_sessions_from_input(self) -> None:
-        if self.value:
-            self.insert("s")
-            return
-        self.app.action_open_sessions()
-
     def action_open_search_from_input(self) -> None:
         self.app.action_open_search()
+
+    def action_cancel_current_task_from_input(self) -> None:
+        self.app.action_cancel_current_task()
 
     def action_submit_from_input(self) -> None:
         self.app.action_submit_prompt()
@@ -97,8 +94,31 @@ class ConversationView(RichLog):
 
 
 class SideBar(Static):
+    can_focus = True
+
+    class MoveSelection(Message):
+        def __init__(self, delta: int) -> None:
+            self.delta = delta
+            super().__init__()
+
+    class OpenDetails(Message):
+        pass
+
     def update_content(self, text: str) -> None:
         self.update(text)
+
+    def on_key(self, event: events.Key) -> None:
+        if getattr(self.app, "_memory_mode", False):
+            return
+        if event.key == "up":
+            event.stop()
+            self.post_message(self.MoveSelection(-1))
+        elif event.key == "down":
+            event.stop()
+            self.post_message(self.MoveSelection(1))
+        elif event.key == "enter":
+            event.stop()
+            self.post_message(self.OpenDetails())
 
 
 class FooterBar(Static):

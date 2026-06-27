@@ -16,12 +16,14 @@ APP_BINDINGS = [
     ("ctrl+q", "quit", "退出"),
     ("ctrl+f", "open_search", "搜索"),
     ("?", "help", "帮助"),
+    Binding("tab", "focus_tools", "工具", priority=True),
     Binding("m", "toggle_memory", "记忆", priority=True),
     ("enter", "memory_enter", "详情"),
     ("a", "confirm_memory", "确认记忆"),
     ("y", "confirm_memory", "确认记忆"),
     ("r", "reject_memory", "拒绝记忆"),
     ("escape", "cancel_interaction", "取消"),
+    ("ctrl+x", "cancel_current_task", "取消任务"),
     ("pageup", "conversation_page_up", "上翻"),
     ("pagedown", "conversation_page_down", "下翻"),
 ]
@@ -41,15 +43,17 @@ _HELP_LINES: dict[KeyContext, list[tuple[str, str]]] = {
         ("Shift+Enter", "插入换行"),
         ("PgUp/PgDn", "滚动对话"),
         ("/", "打开快捷命令"),
+        ("/tools", "打开任务工作台"),
+        ("/cancel", "取消当前任务"),
         ("Ctrl+F", "搜索当前对话"),
-        ("s", "打开 session 列表"),
+        ("/sessions", "打开 session 列表"),
         ("m", "打开记忆候选审查"),
         ("Tab", "切换焦点"),
         ("?", "打开此帮助"),
         ("Ctrl+Q", "退出 TUI"),
     ],
     "memory_list": [
-        ("↑/↓ 或 j/k", "移动选中项"),
+        ("↑/↓", "移动选中项"),
         ("g/G", "跳到首项/末项"),
         ("Enter", "查看当前候选详情"),
         ("a 或 y", "确认当前候选"),
@@ -93,8 +97,8 @@ _HELP_TITLES: dict[KeyContext, str] = {
 }
 
 _FOOTER_KEYS: dict[KeyContext, list[str]] = {
-    "chat": ["Enter", "Shift+Enter", "/", "Ctrl+F", "s", "m", "Tab", "?", "Ctrl+Q"],
-    "memory_list": ["↑/↓ j/k", "g/G", "Enter", "a/y", "r", "Esc", "?", "Ctrl+Q"],
+    "chat": ["Enter", "Shift+Enter", "/", "/tools", "Ctrl+F", "m", "Tab", "?", "Ctrl+Q"],
+    "memory_list": ["↑/↓", "g/G", "Enter", "a/y", "r", "Esc", "?", "Ctrl+Q"],
     "memory_detail": ["Esc", "a/y", "r", "?", "Ctrl+Q"],
     "pending_input": ["Enter", "Shift+Enter", "Esc", "?", "Ctrl+Q"],
     "approval": ["y", "n", "Esc", "?", "Ctrl+Q"],
@@ -117,7 +121,7 @@ def key_help_lines(context: str, *, footer_only: bool = False, include_footer_on
     result: list[tuple[str, str]] = []
     matched_footer_keys: set[str] = set()
     for key, description in lines:
-        compact_key = key.replace(" 或 ", " ").replace("↑/↓ 或 j/k", "↑/↓ j/k")
+        compact_key = key.replace(" 或 ", " ")
         if key in footer_keys or compact_key in footer_keys:
             result.append((compact_key, description))
             matched_footer_keys.add(key)
