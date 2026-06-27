@@ -14,6 +14,7 @@ KeyContext = Literal["chat", "memory_list", "memory_detail", "pending_input", "a
 
 APP_BINDINGS = [
     ("ctrl+q", "quit", "退出"),
+    ("ctrl+f", "open_search", "搜索"),
     ("?", "help", "帮助"),
     Binding("m", "toggle_memory", "记忆", priority=True),
     ("enter", "memory_enter", "详情"),
@@ -37,7 +38,11 @@ HELP_DISMISS_BINDINGS = [("escape", "dismiss_help", "关闭")]
 _HELP_LINES: dict[KeyContext, list[tuple[str, str]]] = {
     "chat": [
         ("Enter", "发送当前输入"),
+        ("Shift+Enter", "插入换行"),
         ("PgUp/PgDn", "滚动对话"),
+        ("/", "打开快捷命令"),
+        ("Ctrl+F", "搜索当前对话"),
+        ("s", "打开 session 列表"),
         ("m", "打开记忆候选审查"),
         ("Tab", "切换焦点"),
         ("?", "打开此帮助"),
@@ -61,6 +66,7 @@ _HELP_LINES: dict[KeyContext, list[tuple[str, str]]] = {
     ],
     "pending_input": [
         ("Enter", "提交回答并继续同一轮任务"),
+        ("Shift+Enter", "插入换行"),
         ("Esc", "取消回答"),
         ("?", "打开此帮助"),
         ("Ctrl+Q", "退出 TUI"),
@@ -87,10 +93,10 @@ _HELP_TITLES: dict[KeyContext, str] = {
 }
 
 _FOOTER_KEYS: dict[KeyContext, list[str]] = {
-    "chat": ["Enter", "PgUp/PgDn", "m", "Tab", "?", "Ctrl+Q"],
+    "chat": ["Enter", "Shift+Enter", "/", "Ctrl+F", "s", "m", "Tab", "?", "Ctrl+Q"],
     "memory_list": ["↑/↓ j/k", "g/G", "Enter", "a/y", "r", "Esc", "?", "Ctrl+Q"],
     "memory_detail": ["Esc", "a/y", "r", "?", "Ctrl+Q"],
-    "pending_input": ["Enter", "Esc", "?", "Ctrl+Q"],
+    "pending_input": ["Enter", "Shift+Enter", "Esc", "?", "Ctrl+Q"],
     "approval": ["y", "n", "Esc", "?", "Ctrl+Q"],
     "too_small": ["Ctrl+Q"],
 }
@@ -155,10 +161,18 @@ def _footer_label(description: str) -> str:
         return "滚动"
     if description.startswith("打开记忆"):
         return "记忆"
+    if description.startswith("打开快捷"):
+        return "命令"
+    if description.startswith("搜索"):
+        return "搜索"
+    if description.startswith("打开 session"):
+        return "会话"
     if description.startswith("切换"):
         return "焦点"
     if description.startswith("发送"):
         return "发送"
+    if description.startswith("插入换行"):
+        return "换行"
     if description.startswith("提交"):
         return "提交回答"
     if description.startswith("取消"):

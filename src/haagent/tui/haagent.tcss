@@ -29,12 +29,13 @@ Screen {
 }
 
 #input-panel {
-    height: 3;
+    height: 5;
     padding: 0 1;
 }
 
 #prompt-input {
     width: 1fr;
+    height: 4;
 }
 
 #footer-bar {
@@ -51,19 +52,31 @@ Screen {
 }
 
 HelpModal,
-ToolApprovalModal {
+ToolApprovalModal,
+SessionOverlay,
+SearchOverlay,
+CommandSuggestionOverlay,
+FileReferenceOverlay {
     align: center middle;
 }
 
 #help-dialog,
-#approval-dialog {
+#approval-dialog,
+#sessions-dialog,
+#search-dialog,
+#command-suggestions-dialog,
+#file-ref-dialog {
     width: 72;
     height: auto;
     padding: 1 2;
     background: $surface;
 }
 
-#help-dialog {
+#help-dialog,
+#sessions-dialog,
+#search-dialog,
+#command-suggestions-dialog,
+#file-ref-dialog {
     border: solid $primary;
 }
 

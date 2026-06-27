@@ -14,6 +14,10 @@ from haagent.app.assistant_service import AssistantService
 from haagent.memory import MemoryCandidate
 from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
+from haagent.tui.command_suggestions import CommandSuggestionOverlay
+from haagent.tui.commands import command_registry, parse_slash_command
+from haagent.tui.file_ref_modal import FileReferenceOverlay
+from haagent.tui.file_refs import query_after_at, replace_at_query
 from haagent.tui.keys import APP_BINDINGS, footer_text
 from haagent.tui.modals import HelpModal, ToolApprovalModal
 from haagent.tui.renderers import (
@@ -24,8 +28,10 @@ from haagent.tui.renderers import (
     status_line,
 )
 from haagent.tui.state import MIN_HEIGHT, MIN_WIDTH, PendingInteraction, layout_for_size
+from haagent.tui.search_modal import SearchOverlay
+from haagent.tui.sessions import SessionOverlay, SessionOverlayResult
 from haagent.tui.utils import safe_summary
-from haagent.tui.widgets import ConversationView, FooterBar, PromptInput, ResizeMessage, SideBar, StatusBar
+from haagent.tui.widgets import ConversationView, FooterBar, PromptInput, ResizeMessage, SideBar, StatusBar, _end_location
 
 
 class HaAgentTuiApp(App[None]):
@@ -44,13 +50,14 @@ class HaAgentTuiApp(App[None]):
         self._tool_lines: list[str] = []
         self._last_failure: dict[str, str] | None = None
         self._pending_interaction: PendingInteraction | None = None
-        self._default_prompt_placeholder = "输入 prompt，Enter 发送"
+        self._default_prompt_placeholder = "输入消息；Enter 发送，Shift+Enter 换行"
         self._memory_mode = False
         self._memory_detail_mode = False
         self._memory_candidates: list[MemoryCandidate] = []
         self._memory_selected = 0
         self._memory_error: str | None = None
         self._memory_notice: str | None = None
+        self._commands = command_registry()
 
     def compose(self) -> ComposeResult:
         yield StatusBar("", id="status-bar")
@@ -59,7 +66,7 @@ class HaAgentTuiApp(App[None]):
             yield ConversationView(id="conversation", wrap=True, auto_scroll=True)
             yield SideBar("", id="side-bar")
         with Vertical(id="input-panel"):
-            yield PromptInput(placeholder=self._default_prompt_placeholder, id="prompt-input")
+            yield PromptInput(placeholder=self._default_prompt_placeholder, id="prompt-input", show_line_numbers=False)
         yield FooterBar(footer_text("chat"), id="footer-bar")
 
     def on_mount(self) -> None:
@@ -80,7 +87,15 @@ class HaAgentTuiApp(App[None]):
         if self._pending_interaction is not None:
             return
         prompt_input = self.query_one("#prompt-input", PromptInput)
-        if not prompt_input.has_focus or prompt_input.value:
+        if self._prompt_value(prompt_input):
+            return
+        if event.key == "s":
+            event.stop()
+            self.action_open_sessions()
+            return
+        if event.key in {"/", "slash"} or event.character == "/":
+            event.stop()
+            self.action_open_command_suggestions()
             return
         if event.key == "m":
             event.stop()
@@ -95,11 +110,22 @@ class HaAgentTuiApp(App[None]):
             event.stop()
             self.action_reject_memory()
 
-    def on_input_submitted(self, event: PromptInput.Submitted) -> None:
-        prompt = event.value.strip()
+    def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        self._submit_prompt(event.input)
+
+    def action_submit_prompt(self) -> None:
+        self._submit_prompt(self.query_one("#prompt-input", PromptInput))
+
+    def _submit_prompt(self, prompt_input: PromptInput) -> None:
+        prompt = self._prompt_value(prompt_input).strip()
         if not prompt:
             return
-        event.input.value = ""
+        command = parse_slash_command(prompt, self._commands)
+        if command is not None:
+            self._set_prompt_value(prompt_input, "")
+            self._handle_slash_command(command)
+            return
+        self._set_prompt_value(prompt_input, "")
         if self._pending_interaction is not None and self._pending_interaction.request.interaction_type == "user_input":
             self._complete_interaction(HumanInteractionResponse(approved=True, answer=prompt))
             return
@@ -110,6 +136,34 @@ class HaAgentTuiApp(App[None]):
 
     def action_help(self) -> None:
         self.push_screen(HelpModal(self._help_context()))
+
+    def action_open_sessions(self) -> None:
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        if prompt_input.has_focus and self._prompt_value(prompt_input):
+            prompt_input.insert("s")
+            return
+        self.push_screen(SessionOverlay(self.service.list_sessions()), self._handle_session_overlay_result)
+
+    def action_open_search(self) -> None:
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        if prompt_input.has_focus and self._prompt_value(prompt_input):
+            return
+        self.push_screen(SearchOverlay(list(self._conversation_lines)), self._defer_prompt_focus)
+
+    def action_open_command_suggestions(self) -> None:
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        if prompt_input.has_focus and self._prompt_value(prompt_input):
+            prompt_input.insert("/")
+            return
+        self.push_screen(CommandSuggestionOverlay(self._commands.commands()), self._handle_command_suggestion_result)
+
+    def action_open_file_refs(self) -> None:
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        query = query_after_at(self._prompt_value(prompt_input))
+        if query is None:
+            return
+        status = self.service.get_workspace_status()
+        self.push_screen(FileReferenceOverlay(status.workspace_root, query), self._handle_file_reference_result)
 
     def action_quit(self) -> None:
         self.exit(None)
@@ -138,7 +192,7 @@ class HaAgentTuiApp(App[None]):
         self._memory_detail_mode = False
         if self._memory_mode:
             self._load_memory_candidates()
-            self.query_one("#prompt-input", PromptInput).value = ""
+            self._set_prompt_value(self.query_one("#prompt-input", PromptInput), "")
             self.query_one("#side-bar", SideBar).focus()
         else:
             self.query_one("#prompt-input", PromptInput).focus()
@@ -197,6 +251,84 @@ class HaAgentTuiApp(App[None]):
         self._memory_detail_mode = False
         self._load_memory_candidates()
         self._refresh()
+
+    def action_focus_tools(self) -> None:
+        self.query_one("#side-bar", SideBar).focus()
+
+    def action_new_session(self) -> None:
+        try:
+            status = self.service.create_session()
+        except Exception as error:
+            self._append_block("Session warning", f"New session failed: {error}")
+        else:
+            self._append_line(f"New session: {status.session_id}")
+        self._refresh()
+
+    def action_resume_latest(self) -> None:
+        try:
+            status = self.service.continue_latest_session()
+        except Exception as error:
+            self._append_block("Session warning", f"Resume latest failed: {error}")
+        else:
+            self._append_line(f"Resumed session: {status.session_id}")
+        self._refresh()
+
+    def _handle_slash_command(self, result) -> None:
+        if result.error:
+            self._append_block("Command", result.error)
+            self._refresh()
+            return
+        command = result.command
+        if command is None:
+            return
+        if command.action == "help":
+            self.action_help()
+        elif command.action == "sessions":
+            self.action_open_sessions()
+        elif command.action == "memory":
+            if not self._memory_mode:
+                self.action_toggle_memory()
+        elif command.action == "tools":
+            self.action_focus_tools()
+        elif command.action == "new_session":
+            self.action_new_session()
+        elif command.action == "resume_latest":
+            self.action_resume_latest()
+
+    def _handle_session_overlay_result(self, result: SessionOverlayResult | None) -> None:
+        if result is None:
+            self.set_timer(0.01, self._restore_prompt_focus)
+            return
+        try:
+            if result.action == "resume" and result.session is not None:
+                status = self.service.resume_session(result.session.session_path)
+            elif result.action == "continue_latest":
+                status = self.service.continue_latest_session()
+            else:
+                status = self.service.create_session()
+        except Exception as error:
+            self._append_block("Session warning", f"Session operation failed: {error}")
+        else:
+            self._append_line(f"Session active: {status.session_id}")
+        self._refresh()
+        self.set_timer(0.01, self._restore_prompt_focus)
+
+    def _handle_command_suggestion_result(self, command) -> None:
+        if command is not None:
+            self._handle_slash_command(parse_slash_command(command.token, self._commands))
+        self.set_timer(0.01, self._restore_prompt_focus)
+
+    def _handle_file_reference_result(self, token: str | None) -> None:
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        if token is not None:
+            self._set_prompt_value(prompt_input, replace_at_query(self._prompt_value(prompt_input), token))
+        prompt_input.focus()
+
+    def _restore_prompt_focus(self, _result: object | None = None) -> None:
+        self.query_one("#prompt-input", PromptInput).focus()
+
+    def _defer_prompt_focus(self, _result: object | None = None) -> None:
+        self.set_timer(0.01, self._restore_prompt_focus)
 
     @work(thread=True, exclusive=True)
     def _run_prompt(self, prompt: str) -> None:
@@ -328,6 +460,13 @@ class HaAgentTuiApp(App[None]):
 
     def _restore_prompt_input(self) -> None:
         self.query_one("#prompt-input", PromptInput).placeholder = self._default_prompt_placeholder
+
+    def _prompt_value(self, prompt_input: PromptInput) -> str:
+        return prompt_input.text
+
+    def _set_prompt_value(self, prompt_input: PromptInput, value: str) -> None:
+        prompt_input.load_text(value)
+        prompt_input.move_cursor(_end_location(value))
 
     def _finish_prompt(self, status: str) -> None:
         if status == "completed" and self._state not in {"waiting approval", "waiting input"}:

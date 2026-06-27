@@ -8,14 +8,44 @@ from __future__ import annotations
 
 from rich.text import Text
 from textual import events
-from textual.widgets import Input, RichLog, Static
+from textual.binding import Binding
+from textual.message import Message
+from textual.widgets import RichLog, Static, TextArea
 
 
-class PromptInput(Input):
+class PromptInput(TextArea):
+    BINDINGS = [
+        Binding("enter", "submit_from_input", "发送", priority=True),
+        Binding("shift+enter", "insert_newline_from_input", "换行", priority=True),
+        Binding("s", "open_sessions_from_input", "会话", priority=True),
+        Binding("/", "open_command_suggestions_from_input", "命令", priority=True),
+        Binding("slash", "open_command_suggestions_from_input", "命令", priority=True),
+        Binding("ctrl+f", "open_search_from_input", "搜索", priority=True),
+    ]
+
+    class Submitted(Message):
+        def __init__(self, input: PromptInput, value: str) -> None:
+            self.input = input
+            self.value = value
+            super().__init__()
+
+    @property
+    def value(self) -> str:
+        return self.text
+
+    @value.setter
+    def value(self, text: str) -> None:
+        self.load_text(text)
+        self.move_cursor(_end_location(text))
+
     def on_key(self, event: events.Key) -> None:
+        app = self.app
+        if (event.key == "@" or event.character == "@") and self.value:
+            event.stop()
+            app.action_open_file_refs()
+            return
         if self.value:
             return
-        app = self.app
         if event.key in {"?", "question_mark"} or event.character == "?":
             event.stop()
             app.action_help()
@@ -24,6 +54,27 @@ class PromptInput(Input):
             return
         event.stop()
         app.action_toggle_memory()
+
+    def action_open_sessions_from_input(self) -> None:
+        if self.value:
+            self.insert("s")
+            return
+        self.app.action_open_sessions()
+
+    def action_open_search_from_input(self) -> None:
+        self.app.action_open_search()
+
+    def action_submit_from_input(self) -> None:
+        self.app.action_submit_prompt()
+
+    def action_insert_newline_from_input(self) -> None:
+        self.insert("\n")
+
+    def action_open_command_suggestions_from_input(self) -> None:
+        if self.value:
+            self.insert("/")
+            return
+        self.app.action_open_command_suggestions()
 
 
 class StatusBar(Static):
@@ -34,7 +85,7 @@ class StatusBar(Static):
 class ConversationView(RichLog):
     def show_placeholder(self) -> None:
         self.clear()
-        self.write(Text("Ready. 输入 prompt 后按 Enter 发送；Ctrl+Q 退出。"), scroll_end=True, animate=False)
+        self.write(Text("Ready. 输入消息后按 Enter 发送；Shift+Enter 换行；Ctrl+Q 退出。"), scroll_end=True, animate=False)
 
     def show_memory(self, text: str) -> None:
         self.clear()
@@ -57,3 +108,8 @@ class FooterBar(Static):
 
 class ResizeMessage(Static):
     pass
+
+
+def _end_location(text: str) -> tuple[int, int]:
+    lines = text.split("\n")
+    return (len(lines) - 1, len(lines[-1]))

@@ -12,15 +12,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from haagent import cli
-from haagent.app.assistant_service import AssistantWorkspaceStatus
+from haagent.app.assistant_service import AssistantSessionStatus, AssistantSessionSummary, AssistantWorkspaceStatus
 from haagent.memory import CandidateEvidence, MemoryCandidate, MemoryRecord
 from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
 from haagent.tui.app import HaAgentTuiApp
+from haagent.tui.commands import SlashCommandResult, command_registry, parse_slash_command
+from haagent.tui.file_refs import fuzzy_file_matches, path_reference_token
 from haagent.tui.keys import footer_text, help_body, key_help_lines
 from haagent.tui.renderers import memory_panel_text, status_line
+from haagent.tui.search import ConversationSearchState
+from haagent.tui.sessions import SessionOverlayState
 from haagent.tui.state import ResponsiveLayout, layout_for_size
-from textual.widgets import RichLog
+from haagent.tui.widgets import PromptInput
+from textual.widgets import RichLog, TextArea
 
 
 class FakeAssistantService:
@@ -46,6 +51,7 @@ class FakeAssistantService:
         memory_candidates: list[MemoryCandidate] | None = None,
         memory_error: Exception | None = None,
         current_session_id: str = "session-test",
+        sessions: list[AssistantSessionSummary] | None = None,
     ) -> None:
         self.workspace_root = workspace_root
         self.profile_name = profile_name
@@ -66,12 +72,16 @@ class FakeAssistantService:
         self.memory_candidates = list(memory_candidates or [])
         self.memory_error = memory_error
         self.current_session_id = current_session_id
+        self.sessions = list(sessions or [])
         self.started = threading.Event()
         self.release = threading.Event()
         self.prompts: list[str] = []
         self.interaction_responses: list[HumanInteractionResponse] = []
         self.confirmed_candidate_ids: list[str] = []
         self.rejected_candidate_ids: list[tuple[str, str]] = []
+        self.created_sessions: list[str] = []
+        self.resumed_sessions: list[str] = []
+        self.continued_latest_count = 0
 
     def get_workspace_status(self) -> AssistantWorkspaceStatus:
         return AssistantWorkspaceStatus(
@@ -142,6 +152,38 @@ class FakeAssistantService:
                 ),
             )
         return SimpleNamespace(status="completed")
+
+    def create_session(self) -> AssistantSessionStatus:
+        session_id = f"session-new-{len(self.created_sessions) + 1}"
+        self.created_sessions.append(session_id)
+        self.current_session_id = session_id
+        return self._session_status(session_id)
+
+    def resume_session(self, session: str | Path) -> AssistantSessionStatus:
+        session_text = str(session)
+        self.resumed_sessions.append(session_text)
+        match = next((item for item in self.sessions if str(item.session_path) == session_text), None)
+        self.current_session_id = match.session_id if match is not None else session_text
+        return self._session_status(self.current_session_id)
+
+    def continue_latest_session(self) -> AssistantSessionStatus:
+        self.continued_latest_count += 1
+        if self.sessions:
+            self.current_session_id = self.sessions[0].session_id
+        return self._session_status(self.current_session_id)
+
+    def list_sessions(self) -> list[AssistantSessionSummary]:
+        return list(self.sessions)
+
+    def _session_status(self, session_id: str) -> AssistantSessionStatus:
+        return AssistantSessionStatus(
+            session_id=session_id,
+            workspace_root=self.workspace_root,
+            runs_root=self.workspace_root / ".runs",
+            session_path=self.workspace_root / ".runs" / "sessions" / session_id,
+            turn_count=len(self.prompts),
+            provider=self.provider or "-",
+        )
 
     def list_memory_candidates(self, status: str | None = "pending") -> list[MemoryCandidate]:
         if self.memory_error is not None:
@@ -296,6 +338,18 @@ def _memory_candidate(candidate_id: str = "cand_abc123", title: str = "用户身
     )
 
 
+def _session_summary(tmp_path: Path, session_id: str, first_request: str, turn_count: int = 1) -> AssistantSessionSummary:
+    return AssistantSessionSummary(
+        session_id=session_id,
+        created_at="2026-06-27T00:00:00+00:00",
+        updated_at="2026-06-27T01:00:00+00:00",
+        workspace_root=tmp_path,
+        turn_count=turn_count,
+        first_request=first_request,
+        session_path=tmp_path / ".runs" / "sessions" / session_id,
+    )
+
+
 def test_tui_status_line_renderer_truncates_to_terminal_width(tmp_path: Path) -> None:
     status = FakeAssistantService(
         workspace_root=tmp_path / "very-long-workspace-name-for-status-rendering",
@@ -357,6 +411,71 @@ def test_tui_responsive_layout_state_is_testable_without_widgets() -> None:
     assert layout_for_size(120, 24) == ResponsiveLayout(too_small=False, show_side_bar=True)
 
 
+def test_tui_slash_command_registry_parses_known_and_unknown_commands() -> None:
+    registry = command_registry()
+
+    result = parse_slash_command("/sessions", registry)
+    unknown = parse_slash_command("/wat", registry)
+    not_command = parse_slash_command(" /help", registry)
+
+    assert result == SlashCommandResult(command=registry.require("sessions"), argument="")
+    assert unknown.command is None
+    assert unknown.error == "未知命令：/wat"
+    assert not_command is None
+    assert {command.name for command in registry.commands()} >= {"help", "sessions", "memory", "tools", "new", "resume"}
+
+
+def test_tui_conversation_search_state_tracks_matches_and_navigation() -> None:
+    state = ConversationSearchState(["You\n  inspect docs", "Tool file_read done", "Assistant\n  docs ready"])
+
+    matched = state.update_query("docs")
+    second = state.next_match()
+    first = state.previous_match()
+    empty = state.update_query("missing")
+
+    assert matched.count == 2
+    assert matched.current_line == 0
+    assert second.current_line == 2
+    assert first.current_line == 0
+    assert empty.count == 0
+    assert empty.status_text == "无匹配：missing"
+
+
+def test_tui_session_overlay_state_filters_and_selects_sessions(tmp_path: Path) -> None:
+    sessions = [
+        _session_summary(tmp_path, "session-alpha", "整理会议纪要", 3),
+        _session_summary(tmp_path, "session-beta", "分析 CSV", 1),
+    ]
+    state = SessionOverlayState(sessions=sessions)
+
+    filtered = state.with_query("csv")
+    selected = filtered.move(1)
+    empty = filtered.with_query("none")
+
+    assert [item.session_id for item in filtered.visible_sessions] == ["session-beta"]
+    assert selected.selected_session.session_id == "session-beta"
+    assert empty.selected_session is None
+    assert "无匹配 session" in empty.render()
+
+
+def test_tui_file_reference_fuzzy_search_stays_inside_workspace(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    target = docs / "Project Plan.md"
+    target.write_text("plan", encoding="utf-8")
+    (tmp_path / "README.md").write_text("readme", encoding="utf-8")
+    outside = tmp_path.parent / "outside-haagent-ref.txt"
+    outside.write_text("outside", encoding="utf-8")
+
+    matches = fuzzy_file_matches(tmp_path, "plan")
+    no_matches = fuzzy_file_matches(tmp_path, "missing")
+    token = path_reference_token(tmp_path, target)
+
+    assert [match.display_path for match in matches] == ["docs/Project Plan.md"]
+    assert no_matches == []
+    assert token == '@file("docs/Project Plan.md")'
+
+
 def test_tui_parser_accepts_explicit_command() -> None:
     parser = cli.build_parser()
 
@@ -384,12 +503,14 @@ def test_tui_app_starts_and_shows_status(tmp_path: Path) -> None:
             assert "Profile" in side
             assert "base_url: https://api.deepseek.com" in side
             assert "api_key_env: DEEPSEEK_API_KEY" in side
-            assert "Ctrl+Q 退出" in _text(app, "#conversation")
+            assert "Shift+Enter 换行" in _text(app, "#conversation")
             footer = _text(app, "#footer-bar")
             assert "[Ctrl+Q]退出" in footer
             assert "[q]退出" not in footer
             assert "[Enter]发送" in str(app.query_one("#footer-bar").render())
+            assert "[Shift+Enter]换行" in str(app.query_one("#footer-bar").render())
             assert "[Tab]焦点" in str(app.query_one("#footer-bar").render())
+            assert isinstance(app.query_one("#prompt-input"), TextArea)
 
     asyncio.run(run())
 
@@ -694,20 +815,233 @@ def test_tui_help_modal_is_contextual_for_approval_modal(tmp_path: Path) -> None
     asyncio.run(run())
 
 
-def test_tui_submit_prompt_calls_service_and_renders_assistant_event(tmp_path: Path) -> None:
+def test_tui_text_area_shift_enter_inserts_newline_and_enter_submits_prompt(tmp_path: Path) -> None:
     async def run() -> None:
         service = FakeAssistantService(workspace_root=tmp_path)
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
             input_widget = app.query_one("#prompt-input")
             input_widget.value = "Summarize this folder"
+            await pilot.press("shift+enter")
+            await pilot.pause(0.1)
+            assert service.prompts == []
+            assert input_widget.value == "Summarize this folder\n"
+            input_widget.value = "Summarize this folder\nwith constraints"
             await pilot.press("enter")
             await pilot.pause(0.2)
-            assert service.prompts == ["Summarize this folder"]
+            assert service.prompts == ["Summarize this folder\nwith constraints"]
+            assert input_widget.value == ""
             conversation = _text(app, "#conversation")
             assert "You" in conversation
             assert "Summarize this folder" in conversation
-            assert "assistant: Summarize this folder" in conversation
+            assert "with constraints" in conversation
+            assert "assistant: Summarize this folder\nwith constraints" in conversation
+
+    asyncio.run(run())
+
+
+def test_tui_text_area_blank_input_does_not_submit(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "  \n  "
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert service.prompts == []
+            assert input_widget.value == "  \n  "
+
+    asyncio.run(run())
+
+
+def test_tui_pending_input_answer_uses_enter_and_continues_same_turn(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, interaction_request=_user_input_request())
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "Inspect"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            input_widget.value = "README.md\nand docs"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert service.prompts == ["Inspect"]
+            assert service.interaction_responses == [
+                HumanInteractionResponse(approved=True, answer="README.md\nand docs"),
+            ]
+            assert input_widget.value == ""
+
+    asyncio.run(run())
+
+
+def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Path) -> None:
+    sessions = [
+        _session_summary(tmp_path, "session-alpha", "整理会议纪要", 3),
+        _session_summary(tmp_path, "session-beta", "分析 CSV", 1),
+    ]
+
+    async def run_resume() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, sessions=sessions)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("s")
+            await pilot.pause(0.1)
+            assert "Sessions" in _all_text(app)
+            await pilot.press("c", "s", "v")
+            await pilot.pause(0.1)
+            assert "session-beta" in _all_text(app)
+            assert "session-alpha" not in str(app.screen.render())
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert service.resumed_sessions == [str(sessions[1].session_path)]
+            assert "session-beta" in _text(app, "#status-bar")
+            assert "Sessions" not in _all_text(app)
+
+    async def run_continue_new_escape() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, sessions=sessions)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("s")
+            await pilot.pause(0.1)
+            await pilot.press("l")
+            await pilot.pause(0.1)
+            assert service.continued_latest_count == 1
+            assert service.current_session_id == "session-alpha"
+
+            await pilot.press("s")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.1)
+            assert service.created_sessions == ["session-new-1"]
+            assert "session-new-1" in _text(app, "#side-bar")
+
+            await pilot.press("s")
+            await pilot.pause(0.1)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            assert "Sessions" not in _all_text(app)
+
+    asyncio.run(run_resume())
+    asyncio.run(run_continue_new_escape())
+
+
+def test_tui_search_overlay_finds_conversation_and_does_not_pollute_conversation(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            app._append_block("Assistant", "Alpha docs\nBeta docs")
+            app._append_line("Tool file_read done")
+            app._refresh_conversation()
+            await pilot.pause()
+            before = _text(app, "#conversation")
+
+            await pilot.press("ctrl+f")
+            await pilot.pause(0.1)
+            await pilot.press("d", "o", "c", "s")
+            await pilot.pause(0.1)
+            assert "Search" in _all_text(app)
+            assert "1/2" in _all_text(app)
+            await pilot.press("n")
+            await pilot.pause(0.1)
+            assert "2/2" in _all_text(app)
+            await pilot.press("shift+n")
+            await pilot.pause(0.1)
+            assert "1/2" in _all_text(app)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            assert _text(app, "#conversation") == before
+
+            await pilot.press("ctrl+f")
+            await pilot.press("x", "x", "x")
+            await pilot.pause(0.1)
+            assert "无匹配" in _all_text(app)
+
+    asyncio.run(run())
+
+
+def test_tui_slash_command_suggestions_filter_execute_and_do_not_pollute_conversation(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, sessions=[_session_summary(tmp_path, "session-old", "继续任务")])
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            before = _text(app, "#conversation")
+
+            await pilot.press("/")
+            await pilot.pause(0.1)
+            assert "Commands" in _all_text(app)
+            assert "/help" in _all_text(app)
+            assert "/resume" in _all_text(app)
+            await pilot.press("h", "e")
+            await pilot.pause(0.1)
+            assert "过滤: /he" in _all_text(app)
+            assert "/help" in _all_text(app)
+            assert "/resume" not in _all_text(app)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert "HaAgent Help" in _all_text(app)
+            assert _text(app, "#conversation") == before
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+
+            await pilot.press("/")
+            await pilot.pause(0.1)
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert "Sessions" in _all_text(app)
+            assert service.prompts == []
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/new"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            input_widget.value = "/resume"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            input_widget.value = "/unknown"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert service.prompts == []
+            assert service.created_sessions == ["session-new-1"]
+            assert service.continued_latest_count == 1
+            assert "未知命令：/unknown" in _text(app, "#conversation")
+
+    asyncio.run(run())
+
+
+def test_tui_file_reference_overlay_selects_workspace_file(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "Project Plan.md").write_text("plan", encoding="utf-8")
+
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input", PromptInput)
+            input_widget.value = "Read @pla"
+            await pilot.press("@")
+            await pilot.pause(0.1)
+            assert "File References" in _all_text(app)
+            assert "docs/Project Plan.md" in _all_text(app)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert input_widget.value == 'Read @file("docs/Project Plan.md")'
+
+            input_widget.value = "Read @missing"
+            await pilot.press("@")
+            await pilot.pause(0.1)
+            assert "无匹配文件" in _all_text(app)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            assert "File References" not in _all_text(app)
 
     asyncio.run(run())
 
