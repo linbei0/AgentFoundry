@@ -12,7 +12,9 @@ from haagent.app.assistant_service import AssistantWorkspaceStatus
 from haagent.memory import MemoryCandidate
 from haagent.runtime.human_interaction import HumanInteractionRequest
 from haagent.tui.changes import ChangedFileSummary, render_changed_files
+from haagent.tui.copy import EMPTY_LABELS, PANEL_TITLES, WORKBENCH_TITLES
 from haagent.tui.failures import FailureView
+from haagent.tui.theme import status_badge, status_semantic
 from haagent.tui.tool_timeline import ToolTimelineState
 from haagent.tui.utils import safe_summary, short_session, truncate_end, truncate_status_line, workspace_label
 
@@ -23,15 +25,20 @@ def status_line(status: AssistantWorkspaceStatus, *, ui_state: str, width: int) 
     model_limit = 4 if width <= 80 else 14
     session_limit = 4 if width <= 80 else 12
     turn_count = status.current_turn_count if status.current_turn_count is not None else 0
+    provider_model = (
+        f"{truncate_end(status.provider or '-', 14)}/"
+        if width <= 80
+        else f"{truncate_end(status.provider or '-', 14)}/{truncate_end(status.model or '-', model_limit)}"
+    )
     prefix = (
         f"ws:{workspace_label(status.workspace_root, workspace_limit)} "
         f"profile: {truncate_end(status.profile_name or 'missing', 12)} "
-        f"{truncate_end(status.provider or '-', 14)}/{truncate_end(status.model or '-', model_limit)} "
+        f"{provider_model} "
         f"key: {compact_key_state(status)} "
-        f"sid:{short_session(status.current_session_id or '-', session_limit)} "
-        f"turn:{turn_count}"
+        f"turn:{turn_count} "
+        f"sid:{short_session(status.current_session_id or '-', session_limit)}"
     )
-    state = f" state: {ui_state}"
+    state = f" 状态: {status_badge(ui_state)} state: {ui_state}"
     prefix_width = max(0, width - len(state))
     return f"{truncate_status_line(prefix, prefix_width)}{state}"
 
@@ -52,21 +59,21 @@ def side_bar(
     timeline_text = timeline.render(limit=8) if timeline is not None else "  none"
     changed_text = render_changed_files(changed_files or [])
     return (
-        "Task Workbench\n"
-        "Current Phase\n"
-        f"  {ui_state}\n\n"
-        "Tool Timeline\n"
+        f"{PANEL_TITLES['workbench']}\n"
+        f"{WORKBENCH_TITLES['phase']}\n"
+        f"  {status_badge(ui_state)} ({ui_state})\n\n"
+        f"{WORKBENCH_TITLES['timeline']}\n"
         f"{timeline_text}\n\n"
-        "Pending Decision\n"
-        f"  {pending_decision or 'none'}\n\n"
-        "Changed Files\n"
+        f"{WORKBENCH_TITLES['pending']}\n"
+        f"  {pending_decision or EMPTY_LABELS['none']}\n\n"
+        f"{WORKBENCH_TITLES['changed']}\n"
         f"{changed_text}\n\n"
-        "Last Failure\n"
+        f"{WORKBENCH_TITLES['failure']}\n"
         f"{format_last_failure(last_failure)}\n\n"
-        "Workspace\n"
+        f"{PANEL_TITLES['workspace']}\n"
         f"  root: {status.workspace_root}\n"
         f"  runs: {status.runs_root}\n\n"
-        "Profile\n"
+        f"{PANEL_TITLES['profile']}\n"
         f"  name: {status.profile_name or 'missing'}\n"
         f"  provider: {status.provider or '-'}\n"
         f"  base_url: {status.base_url or '-'}\n"
@@ -74,10 +81,11 @@ def side_bar(
         f"  api_key_env: {status.api_key_env or '-'}\n"
         f"  key: {key_state(status)}\n"
         f"  keyring: {keyring_status(status)}\n\n"
-        "Session\n"
+        f"{PANEL_TITLES['current_session']}\n"
         f"  id: {status.current_session_id or '-'}\n"
         f"  turns: {turn_count}\n"
-        f"  state: {ui_state}"
+        f"  state: {ui_state}\n"
+        f"  状态: {status_badge(ui_state)}"
     )
 
 
@@ -111,15 +119,15 @@ def memory_panel_text(
     notice: str | None,
     error: str | None,
 ) -> str:
-    prefix = ["Memory", f"  {notice}", ""] if notice else []
+    prefix = [PANEL_TITLES["memory"], f"  {notice}", ""] if notice else []
     if error:
-        return "\n".join([*prefix, "Memory Candidates", f"  Memory candidates unavailable: {error}"])
+        return "\n".join([*prefix, PANEL_TITLES["memory"], f"  记忆候选不可用：{error}"])
     if not candidates:
-        return "\n".join([*prefix, "Memory Candidates", "  no pending candidates"])
+        return "\n".join([*prefix, PANEL_TITLES["memory"], f"  {EMPTY_LABELS['no_pending_candidates']}"])
     selected_index = min(max(selected_index, 0), len(candidates) - 1)
     if detail_mode:
         return "\n".join([*prefix, memory_candidate_detail(candidates[selected_index])])
-    lines = [*prefix, "Memory Candidates"]
+    lines = [*prefix, PANEL_TITLES["memory"]]
     for index, candidate in enumerate(candidates):
         marker = ">" if index == selected_index else " "
         lines.append(f"{marker} {candidate.candidate_id} [{candidate.scope}/{candidate.category}] {candidate.title}")
@@ -130,7 +138,7 @@ def memory_panel_text(
 def memory_candidate_detail(candidate: MemoryCandidate) -> str:
     evidence = candidate.evidence
     lines = [
-        "Memory Candidate Detail",
+        "记忆候选详情",
         f"candidate_id: {candidate.candidate_id}",
         f"status: {candidate.status}",
         f"scope: {candidate.scope}",
@@ -193,8 +201,8 @@ def payload_text(payload: dict[str, object], key: str, default: str) -> str:
 
 def key_state(status: AssistantWorkspaceStatus) -> str:
     if status.api_key_available and status.credential_source_used:
-        return f"available via {status.credential_source_used}"
-    return "missing"
+        return f"available via {status.credential_source_used} ({status_semantic('success').symbol} 可用)"
+    return f"missing ({status_semantic('failed').symbol} 缺失)"
 
 
 def compact_key_state(status: AssistantWorkspaceStatus) -> str:
@@ -227,7 +235,7 @@ def failure_body(failed_stage: str, category: str, reason: str, episode_path: st
 
 def format_last_failure(failure: FailureView | dict[str, str] | None) -> str:
     if failure is None:
-        return "  none"
+        return f"  {EMPTY_LABELS['none']}"
     if isinstance(failure, FailureView):
         return failure.summary_text()
     return (

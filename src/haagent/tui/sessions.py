@@ -15,6 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from haagent.app.assistant_service import AssistantSessionSummary
+from haagent.tui.copy import EMPTY_LABELS, MODAL_TITLES
 from haagent.tui.utils import safe_summary
 
 SessionOverlayAction = Literal["resume", "continue_latest", "new"]
@@ -63,13 +64,13 @@ class SessionOverlayState:
 
     def render(self) -> str:
         lines = [
-            "Sessions",
+            MODAL_TITLES["sessions"],
             f"搜索: {self.query or '-'}",
             "",
         ]
         visible = self.visible_sessions
         if not visible:
-            lines.append("无匹配 session")
+            lines.append(EMPTY_LABELS["no_matching_sessions"])
         for index, session in enumerate(visible):
             marker = ">" if index == min(self.selected_index, len(visible) - 1) else " "
             request = safe_summary(session.first_request or "-", 42)

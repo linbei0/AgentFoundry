@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from haagent.runtime.chat_session import ChatEvent
+from haagent.tui.copy import MODAL_TITLES
+from haagent.tui.theme import status_badge
 from haagent.tui.utils import safe_summary
 
 
@@ -39,24 +41,15 @@ class ToolTimelineItem:
 
     def line_text(self, *, selected: bool = False) -> str:
         marker = ">" if selected else " "
-        status_symbol = {
-            "pending": "?",
-            "running": "...",
-            "done": "ok",
-            "failed": "!",
-            "cancelled": "x",
-            "approved": "ok",
-            "denied": "!",
-        }.get(self.status, self.status)
         impact = f"  {safe_summary(self.impact, 48)}" if self.impact else ""
         display_status = "pending approval" if self.status == "pending" else self.status
-        return f"{marker} {self.tool_name} {display_status} {status_symbol}{impact}".rstrip()
+        return f"{marker} {self.tool_name} {status_badge(display_status)} ({display_status}){impact}".rstrip()
 
     def detail_text(self) -> str:
         lines = [
-            "Tool Details",
+            MODAL_TITLES["tool_details"],
             f"tool name: {safe_summary(self.tool_name, 120)}",
-            f"status: {safe_summary(self.status, 80)}",
+            f"status: {status_badge(self.status)} ({safe_summary(self.status, 80)})",
             f"reason: {safe_summary(self.reason or 'none', 240)}",
             f"args: {redact_mapping_for_display(self.args_summary)}",
             f"impact: {safe_summary(self.impact or '影响范围以工具参数摘要为准', 240)}",

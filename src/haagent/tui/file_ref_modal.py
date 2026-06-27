@@ -13,6 +13,7 @@ from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from haagent.tui.copy import EMPTY_LABELS, MODAL_TITLES
 from haagent.tui.file_refs import FileReferenceMatch, fuzzy_file_matches, path_reference_token
 
 
@@ -76,9 +77,9 @@ class FileReferenceOverlay(ModalScreen[str | None]):
         self.query_one("#file-ref-dialog", Static).update(self._body())
 
     def _body(self) -> str:
-        lines = ["File References", f"搜索: {self.filter_text or '-'}", ""]
+        lines = [MODAL_TITLES["file_refs"], f"搜索: {self.filter_text or '-'}", ""]
         if not self.matches:
-            lines.append("无匹配文件")
+            lines.append(EMPTY_LABELS["no_matching_files"])
         for index, match in enumerate(self.matches):
             marker = ">" if index == self.selected_index else " "
             lines.append(f"{marker} {match.display_path}")

@@ -1,11 +1,25 @@
 Screen {
     layout: vertical;
+    background: $background;
+    color: $foreground;
+}
+
+Screen.theme-light {
+    background: $background;
+    color: $foreground;
+}
+
+Screen.theme-monochrome {
+    background: $background;
+    color: $foreground;
 }
 
 #status-bar {
     height: 1;
     padding: 0 1;
     background: $surface;
+    color: $foreground;
+    text-style: bold;
 }
 
 #main {
@@ -16,7 +30,7 @@ Screen {
     width: 1fr;
     height: 1fr;
     padding: 1;
-    border: solid $primary;
+    border: solid $panel;
     overflow-y: auto;
 }
 
@@ -24,7 +38,7 @@ Screen {
     width: 36;
     height: 1fr;
     padding: 1;
-    border: solid $primary;
+    border: solid $panel;
     overflow-y: auto;
 }
 
@@ -42,6 +56,7 @@ Screen {
     height: 1;
     padding: 0 1;
     background: $surface;
+    color: $foreground;
 }
 
 #resize-message {
@@ -49,6 +64,83 @@ Screen {
     content-align: center middle;
     padding: 1 2;
     border: solid $warning;
+}
+
+#conversation.panel-focused,
+#side-bar.panel-focused,
+#prompt-input.panel-focused {
+    border: heavy $primary;
+}
+
+.status-default {
+    color: $foreground;
+}
+
+.status-muted {
+    color: $text-muted;
+    text-style: dim;
+}
+
+.status-emphasis,
+.status-focus {
+    color: $primary;
+    text-style: bold;
+}
+
+.status-success {
+    color: $success;
+    text-style: bold;
+}
+
+.status-warning,
+.status-pending {
+    color: $warning;
+    text-style: bold;
+}
+
+.status-error,
+.status-danger {
+    color: $error;
+    text-style: bold;
+}
+
+.status-info,
+.status-running {
+    color: $secondary;
+    text-style: bold;
+}
+
+.status-selection {
+    background: $primary;
+    color: $background;
+    text-style: reverse;
+}
+
+.status-cancelled {
+    color: $warning;
+    text-style: bold;
+}
+
+Screen.theme-monochrome .status-default,
+Screen.theme-monochrome .status-muted,
+Screen.theme-monochrome .status-emphasis,
+Screen.theme-monochrome .status-success,
+Screen.theme-monochrome .status-warning,
+Screen.theme-monochrome .status-error,
+Screen.theme-monochrome .status-info,
+Screen.theme-monochrome .status-selection,
+Screen.theme-monochrome .status-focus,
+Screen.theme-monochrome .status-running,
+Screen.theme-monochrome .status-cancelled,
+Screen.theme-monochrome .status-pending,
+Screen.theme-monochrome .status-danger {
+    color: $foreground;
+}
+
+Screen.theme-monochrome #conversation.panel-focused,
+Screen.theme-monochrome #side-bar.panel-focused,
+Screen.theme-monochrome #prompt-input.panel-focused {
+    border: heavy $foreground;
 }
 
 HelpModal,
@@ -119,6 +211,14 @@ FileReferenceOverlay {
 #approval-allow,
 #approval-deny {
     margin: 0 2;
+}
+
+.action-success {
+    text-style: bold;
+}
+
+.action-danger {
+    text-style: bold reverse;
 }
 
 .hidden {

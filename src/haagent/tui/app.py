@@ -17,6 +17,7 @@ from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInte
 from haagent.tui.changes import ChangedFileSummary, changed_files_from_tool_event, merge_changed_files
 from haagent.tui.command_suggestions import CommandSuggestionOverlay
 from haagent.tui.commands import command_registry, parse_slash_command
+from haagent.tui.copy import BLOCK_TITLES
 from haagent.tui.failures import FailureView, failure_from_payload
 from haagent.tui.file_ref_modal import FileReferenceOverlay
 from haagent.tui.file_refs import query_after_at, replace_at_query
@@ -30,6 +31,16 @@ from haagent.tui.renderers import (
     status_line,
 )
 from haagent.tui.state import MIN_HEIGHT, MIN_WIDTH, PendingInteraction, layout_for_size
+from haagent.tui.theme import (
+    next_theme,
+    no_color_enabled,
+    select_theme,
+    semantic_tokens,
+    status_badge,
+    status_semantic,
+    textual_themes,
+    theme_label,
+)
 from haagent.tui.tool_timeline import ToolTimelineState
 from haagent.tui.search_modal import SearchOverlay
 from haagent.tui.sessions import SessionOverlay, SessionOverlayResult
@@ -64,6 +75,7 @@ class HaAgentTuiApp(App[None]):
         self._memory_error: str | None = None
         self._memory_notice: str | None = None
         self._commands = command_registry()
+        self._theme_choice = select_theme()
 
     def compose(self) -> ComposeResult:
         yield StatusBar("", id="status-bar")
@@ -76,6 +88,7 @@ class HaAgentTuiApp(App[None]):
         yield FooterBar(footer_text("chat"), id="footer-bar")
 
     def on_mount(self) -> None:
+        self._apply_theme()
         self.query_one("#side-bar", SideBar).can_focus = True
         self._show_initial_configuration_state()
         self._refresh()
@@ -172,6 +185,15 @@ class HaAgentTuiApp(App[None]):
     def action_quit(self) -> None:
         self.exit(None)
 
+    def action_toggle_theme(self) -> None:
+        self._theme_choice = next_theme(self._theme_choice)
+        self._apply_theme()
+        if no_color_enabled():
+            self._append_line("NO_COLOR 已启用，主题保持单色")
+        else:
+            self._append_line(f"主题已切换：{theme_label(self._theme_choice)}")
+        self._refresh()
+
     def action_conversation_page_up(self) -> None:
         self.query_one("#conversation", ConversationView).scroll_page_up(animate=False, force=True)
 
@@ -234,8 +256,8 @@ class HaAgentTuiApp(App[None]):
             self._memory_notice = f"Memory confirm failed: {error}"
             self._append_block("Memory warning", f"Memory confirm failed: {error}")
         else:
-            self._memory_notice = f"Memory confirmed: {candidate.candidate_id}"
-            self._append_line(f"Memory confirmed: {candidate.candidate_id}")
+            self._memory_notice = f"已确认记忆候选：{candidate.candidate_id}"
+            self._append_line(f"记忆已确认：{candidate.candidate_id}")
         self._memory_detail_mode = False
         self._load_memory_candidates()
         self._refresh()
@@ -250,8 +272,8 @@ class HaAgentTuiApp(App[None]):
             self._memory_notice = f"Memory reject failed: {error}"
             self._append_block("Memory warning", f"Memory reject failed: {error}")
         else:
-            self._memory_notice = f"Memory rejected: {candidate.candidate_id}"
-            self._append_line(f"Memory rejected: {candidate.candidate_id}")
+            self._memory_notice = f"已拒绝记忆候选：{candidate.candidate_id}"
+            self._append_line(f"记忆已拒绝：{candidate.candidate_id}")
         self._memory_detail_mode = False
         self._load_memory_candidates()
         self._refresh()
@@ -263,18 +285,18 @@ class HaAgentTuiApp(App[None]):
         try:
             status = self.service.create_session()
         except Exception as error:
-            self._append_block("Session warning", f"New session failed: {error}")
+            self._append_block("Session warning", f"新建会话失败：{error}")
         else:
-            self._append_line(f"New session: {status.session_id}")
+            self._append_line(f"新建会话：{status.session_id}")
         self._refresh()
 
     def action_resume_latest(self) -> None:
         try:
             status = self.service.continue_latest_session()
         except Exception as error:
-            self._append_block("Session warning", f"Resume latest failed: {error}")
+            self._append_block("Session warning", f"继续最新会话失败：{error}")
         else:
-            self._append_line(f"Resumed session: {status.session_id}")
+            self._append_line(f"已恢复会话：{status.session_id}")
         self._refresh()
 
     def _handle_slash_command(self, result) -> None:
@@ -315,9 +337,9 @@ class HaAgentTuiApp(App[None]):
             else:
                 status = self.service.create_session()
         except Exception as error:
-            self._append_block("Session warning", f"Session operation failed: {error}")
+            self._append_block("Session warning", f"会话操作失败：{error}")
         else:
-            self._append_line(f"Session active: {status.session_id}")
+            self._append_line(f"当前会话：{status.session_id}")
         self._refresh()
         self.set_timer(0.01, self._restore_prompt_focus)
 
@@ -369,7 +391,7 @@ class HaAgentTuiApp(App[None]):
             self._pending_decision = f"{tool_name}: {payload_text(payload, 'question', event.message)}"
             self._timeline.apply_event(event)
             self._tool_lines.append(f"{tool_name} pending approval")
-            self._append_line(f"Tool {tool_name} pending approval")
+            self._append_line(f"工具 {tool_name} {status_badge('pending approval')} (pending approval)")
         elif event_type == "user_input_requested":
             self._state = "waiting input"
             question = payload_text(payload, "question", event.message)
@@ -382,13 +404,13 @@ class HaAgentTuiApp(App[None]):
             self._pending_decision = None
             self._timeline.apply_event(event)
             self._tool_lines.append(f"{tool_name} approved")
-            self._append_line(f"Approval granted: {tool_name}")
+            self._append_line(f"审批已允许：{tool_name}")
         elif event_type == "approval_denied":
             tool_name = payload_text(payload, "tool_name", "unknown")
             self._pending_decision = None
             self._timeline.apply_event(event)
             self._tool_lines.append(f"{tool_name} denied")
-            self._append_line(f"Approval denied: {tool_name}")
+            self._append_line(f"审批已拒绝：{tool_name}")
         elif event_type == "user_input_received":
             self._handle_user_input_received(event)
         elif event_type == "memory_candidates_created":
@@ -406,13 +428,13 @@ class HaAgentTuiApp(App[None]):
     def _record_tool_event(self, event: ChatEvent) -> None:
         self._timeline.apply_event(event)
         tool_name = payload_text(event.payload, "tool_name", "unknown")
-        status = "..."
+        status = "running"
         if event.event_type == "tool_finished":
             status = "done"
             self._record_changed_files(event)
         elif event.event_type == "tool_failed":
             status = "failed"
-        self._record_tool_line(f"Tool {tool_name} {status}")
+        self._record_tool_line(f"工具 {tool_name} {status_badge(status)} ({status})")
 
     def _record_changed_files(self, event: ChatEvent) -> None:
         status = self.service.get_workspace_status()
@@ -430,9 +452,9 @@ class HaAgentTuiApp(App[None]):
         self._state = "running"
         self._pending_decision = None
         if event.payload.get("approved") is False:
-            self._append_line(f"Answer declined: {tool_name}")
+            self._append_line(f"回答已取消：{tool_name}")
         else:
-            self._append_line(f"Answer submitted: {tool_name}")
+            self._append_line(f"回答已提交：{tool_name}")
 
     def _handle_memory_candidates_created(self, event: ChatEvent) -> None:
         message = payload_text(
@@ -539,9 +561,12 @@ class HaAgentTuiApp(App[None]):
 
     def _refresh(self) -> None:
         status = self.service.get_workspace_status()
-        self.query_one("#status-bar", StatusBar).update_status(status_line(status, ui_state=self._state, width=self.size.width))
+        status_bar = self.query_one("#status-bar", StatusBar)
+        status_bar.update_status(status_line(status, ui_state=self._state, width=self.size.width))
+        self._apply_status_classes(status_bar)
         self._refresh_conversation()
-        self.query_one("#side-bar", SideBar).update_content(
+        side = self.query_one("#side-bar", SideBar)
+        side.update_content(
             side_bar(
                 status,
                 ui_state=self._state,
@@ -553,6 +578,7 @@ class HaAgentTuiApp(App[None]):
             ),
         )
         self.query_one("#footer-bar", FooterBar).update_footer(footer_text(self._help_context()))
+        self._apply_focus_classes()
 
     def _help_context(self) -> str:
         if self.size.width < self.MIN_WIDTH or self.size.height < self.MIN_HEIGHT:
@@ -674,10 +700,31 @@ class HaAgentTuiApp(App[None]):
         return footer_text(self._help_context())
 
     def _append_block(self, title: str, body: str) -> None:
-        self._conversation_lines.append(f"{title}\n  {body}")
+        self._conversation_lines.append(f"{BLOCK_TITLES.get(title, title)}\n  {body}")
 
     def _append_line(self, line: str) -> None:
         self._conversation_lines.append(line)
+
+    def _apply_theme(self) -> None:
+        for theme in textual_themes():
+            if theme.name not in self.available_themes:
+                self.register_theme(theme)
+        self.theme = self._theme_choice.textual_theme
+        for choice in ("theme-dark", "theme-light", "theme-monochrome"):
+            self.screen.set_class(choice == self._theme_choice.css_class, choice)
+
+    def _apply_status_classes(self, widget: StatusBar) -> None:
+        semantic = status_semantic(self._state)
+        for token in semantic_tokens():
+            widget.set_class(semantic.css_class == f"status-{token.value}", f"status-{token.value}")
+
+    def _apply_focus_classes(self) -> None:
+        side = self.query_one("#side-bar", SideBar)
+        prompt = self.query_one("#prompt-input", PromptInput)
+        conversation = self.query_one("#conversation", ConversationView)
+        side.set_class(side.has_focus or self._memory_mode, "panel-focused")
+        prompt.set_class(prompt.has_focus, "panel-focused")
+        conversation.set_class(not side.has_focus and not prompt.has_focus and not self._memory_mode, "panel-focused")
 
     def _update_responsive_layout(self, width: int | None = None, height: int | None = None) -> None:
         terminal_width = width if width is not None else self.size.width

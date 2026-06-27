@@ -11,6 +11,7 @@ from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from haagent.tui.copy import MODAL_TITLES
 from haagent.tui.search import ConversationSearchState
 
 
@@ -58,8 +59,8 @@ class SearchOverlay(ModalScreen[None]):
         result = self.search_state.result()
         return "\n".join(
             [
-                "Search",
-                f"范围: conversation",
+                MODAL_TITLES["search"],
+                "范围: conversation",
                 f"关键词: {result.query or '-'}",
                 result.status_text,
                 "",

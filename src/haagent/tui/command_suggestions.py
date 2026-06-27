@@ -14,6 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from haagent.tui.commands import SlashCommand
+from haagent.tui.copy import EMPTY_LABELS, MODAL_TITLES
 
 
 @dataclass(frozen=True)
@@ -51,10 +52,10 @@ class CommandSuggestionState:
         return replace(self, selected_index=next_index)
 
     def render(self) -> str:
-        lines = ["Commands", f"过滤: /{self.query.removeprefix('/') or ''}", ""]
+        lines = [MODAL_TITLES["commands"], f"过滤: /{self.query.removeprefix('/') or ''}", ""]
         visible = self.visible_commands
         if not visible:
-            lines.append("无匹配命令")
+            lines.append(EMPTY_LABELS["no_matching_commands"])
         for index, command in enumerate(visible):
             marker = ">" if index == min(self.selected_index, len(visible) - 1) else " "
             lines.append(f"{marker} {command.token:<12} {command.description}")

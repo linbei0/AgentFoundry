@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from haagent.tui.copy import EMPTY_LABELS
+from haagent.tui.theme import status_semantic
 from haagent.tui.utils import safe_summary
 
 
@@ -19,7 +21,9 @@ class ChangedFileSummary:
     summary: str
 
     def line_text(self) -> str:
-        return f"  {self.change_type} {self.path}  {self.summary}".rstrip()
+        semantic = status_semantic("success")
+        label = {"added": "新增", "modified": "修改"}.get(self.change_type, self.change_type)
+        return f"  {semantic.symbol} {label} {self.path}  {self.summary}".rstrip()
 
 
 def changed_files_from_tool_event(
@@ -82,7 +86,7 @@ def path_stays_in_workspace(path: str, workspace_root: Path) -> bool:
 
 def render_changed_files(items: list[ChangedFileSummary], *, limit: int = 5) -> str:
     if not items:
-        return "  none"
+        return f"  {EMPTY_LABELS['none']}"
     visible = items[-limit:]
     return "\n".join(item.line_text() for item in visible)
 

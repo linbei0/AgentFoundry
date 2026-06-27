@@ -22,10 +22,19 @@ from haagent.tui.changes import changed_files_from_tool_event, path_stays_in_wor
 from haagent.tui.failures import failure_next_steps
 from haagent.tui.file_refs import fuzzy_file_matches, path_reference_token
 from haagent.tui.keys import footer_text, help_body, key_help_lines
+from haagent.tui.copy import MODAL_TITLES, PANEL_TITLES
 from haagent.tui.renderers import memory_panel_text, status_line
 from haagent.tui.search import ConversationSearchState
 from haagent.tui.sessions import SessionOverlayState
 from haagent.tui.state import ResponsiveLayout, layout_for_size
+from haagent.tui.theme import (
+    SemanticToken,
+    TuiThemeMode,
+    no_color_enabled,
+    select_theme,
+    semantic_tokens,
+    status_semantic,
+)
 from haagent.tui.tool_timeline import ToolTimelineState, redact_mapping_for_display
 from haagent.tui.widgets import PromptInput
 from textual.widgets import RichLog, TextArea
@@ -387,6 +396,72 @@ def test_tui_keymap_help_and_footer_share_context_definitions() -> None:
             assert key in help_text
         for key, _description in key_help_lines(context, footer_only=True):
             assert key in footer
+    assert "Ctrl+T" in footer_text("chat")
+    assert "切换主题" in help_body("chat")
+
+
+def test_tui_semantic_tokens_cover_required_statuses() -> None:
+    assert semantic_tokens() == {
+        SemanticToken.DEFAULT,
+        SemanticToken.MUTED,
+        SemanticToken.EMPHASIS,
+        SemanticToken.SUCCESS,
+        SemanticToken.WARNING,
+        SemanticToken.ERROR,
+        SemanticToken.INFO,
+        SemanticToken.SELECTION,
+        SemanticToken.FOCUS,
+        SemanticToken.RUNNING,
+        SemanticToken.CANCELLED,
+        SemanticToken.PENDING,
+        SemanticToken.DANGER,
+    }
+
+    expectations = {
+        "idle": (SemanticToken.DEFAULT, "-", "空闲"),
+        "running": (SemanticToken.RUNNING, "...", "运行中"),
+        "waiting approval": (SemanticToken.WARNING, "?", "待审批"),
+        "waiting input": (SemanticToken.PENDING, "?", "待补充"),
+        "done": (SemanticToken.SUCCESS, "ok", "成功"),
+        "failed": (SemanticToken.ERROR, "!", "失败"),
+        "cancelled": (SemanticToken.CANCELLED, "x", "已取消"),
+        "denied": (SemanticToken.DANGER, "!", "已拒绝"),
+    }
+
+    for raw_status, (token, symbol, label) in expectations.items():
+        semantic = status_semantic(raw_status)
+        assert semantic.token is token
+        assert semantic.symbol == symbol
+        assert semantic.label == label
+        assert semantic.css_class == f"status-{token.value}"
+
+
+def test_tui_theme_selection_respects_env_and_no_color(monkeypatch) -> None:
+    assert not no_color_enabled({})
+    assert no_color_enabled({"NO_COLOR": "1"})
+    assert no_color_enabled({"NO_COLOR": ""})
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("HAAGENT_TUI_THEME", raising=False)
+    assert select_theme().mode is TuiThemeMode.DARK
+    assert select_theme("light").mode is TuiThemeMode.LIGHT
+    assert select_theme("monochrome").mode is TuiThemeMode.MONOCHROME
+
+    monkeypatch.setenv("HAAGENT_TUI_THEME", "light")
+    assert select_theme().mode is TuiThemeMode.LIGHT
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert select_theme().mode is TuiThemeMode.MONOCHROME
+
+
+def test_tui_copy_titles_are_chinese_and_keep_protocol_names() -> None:
+    assert PANEL_TITLES["conversation"] == "对话"
+    assert PANEL_TITLES["workbench"] == "任务工作台"
+    assert PANEL_TITLES["sessions"] == "会话"
+    assert PANEL_TITLES["tools"] == "工具"
+    assert PANEL_TITLES["memory"] == "记忆候选"
+    assert PANEL_TITLES["search"] == "搜索"
+    assert MODAL_TITLES["approval"] == "工具审批"
+    assert MODAL_TITLES["tool_details"] == "工具详情"
 
 
 def test_tui_memory_panel_renderer_marks_selection_and_detail() -> None:
@@ -468,7 +543,7 @@ def test_tui_session_overlay_state_filters_and_selects_sessions(tmp_path: Path) 
     assert [item.session_id for item in filtered.visible_sessions] == ["session-beta"]
     assert selected.selected_session.session_id == "session-beta"
     assert empty.selected_session is None
-    assert "无匹配 session" in empty.render()
+    assert "无匹配会话" in empty.render()
 
 
 def test_tui_file_reference_fuzzy_search_stays_inside_workspace(tmp_path: Path) -> None:
@@ -634,7 +709,7 @@ def test_tui_app_starts_and_shows_status(tmp_path: Path) -> None:
             assert "key: ok" in status
             assert "DEEPSEEK_API_KEY" not in status
             assert "session-test" in status
-            assert "Profile" in side
+            assert "模型配置" in side
             assert "base_url: https://api.deepseek.com" in side
             assert "api_key_env: DEEPSEEK_API_KEY" in side
             assert "Shift+Enter 换行" in _text(app, "#conversation")
@@ -645,6 +720,127 @@ def test_tui_app_starts_and_shows_status(tmp_path: Path) -> None:
             assert "[Shift+Enter]换行" in str(app.query_one("#footer-bar").render())
             assert "[Tab]焦点" in str(app.query_one("#footer-bar").render())
             assert isinstance(app.query_one("#prompt-input"), TextArea)
+
+    asyncio.run(run())
+
+
+def test_tui_default_theme_applies_semantic_classes_and_chinese_titles(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("HAAGENT_TUI_THEME", raising=False)
+
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)):
+            status_widget = app.query_one("#status-bar")
+            side = _text(app, "#side-bar")
+
+            assert app.theme == "haagent-dark"
+            assert app.screen.has_class("theme-dark")
+            assert status_widget.has_class("status-default")
+            assert "状态: - 空闲" in _text(app, "#status-bar")
+            assert "任务工作台" in side
+            assert "当前阶段" in side
+            assert "工具时间线" in side
+            assert "待处理事项" in side
+            assert "变更文件" in side
+            assert "最近失败" in side
+            assert "工作区" in side
+            assert "模型配置" in side
+            assert "当前会话" in side
+
+    asyncio.run(run())
+
+
+def test_tui_light_theme_can_be_enabled_without_losing_status_classes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("HAAGENT_TUI_THEME", "light")
+
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)):
+            assert app.theme == "haagent-light"
+            assert app.screen.has_class("theme-light")
+            assert app.query_one("#status-bar").has_class("status-default")
+            assert "状态: - 空闲" in _text(app, "#status-bar")
+            assert "任务工作台" in _text(app, "#side-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_theme_can_be_cycled_with_keyboard_shortcut(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("HAAGENT_TUI_THEME", raising=False)
+
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert app.theme == "haagent-dark"
+            assert app.screen.has_class("theme-dark")
+
+            await pilot.press("ctrl+t")
+            await pilot.pause(0.1)
+            assert app.theme == "haagent-light"
+            assert app.screen.has_class("theme-light")
+            assert "主题已切换：浅色" in _text(app, "#conversation")
+
+            await pilot.press("ctrl+t")
+            await pilot.pause(0.1)
+            assert app.theme == "haagent-monochrome"
+            assert app.screen.has_class("theme-monochrome")
+            assert "主题已切换：单色" in _text(app, "#conversation")
+
+            await pilot.press("ctrl+t")
+            await pilot.pause(0.1)
+            assert app.theme == "haagent-dark"
+            assert app.screen.has_class("theme-dark")
+            assert "主题已切换：暗色" in _text(app, "#conversation")
+
+    asyncio.run(run())
+
+
+def test_tui_no_color_prevents_keyboard_theme_cycle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert app.theme == "haagent-monochrome"
+
+            await pilot.press("ctrl+t")
+            await pilot.pause(0.1)
+            assert app.theme == "haagent-monochrome"
+            assert app.screen.has_class("theme-monochrome")
+            assert "NO_COLOR 已启用，主题保持单色" in _text(app, "#conversation")
+
+    asyncio.run(run())
+
+
+def test_tui_no_color_mode_keeps_symbols_text_and_selection(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    candidates = [_memory_candidate("cand_first", "第一条"), _memory_candidate("cand_second", "第二条")]
+
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=candidates)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert app.theme == "haagent-monochrome"
+            assert app.screen.has_class("theme-monochrome")
+            assert "状态: - 空闲" in _text(app, "#status-bar")
+
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            side = _text(app, "#side-bar")
+
+            assert app.query_one("#side-bar").has_class("panel-focused")
+            assert "记忆候选" in side
+            assert "> cand_second" in side
+            assert "确认" in _text(app, "#footer-bar")
 
     asyncio.run(run())
 
@@ -731,7 +927,7 @@ def test_tui_responsive_minimum_size_and_layout_breakpoints(tmp_path: Path) -> N
             assert app.query_one("#resize-message").has_class("hidden")
             assert not app.query_one("#main").has_class("hidden")
             assert not app.query_one("#side-bar").has_class("hidden")
-            assert "Profile" in _text(app, "#side-bar")
+            assert "模型配置" in _text(app, "#side-bar")
 
     asyncio.run(run_too_small())
     asyncio.run(run_80())
@@ -862,8 +1058,8 @@ def test_tui_plain_s_does_not_open_sessions_or_search(tmp_path: Path) -> None:
             await pilot.press("s")
             await pilot.pause(0.1)
             assert input_widget.value == "s"
-            assert "Sessions" not in _all_text(app)
-            assert "Search" not in _all_text(app)
+            assert "输入过滤  ↑/↓ 移动  Enter 恢复" not in _all_text(app)
+            assert "范围: conversation" not in _all_text(app)
 
     asyncio.run(run())
 
@@ -879,11 +1075,11 @@ def test_tui_help_uses_modal_without_polluting_conversation(tmp_path: Path) -> N
             after = _text(app, "#conversation")
             rendered = _all_text(app)
             assert after == before
-            assert "HaAgent Help" in rendered
+            assert "HaAgent 帮助" in rendered
             assert "聊天模式" in rendered
             await pilot.press("escape")
             await pilot.pause(0.1)
-            assert "HaAgent Help" not in _all_text(app)
+            assert "HaAgent 帮助" not in _all_text(app)
 
     asyncio.run(run())
 
@@ -955,7 +1151,7 @@ def test_tui_help_modal_is_contextual_for_approval_modal(tmp_path: Path) -> None
             rendered = _all_text(app)
             await pilot.press("escape")
             await pilot.pause(0.1)
-            if "Tool Approval" in _all_text(app):
+            if "工具审批" in _all_text(app):
                 await pilot.press("n")
                 await pilot.pause(0.2)
             assert after_help == before
@@ -983,7 +1179,7 @@ def test_tui_text_area_shift_enter_inserts_newline_and_enter_submits_prompt(tmp_
             assert service.prompts == ["Summarize this folder\nwith constraints"]
             assert input_widget.value == ""
             conversation = _text(app, "#conversation")
-            assert "You" in conversation
+            assert "你" in conversation
             assert "Summarize this folder" in conversation
             assert "with constraints" in conversation
             assert "assistant: Summarize this folder\nwith constraints" in conversation
@@ -1041,7 +1237,7 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
             input_widget.value = "/sessions"
             await pilot.press("enter")
             await pilot.pause(0.1)
-            assert "Sessions" in _all_text(app)
+            assert "输入过滤  ↑/↓ 移动  Enter 恢复" in _all_text(app)
             await pilot.press("c", "s", "v")
             await pilot.pause(0.1)
             assert "session-beta" in _all_text(app)
@@ -1050,7 +1246,7 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
             await pilot.pause(0.1)
             assert service.resumed_sessions == [str(sessions[1].session_path)]
             assert "session-beta" in _text(app, "#status-bar")
-            assert "Sessions" not in _all_text(app)
+            assert "输入过滤  ↑/↓ 移动  Enter 恢复" not in _all_text(app)
 
     async def run_continue_new_escape() -> None:
         service = FakeAssistantService(workspace_root=tmp_path, sessions=sessions)
@@ -1078,7 +1274,7 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
             await pilot.pause(0.1)
             await pilot.press("escape")
             await pilot.pause(0.1)
-            assert "Sessions" not in _all_text(app)
+            assert "输入过滤  ↑/↓ 移动  Enter 恢复" not in _all_text(app)
 
     asyncio.run(run_resume())
     asyncio.run(run_continue_new_escape())
@@ -1099,7 +1295,7 @@ def test_tui_search_overlay_finds_conversation_and_does_not_pollute_conversation
             await pilot.pause(0.1)
             await pilot.press("d", "o", "c", "s")
             await pilot.pause(0.1)
-            assert "Search" in _all_text(app)
+            assert "范围: conversation" in _all_text(app)
             assert "1/2" in _all_text(app)
             await pilot.press("n")
             await pilot.pause(0.1)
@@ -1128,7 +1324,7 @@ def test_tui_slash_command_suggestions_filter_execute_and_do_not_pollute_convers
 
             await pilot.press("/")
             await pilot.pause(0.1)
-            assert "Commands" in _all_text(app)
+            assert "快捷命令" in _all_text(app)
             assert "/help" in _all_text(app)
             assert "/resume" in _all_text(app)
             await pilot.press("h", "e")
@@ -1138,7 +1334,7 @@ def test_tui_slash_command_suggestions_filter_execute_and_do_not_pollute_convers
             assert "/resume" not in _all_text(app)
             await pilot.press("enter")
             await pilot.pause(0.1)
-            assert "HaAgent Help" in _all_text(app)
+            assert "HaAgent 帮助" in _all_text(app)
             assert _text(app, "#conversation") == before
             await pilot.press("escape")
             await pilot.pause(0.1)
@@ -1149,7 +1345,7 @@ def test_tui_slash_command_suggestions_filter_execute_and_do_not_pollute_convers
             await pilot.pause(0.1)
             await pilot.press("enter")
             await pilot.pause(0.1)
-            assert "Sessions" in _all_text(app)
+            assert "输入过滤  ↑/↓ 移动  Enter 恢复" in _all_text(app)
             assert service.prompts == []
             await pilot.press("escape")
             await pilot.pause(0.1)
@@ -1186,7 +1382,7 @@ def test_tui_file_reference_overlay_selects_workspace_file(tmp_path: Path) -> No
             input_widget.value = "Read @pla"
             await pilot.press("@")
             await pilot.pause(0.1)
-            assert "File References" in _all_text(app)
+            assert "文件引用" in _all_text(app)
             assert "docs/Project Plan.md" in _all_text(app)
             await pilot.press("enter")
             await pilot.pause(0.1)
@@ -1198,7 +1394,7 @@ def test_tui_file_reference_overlay_selects_workspace_file(tmp_path: Path) -> No
             assert "无匹配文件" in _all_text(app)
             await pilot.press("escape")
             await pilot.pause(0.1)
-            assert "File References" not in _all_text(app)
+            assert "文件引用" not in _all_text(app)
 
     asyncio.run(run())
 
@@ -1219,15 +1415,15 @@ def test_tui_approval_requested_opens_modal_with_deny_focused(tmp_path: Path) ->
             conversation = _text(app, "#conversation")
             await pilot.press("n")
             await pilot.pause(0.1)
-            assert "Tool Approval" in modal_text
+            assert "工具审批" in modal_text
             assert "shell" in modal_text
             assert "Approve high risk tool shell?" in modal_text
             assert "uv run pytest -q" in modal_text
             assert "会执行本地命令" in modal_text
             assert deny_has_focus
             assert "state: waiting approval" in status
-            assert "shell pending approval" in side
-            assert "Tool shell pending approval" in conversation
+            assert "shell ? 待审批 (pending approval)" in side
+            assert "工具 shell ? 待审批" in conversation
 
     asyncio.run(run())
 
@@ -1270,18 +1466,18 @@ def test_tui_workbench_shows_phase_timeline_pending_changes_and_failure(tmp_path
             await pilot.pause(0.2)
             failed_side = _text(app, "#side-bar")
 
-            assert "Task Workbench" in side
-            assert "Current Phase" in side
+            assert "任务工作台" in side
+            assert "当前阶段" in side
             assert "waiting approval" in side
-            assert "Tool Timeline" in side
+            assert "工具时间线" in side
             assert "file_write" in side
             assert "done" in side
-            assert "Pending Decision" in side
+            assert "待处理事项" in side
             assert "shell" in side
-            assert "Changed Files" in side
+            assert "变更文件" in side
             assert "notes.md" in side
-            assert "added" in side
-            assert "Last Failure" in failed_side
+            assert "新增" in side
+            assert "最近失败" in failed_side
             assert "request_user_input" not in failed_side
             assert "查看工具详情" in _text(app, "#conversation")
 
@@ -1339,9 +1535,9 @@ def test_tui_tool_detail_overlay_opens_scrolls_closes_and_redacts_secret(tmp_pat
             await pilot.press("escape")
             await pilot.pause(0.1)
 
-            assert "Tool Details" in rendered
+            assert "工具详情" in rendered
             assert "tool name: shell" in rendered
-            assert "status: done" in rendered
+            assert "status: ok 成功 (done)" in rendered
             assert "reason: 检查命令输出" in rendered
             assert "args:" in rendered
             assert "stdout:" in rendered
@@ -1349,7 +1545,7 @@ def test_tui_tool_detail_overlay_opens_scrolls_closes_and_redacts_secret(tmp_pat
             assert str(tmp_path / ".runs" / "episode-shell") in rendered
             assert secret not in rendered
             assert "[REDACTED_TOKEN]" in rendered
-            assert "Tool Details" not in _all_text(app)
+            assert "工具详情" not in _all_text(app)
 
     asyncio.run(run())
 
@@ -1402,9 +1598,9 @@ def test_tui_tool_timeline_keyboard_selection_opens_failed_detail(tmp_path: Path
             await pilot.pause(0.1)
             rendered = _all_text(app)
 
-            assert "Tool Details" in rendered
+            assert "工具详情" in rendered
             assert "tool name: file_write" in rendered
-            assert "status: failed" in rendered
+            assert "status: ! 失败 (failed)" in rendered
             assert "parent directory does not exist" in rendered
 
     asyncio.run(run())
@@ -1436,8 +1632,8 @@ def test_tui_tools_overlay_available_when_sidebar_collapsed(tmp_path: Path) -> N
             await pilot.pause(0.1)
             rendered = _all_text(app)
 
-            assert "Task Workbench" in rendered
-            assert "Tool Timeline" in rendered
+            assert "任务工作台" in rendered
+            assert "工具时间线" in rendered
             assert "file_read" in rendered
 
     asyncio.run(run())
@@ -1457,7 +1653,7 @@ def test_tui_running_task_can_cancel_and_submit_again(tmp_path: Path) -> None:
 
             assert service.cancelled_count == 1
             assert "state: cancelled" in _text(app, "#status-bar")
-            assert "Current Phase" in _text(app, "#side-bar")
+            assert "当前阶段" in _text(app, "#side-bar")
             assert "cancelled" in _text(app, "#side-bar")
             assert app._pending_interaction is None
             assert "任务已取消" in _text(app, "#conversation")
@@ -1484,19 +1680,19 @@ def test_tui_layout_sizes_keep_workbench_stable(tmp_path: Path) -> None:
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)):
             side = _text(app, "#side-bar")
-            assert "Task Workbench" in side
-            assert "Current Phase" in side
-            assert "Tool Timeline" in side
-            assert "Changed Files" in side
+            assert "任务工作台" in side
+            assert "当前阶段" in side
+            assert "工具时间线" in side
+            assert "变更文件" in side
 
     async def run_200() -> None:
         service = FakeAssistantService(workspace_root=tmp_path)
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(200, 60)):
             side = _text(app, "#side-bar")
-            assert "Task Workbench" in side
-            assert "Workspace" in side
-            assert "Profile" in side
+            assert "任务工作台" in side
+            assert "工作区" in side
+            assert "模型配置" in side
 
     asyncio.run(run_80())
     asyncio.run(run_120())
@@ -1516,8 +1712,8 @@ def test_tui_approval_allow_returns_approved_true_to_same_prompt(tmp_path: Path)
             await pilot.pause(0.2)
             assert service.prompts == ["Run checks"]
             assert service.interaction_responses == [HumanInteractionResponse(approved=True, answer="")]
-            assert "Approval granted: shell" in _text(app, "#conversation")
-            assert "shell approved" in _text(app, "#side-bar")
+            assert "审批已允许：shell" in _text(app, "#conversation")
+            assert "shell ok 已允许 (approved)" in _text(app, "#side-bar")
             assert "assistant: Run checks" in _text(app, "#conversation")
 
     asyncio.run(run())
@@ -1536,8 +1732,8 @@ def test_tui_approval_deny_returns_approved_false_to_same_prompt(tmp_path: Path)
             await pilot.pause(0.2)
             assert service.prompts == ["Run checks"]
             assert service.interaction_responses == [HumanInteractionResponse(approved=False, answer="")]
-            assert "Approval denied: shell" in _text(app, "#conversation")
-            assert "shell denied" in _text(app, "#side-bar")
+            assert "审批已拒绝：shell" in _text(app, "#conversation")
+            assert "shell ! 已拒绝 (denied)" in _text(app, "#side-bar")
             assert "state: failed" in _text(app, "#status-bar")
 
     asyncio.run(run())
@@ -1562,7 +1758,7 @@ def test_tui_user_input_requested_enters_answer_required_state(tmp_path: Path) -
                 app._complete_interaction(HumanInteractionResponse(approved=False, answer=""))
                 await pilot.pause(0.1)
             assert "state: waiting input" in status
-            assert "Answer required" in conversation
+            assert "需要补充" in conversation
             assert "Which file should I inspect?" in conversation
             assert "回答 Agent 的问题" in placeholder
             assert input_has_focus
@@ -1587,7 +1783,7 @@ def test_tui_user_input_answer_continues_same_run_prompt_events(tmp_path: Path) 
                 HumanInteractionResponse(approved=True, answer="README.md"),
             ]
             conversation = _text(app, "#conversation")
-            assert "Answer submitted: request_user_input" in conversation
+            assert "回答已提交：request_user_input" in conversation
             assert "README.md" not in conversation
             assert "assistant: Inspect" in conversation
 
@@ -1607,8 +1803,8 @@ def test_tui_user_input_cancel_returns_explicit_denial(tmp_path: Path) -> None:
             await pilot.pause(0.2)
             assert service.interaction_responses == [HumanInteractionResponse(approved=False, answer="")]
             conversation = _text(app, "#conversation")
-            assert "Answer declined: request_user_input" in conversation
-            assert "Tool request_user_input failed" in conversation
+            assert "回答已取消：request_user_input" in conversation
+            assert "工具 request_user_input ! 失败 (failed)" in conversation
             assert "state: failed" in _text(app, "#status-bar")
 
     asyncio.run(run())
@@ -1639,7 +1835,7 @@ def test_tui_interaction_reused_event_does_not_enter_pending_interaction(tmp_pat
             await pilot.press("enter")
             await pilot.pause(0.2)
             assert service.interaction_responses == []
-            assert "Answer required" not in _text(app, "#conversation")
+            assert "需要补充" not in _text(app, "#conversation")
             assert "pending approval" not in _text(app, "#conversation")
             assert "state: idle" in _text(app, "#status-bar")
 
@@ -1672,7 +1868,7 @@ def test_tui_memory_candidate_event_shows_notice(tmp_path: Path) -> None:
             await pilot.pause(0.2)
             conversation = _text(app, "#conversation")
             assert "发现 1 条可记忆候选，已放入候选队列，等待你确认。" in conversation
-            assert "Memory Candidates" in _text(app, "#side-bar")
+            assert "记忆候选" in _text(app, "#side-bar")
             assert "cand_abc123" in _text(app, "#side-bar")
             assert "[a/y]确认" in _text(app, "#footer-bar")
 
@@ -1688,7 +1884,7 @@ def test_tui_memory_panel_lists_and_shows_candidate_details(tmp_path: Path) -> N
             await pilot.pause(0.1)
             side = _text(app, "#side-bar")
             footer = _text(app, "#footer-bar")
-            assert "Memory Candidates" in side
+            assert "记忆候选" in side
             assert "cand_abc123" in side
             assert "用户身份与爱好" in side
             assert "[Enter]详情" in footer
@@ -1852,13 +2048,13 @@ def test_tui_memory_mode_is_readable_without_sidebar(tmp_path: Path) -> None:
             await pilot.press("m")
             await pilot.pause(0.1)
             conversation = _text(app, "#conversation")
-            assert "Memory Candidates" in conversation
+            assert "记忆候选" in conversation
             assert "cand_abc123" in conversation
 
             await pilot.press("enter")
             await pilot.pause(0.1)
             conversation = _text(app, "#conversation")
-            assert "Memory Candidate Detail" in conversation
+            assert "记忆候选详情" in conversation
             assert "basis: 用户说：我叫小明，喜欢唱跳rap篮球，记住我的爱好。" in conversation
 
     asyncio.run(run())
@@ -1874,8 +2070,8 @@ def test_tui_memory_confirm_uses_service_and_removes_pending_candidate(tmp_path:
             await pilot.press("a")
             await pilot.pause(0.1)
             assert service.confirmed_candidate_ids == ["cand_abc123"]
-            assert "Memory confirmed: cand_abc123" in _text(app, "#conversation")
-            assert "no pending candidates" in _text(app, "#side-bar")
+            assert "已确认记忆候选：cand_abc123" in _text(app, "#conversation")
+            assert "暂无待确认候选" in _text(app, "#side-bar")
 
     asyncio.run(run())
 
@@ -1890,8 +2086,8 @@ def test_tui_memory_reject_uses_service_and_removes_pending_candidate(tmp_path: 
             await pilot.press("r")
             await pilot.pause(0.1)
             assert service.rejected_candidate_ids == [("cand_abc123", "rejected from TUI")]
-            assert "Memory rejected: cand_abc123" in _text(app, "#conversation")
-            assert "no pending candidates" in _text(app, "#side-bar")
+            assert "已拒绝记忆候选：cand_abc123" in _text(app, "#conversation")
+            assert "暂无待确认候选" in _text(app, "#side-bar")
 
     asyncio.run(run())
 
@@ -1903,7 +2099,7 @@ def test_tui_memory_panel_shows_empty_and_load_errors(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("m")
             await pilot.pause(0.1)
-            assert "no pending candidates" in _text(app, "#side-bar")
+            assert "暂无待确认候选" in _text(app, "#side-bar")
 
     async def error_run() -> None:
         service = FakeAssistantService(workspace_root=tmp_path, memory_error=RuntimeError("queue broken"))
@@ -1911,7 +2107,7 @@ def test_tui_memory_panel_shows_empty_and_load_errors(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("m")
             await pilot.pause(0.1)
-            assert "Memory candidates unavailable: queue broken" in _text(app, "#conversation")
+            assert "记忆候选不可用：queue broken" in _text(app, "#conversation")
 
     asyncio.run(empty_run())
     asyncio.run(error_run())
@@ -2025,7 +2221,7 @@ def test_tui_failure_event_shows_reason_episode_and_sidebar_summary(tmp_path: Pa
             assert "category=Loop Limit Failure" in conversation
             assert "reason=exceeded max_turns=20" in conversation
             assert str(episode_path) in conversation.replace("\n", "")
-            assert "Last Failure" in side
+            assert "最近失败" in side
             assert "Loop Limit Failure" in side
             assert str(episode_path) in side
 
