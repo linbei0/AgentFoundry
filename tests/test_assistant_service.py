@@ -263,7 +263,8 @@ def test_service_deletes_model_profile_and_refreshes_default(
     assert provider_profile.load_active_profile_name(settings_path=config_dir / "settings.json") == "router"
 
 
-def test_service_refreshes_model_catalog(tmp_path: Path) -> None:
+def test_service_refreshes_model_catalog(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
     provider = ModelCatalogProvider(
         id="requesty",
         name="Requesty",
@@ -290,6 +291,69 @@ def test_service_refreshes_model_catalog(tmp_path: Path) -> None:
     )
 
     assert result.providers == [provider]
+    assert result.used_cache is False
+
+
+def test_service_gets_model_catalog_from_fresh_cache_without_refreshing(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    provider = ModelCatalogProvider(
+        id="requesty",
+        name="Requesty",
+        env_names=["REQUESTY_API_KEY"],
+        api_base_url="https://router.requesty.ai/v1",
+        provider_package=None,
+        documentation_url=None,
+        models=[],
+    )
+    service = _service(tmp_path)
+    service.refresh_model_catalog(
+        transport=lambda: {
+            "requesty": {
+                "id": "requesty",
+                "name": "Requesty",
+                "env": ["REQUESTY_API_KEY"],
+                "api": "https://router.requesty.ai/v1",
+                "models": {},
+            }
+        }
+    )
+
+    result = service.get_model_catalog(
+        transport=lambda: (_ for _ in ()).throw(AssertionError("fresh cache should be used"))
+    )
+
+    assert result.providers == [provider]
+    assert result.used_cache is True
+
+
+def test_service_refresh_model_catalog_forces_network_refresh(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    service = _service(tmp_path)
+    service.refresh_model_catalog(
+        transport=lambda: {
+            "cached": {
+                "id": "cached",
+                "name": "Cached",
+                "env": ["CACHED_API_KEY"],
+                "api": "https://cached.example/v1",
+                "models": {},
+            }
+        }
+    )
+
+    result = service.refresh_model_catalog(
+        transport=lambda: {
+            "fresh": {
+                "id": "fresh",
+                "name": "Fresh",
+                "env": ["FRESH_API_KEY"],
+                "api": "https://fresh.example/v1",
+                "models": {},
+            }
+        }
+    )
+
+    assert result.providers[0].id == "fresh"
     assert result.used_cache is False
 
 

@@ -155,7 +155,7 @@ class ModelCenterOverlay(ModalScreen[ModelCenterResult | None]):
 
 class ModelCatalogLoadingOverlay(ModalScreen[None]):
     def compose(self) -> ComposeResult:
-        yield Static("模型中心\n\n正在刷新模型目录...\n\n请稍候", id="model-catalog-loading-dialog")
+        yield Static("模型中心\n\n正在读取模型目录...\n\n请稍候", id="model-catalog-loading-dialog")
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape":

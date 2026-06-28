@@ -76,6 +76,7 @@ class HaAgentTuiApp(App[None]):
         self._memory_selected = 0
         self._memory_error: str | None = None
         self._memory_notice: str | None = None
+        self._model_catalog_providers: list[object] | None = None
         self._commands = command_registry()
         self._theme_choice = select_theme()
 
@@ -420,12 +421,21 @@ class HaAgentTuiApp(App[None]):
 
     @work(thread=True, exclusive=True)
     def _refresh_model_catalog_and_open_setup(self) -> None:
+        if self._model_catalog_providers is not None:
+            self.call_from_thread(self._open_model_setup_wizard, list(self._model_catalog_providers))
+            return
         try:
-            catalog = self.service.refresh_model_catalog()
+            catalog = self.service.get_model_catalog()
+            providers = list(catalog.providers)
+            if not _configurable_model_catalog_providers(providers):
+                catalog = self.service.refresh_model_catalog()
+                providers = list(catalog.providers)
         except Exception as error:
             self.call_from_thread(self._handle_model_catalog_error, error)
             return
-        self.call_from_thread(self._open_model_setup_wizard, list(catalog.providers))
+        if _configurable_model_catalog_providers(providers):
+            self._model_catalog_providers = providers
+        self.call_from_thread(self._open_model_setup_wizard, providers)
 
     @work(thread=True, exclusive=True)
     def _refresh_model_catalog_only(self) -> None:
@@ -434,7 +444,9 @@ class HaAgentTuiApp(App[None]):
         except Exception as error:
             self.call_from_thread(self._handle_model_catalog_error, error)
             return
-        self.call_from_thread(self._handle_model_catalog_success, list(catalog.providers))
+        providers = list(catalog.providers)
+        self._model_catalog_providers = providers
+        self.call_from_thread(self._handle_model_catalog_success, providers)
 
     @work(thread=True, exclusive=True)
     def _run_model_connection_test(self, profile_name: str) -> None:
@@ -446,12 +458,7 @@ class HaAgentTuiApp(App[None]):
         self.call_from_thread(self._handle_model_connection_test_result, result)
 
     def _open_model_setup_wizard(self, providers: list[object]) -> None:
-        configurable_providers = [
-            provider
-            for provider in providers
-            if getattr(catalog_provider_capability(provider), "status", None) == "runnable"
-            and list(getattr(provider, "models", []) or [])
-        ]
+        configurable_providers = _configurable_model_catalog_providers(providers)
         if not configurable_providers:
             self._dismiss_model_catalog_loading_overlay()
             self._append_block(
@@ -886,3 +893,12 @@ class HaAgentTuiApp(App[None]):
 def run_tui(service: AssistantService) -> int:
     HaAgentTuiApp(service).run()
     return 0
+
+
+def _configurable_model_catalog_providers(providers: list[object]) -> list[object]:
+    return [
+        provider
+        for provider in providers
+        if getattr(catalog_provider_capability(provider), "status", None) == "runnable"
+        and list(getattr(provider, "models", []) or [])
+    ]

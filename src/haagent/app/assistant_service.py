@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from haagent.models import provider_profile as provider_profile_module
-from haagent.models.catalog import CatalogFetchResult, CatalogTransport, fetch_model_catalog
+from haagent.models.catalog import (
+    DEFAULT_MODEL_CATALOG_CACHE_MAX_AGE,
+    CatalogFetchResult,
+    CatalogTransport,
+    fetch_model_catalog,
+)
 from haagent.models.credentials import CredentialError
 from haagent.models.gateway import ModelGateway
 from haagent.models.gateway import ModelCallError
@@ -326,7 +331,16 @@ class AssistantService:
 
     def refresh_model_catalog(self, *, transport: CatalogTransport | None = None) -> CatalogFetchResult:
         try:
-            return fetch_model_catalog(transport=transport)
+            return fetch_model_catalog(transport=transport, force_refresh=True)
+        except Exception as error:
+            raise AssistantServiceError(str(error)) from error
+
+    def get_model_catalog(self, *, transport: CatalogTransport | None = None) -> CatalogFetchResult:
+        try:
+            return fetch_model_catalog(
+                transport=transport,
+                max_cache_age=DEFAULT_MODEL_CATALOG_CACHE_MAX_AGE,
+            )
         except Exception as error:
             raise AssistantServiceError(str(error)) from error
 

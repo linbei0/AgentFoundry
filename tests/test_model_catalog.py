@@ -4,6 +4,8 @@ tests/test_model_catalog.py - 模型目录层测试
 验证 Models.dev 目录解析、缓存回退和显式失败。
 """
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -117,6 +119,115 @@ def test_model_catalog_uses_cache_when_refresh_fails(tmp_path: Path) -> None:
     assert result.used_cache is True
     assert result.error == "network down"
     assert result.providers[0].id == "openrouter"
+
+
+def test_model_catalog_uses_fresh_cache_without_refreshing(tmp_path: Path) -> None:
+    cache_path = tmp_path / "models_catalog_cache.json"
+    calls = 0
+
+    def first_transport() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {
+            "requesty": {
+                "id": "requesty",
+                "name": "Requesty",
+                "env": ["REQUESTY_API_KEY"],
+                "api": "https://router.requesty.ai/v1",
+                "models": {"openai/gpt-5.2-chat": {"id": "openai/gpt-5.2-chat"}},
+            }
+        }
+
+    fetch_model_catalog(cache_path=cache_path, transport=first_transport)
+
+    def forbidden_transport() -> dict[str, object]:
+        raise AssertionError("fresh cache should avoid network refresh")
+
+    result = fetch_model_catalog(
+        cache_path=cache_path,
+        transport=forbidden_transport,
+        max_cache_age=timedelta(hours=24),
+    )
+
+    assert calls == 1
+    assert result.used_cache is True
+    assert result.providers[0].id == "requesty"
+
+
+def test_model_catalog_refreshes_when_cache_is_expired(tmp_path: Path) -> None:
+    cache_path = tmp_path / "models_catalog_cache.json"
+
+    def old_transport() -> dict[str, object]:
+        return {
+            "old": {
+                "id": "old",
+                "name": "Old",
+                "env": ["OLD_API_KEY"],
+                "api": "https://old.example/v1",
+                "models": {"old-model": {"id": "old-model"}},
+            }
+        }
+
+    fetch_model_catalog(cache_path=cache_path, transport=old_transport)
+    stale_at = datetime.now(tz=UTC) - timedelta(hours=25)
+    raw = json.loads(cache_path.read_text(encoding="utf-8"))
+    raw["fetched_at"] = stale_at.isoformat()
+    cache_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def new_transport() -> dict[str, object]:
+        return {
+            "new": {
+                "id": "new",
+                "name": "New",
+                "env": ["NEW_API_KEY"],
+                "api": "https://new.example/v1",
+                "models": {"new-model": {"id": "new-model"}},
+            }
+        }
+
+    result = fetch_model_catalog(
+        cache_path=cache_path,
+        transport=new_transport,
+        max_cache_age=timedelta(hours=24),
+    )
+
+    assert result.used_cache is False
+    assert result.providers[0].id == "new"
+
+
+def test_model_catalog_force_refresh_ignores_fresh_cache(tmp_path: Path) -> None:
+    cache_path = tmp_path / "models_catalog_cache.json"
+
+    fetch_model_catalog(
+        cache_path=cache_path,
+        transport=lambda: {
+            "cached": {
+                "id": "cached",
+                "name": "Cached",
+                "env": ["CACHED_API_KEY"],
+                "api": "https://cached.example/v1",
+                "models": {"cached-model": {"id": "cached-model"}},
+            }
+        },
+    )
+
+    result = fetch_model_catalog(
+        cache_path=cache_path,
+        transport=lambda: {
+            "fresh": {
+                "id": "fresh",
+                "name": "Fresh",
+                "env": ["FRESH_API_KEY"],
+                "api": "https://fresh.example/v1",
+                "models": {"fresh-model": {"id": "fresh-model"}},
+            }
+        },
+        max_cache_age=timedelta(hours=24),
+        force_refresh=True,
+    )
+
+    assert result.used_cache is False
+    assert result.providers[0].id == "fresh"
 
 
 def test_model_catalog_fails_explicitly_without_cache(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.request import Request
 from urllib.request import urlopen
@@ -19,6 +19,7 @@ from haagent.models.provider_profile import user_config_dir
 MODELS_DEV_URL = "https://models.dev/api.json"
 MODELS_DEV_USER_AGENT = "HaAgent/0.1 (+https://models.dev)"
 MODEL_CATALOG_CACHE_FILE = "models_catalog_cache.json"
+DEFAULT_MODEL_CATALOG_CACHE_MAX_AGE = timedelta(hours=24)
 CatalogTransport = Callable[[], dict[str, object]]
 
 
@@ -60,13 +61,32 @@ class CatalogFetchResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class CachedCatalog:
+    catalog: dict[str, object]
+    fetched_at: datetime | None
+
+
 def fetch_model_catalog(
     *,
     cache_path: Path | None = None,
     transport: CatalogTransport | None = None,
+    max_cache_age: timedelta | None = None,
+    force_refresh: bool = False,
 ) -> CatalogFetchResult:
     cache_file = cache_path or (user_config_dir() / MODEL_CATALOG_CACHE_FILE)
     fetch_transport = transport or _default_transport
+    if max_cache_age is not None and not force_refresh:
+        cached = _load_cached_catalog(cache_file)
+        if cached is not None and _cache_is_fresh(cached.fetched_at, max_cache_age):
+            return CatalogFetchResult(
+                providers=_parse_providers(cached.catalog),
+                source=str(cache_file),
+                fetched_at=_now_iso(),
+                used_cache=True,
+                error=None,
+            )
+
     try:
         raw = fetch_transport()
     except Exception as error:  # noqa: BLE001
@@ -74,7 +94,7 @@ def fetch_model_catalog(
         if cached is None:
             raise ModelCatalogError(str(error)) from error
         return CatalogFetchResult(
-            providers=_parse_providers(cached),
+            providers=_parse_providers(cached.catalog),
             source=str(cache_file),
             fetched_at=_now_iso(),
             used_cache=True,
@@ -234,7 +254,7 @@ def _write_cache(path: Path, raw: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _load_cached_catalog(path: Path) -> dict[str, object] | None:
+def _load_cached_catalog(path: Path) -> CachedCatalog | None:
     if not path.exists():
         return None
     try:
@@ -246,7 +266,27 @@ def _load_cached_catalog(path: Path) -> dict[str, object] | None:
     catalog = raw.get("catalog")
     if not isinstance(catalog, dict):
         raise ModelCatalogError(f"model catalog cache missing catalog object: {path}")
-    return catalog
+    return CachedCatalog(catalog=catalog, fetched_at=_parse_cache_fetched_at(raw.get("fetched_at"), path))
+
+
+def _parse_cache_fetched_at(value: object, path: Path) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ModelCatalogError(f"model catalog cache fetched_at must be a string: {path}")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ModelCatalogError(f"model catalog cache fetched_at is invalid: {path}") from error
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _cache_is_fresh(fetched_at: datetime | None, max_age: timedelta) -> bool:
+    if fetched_at is None:
+        return False
+    return datetime.now(tz=UTC) - fetched_at <= max_age
 
 
 def _object_dict(value: object) -> dict[str, object]:

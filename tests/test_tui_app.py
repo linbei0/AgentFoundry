@@ -101,6 +101,7 @@ class FakeAssistantService:
         self.default_model_profile: str | None = None
         self.deleted_model_profile: str | None = None
         self.catalog_providers: list[SimpleNamespace] = []
+        self.cached_catalog_providers: list[SimpleNamespace] | None = None
         self.configured_model_profile = None
         self.configured_api_key: str | None = None
         self.connection_test_result = SimpleNamespace(
@@ -112,6 +113,7 @@ class FakeAssistantService:
         )
         self.tested_model_profile: str | None = None
         self.refreshed_catalog_count = 0
+        self.got_catalog_count = 0
         self.catalog_refresh_release: threading.Event | None = None
 
     def get_workspace_status(self) -> AssistantWorkspaceStatus:
@@ -223,6 +225,13 @@ class FakeAssistantService:
         if self.catalog_refresh_release is not None:
             self.catalog_refresh_release.wait(timeout=5)
         return SimpleNamespace(providers=list(self.catalog_providers), used_cache=False, error=None)
+
+    def get_model_catalog(self):
+        self.got_catalog_count += 1
+        if self.catalog_refresh_release is not None:
+            self.catalog_refresh_release.wait(timeout=5)
+        providers = self.catalog_providers if self.cached_catalog_providers is None else self.cached_catalog_providers
+        return SimpleNamespace(providers=list(providers), used_cache=True, error=None)
 
     def configure_model_profile(self, request):
         self.configured_model_profile = request
@@ -750,7 +759,7 @@ def test_tui_model_setup_wizard_masks_key_and_saves_keyring_profile(tmp_path: Pa
     asyncio.run(run())
 
 
-def test_tui_model_new_profile_keeps_model_center_visible_while_catalog_refreshes(tmp_path: Path) -> None:
+def test_tui_model_new_profile_keeps_model_center_visible_while_catalog_loads(tmp_path: Path) -> None:
     service = FakeAssistantService(workspace_root=tmp_path)
     service.catalog_refresh_release = threading.Event()
     service.model_profiles = [
@@ -786,11 +795,108 @@ def test_tui_model_new_profile_keeps_model_center_visible_while_catalog_refreshe
             text = _all_text(app)
             assert isinstance(app.screen, ModelCatalogLoadingOverlay)
             assert "模型中心" in text
-            assert "正在刷新模型目录" in text
+            assert "正在读取模型目录" in text
 
             service.catalog_refresh_release.set()
             await pilot.pause(0.2)
+            assert service.got_catalog_count == 1
+            assert service.refreshed_catalog_count == 0
             assert "provider: Requesty" in _all_text(app)
+
+    asyncio.run(run())
+
+
+def test_tui_model_new_profile_reuses_in_memory_catalog(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.model_profiles = [
+        SimpleNamespace(
+            name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            active=False,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        )
+    ]
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[SimpleNamespace(id="openai/gpt-5.2-chat", name="GPT 5.2 Chat")],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+
+            assert service.got_catalog_count == 1
+            assert service.refreshed_catalog_count == 0
+
+    asyncio.run(run())
+
+
+def test_tui_model_new_profile_refreshes_once_when_cached_catalog_has_no_configurable_models(
+    tmp_path: Path,
+) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.model_profiles = [
+        SimpleNamespace(
+            name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            active=False,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        )
+    ]
+    service.cached_catalog_providers = [
+        SimpleNamespace(
+            id="fresh",
+            name="Fresh",
+            env_names=["FRESH_API_KEY"],
+            api_base_url="https://fresh.example/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[],
+        )
+    ]
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[SimpleNamespace(id="openai/gpt-5.2-chat", name="GPT 5.2 Chat")],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.3)
+
+            assert service.got_catalog_count == 1
+            assert service.refreshed_catalog_count == 1
+            text = _all_text(app)
+            assert "provider: Requesty" in text
+            assert "模型目录没有可配置模型" not in text
 
     asyncio.run(run())
 
