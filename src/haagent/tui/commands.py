@@ -49,6 +49,7 @@ def command_registry() -> CommandRegistry:
         [
             SlashCommand("help", "打开上下文帮助", "help"),
             SlashCommand("sessions", "打开会话列表", "sessions"),
+            SlashCommand("model", "打开模型中心", "open_models"),
             SlashCommand("memory", "打开记忆候选审查", "memory"),
             SlashCommand("tools", "聚焦工具视图", "tools"),
             SlashCommand("cancel", "取消当前任务", "cancel_task"),
@@ -64,6 +65,8 @@ def parse_slash_command(text: str, registry: CommandRegistry) -> SlashCommandRes
     command_text, _, argument = text[1:].partition(" ")
     if not command_text:
         return SlashCommandResult(command=None, error="请输入命令名")
+    if command_text == "models":
+        command_text = "model"
     command = registry.get(command_text)
     if command is None:
         return SlashCommandResult(command=None, error=f"未知命令：/{command_text}")

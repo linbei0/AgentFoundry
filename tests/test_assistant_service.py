@@ -7,14 +7,19 @@ tests/test_assistant_service.py - AssistantService 应用服务层测试
 from __future__ import annotations
 
 import json
+import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from haagent.app.assistant_service import AssistantService, AssistantServiceError
+from haagent.app.assistant_service import AssistantService, AssistantServiceError, ModelProfileConfigureRequest
+from haagent.models.catalog import ModelCatalogProvider
 from haagent.models.credentials import FakeCredentialStore
-from haagent.models.gateway import ModelResponse
+from haagent.models.gateway import ModelResponse, OpenAIChatCompletionsGateway
 from haagent.models import provider_profile
+from haagent.models.gateway_registry import gateway_from_profile
+from haagent.models.provider_profile import ProviderProfileRecord, save_active_profile, save_provider_profile
 
 
 class RecordingGateway:
@@ -28,6 +33,59 @@ class RecordingGateway:
         task_content = next((m["content"] for m in messages if m.get("role") == "user"), "")
         self.model_inputs.append(task_content)
         return ModelResponse("done", [])
+
+
+class BlockingGateway:
+    provider_name = "openai-chat"
+
+    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    def generate(self, messages, tool_schemas):
+        self.entered.set()
+        self.release.wait(timeout=2)
+        return ModelResponse("done", [])
+
+
+class RecordingSession:
+    provider_name = "openai-chat"
+    turn_count = 0
+
+    def __init__(
+        self,
+        *,
+        workspace_root: Path,
+        runs_root: Path,
+        model_gateway,
+        model_profile_name: str | None = None,
+        model_name: str | None = None,
+        model_base_url: str | None = None,
+        max_turns: int,
+    ) -> None:
+        self.session_id = "session-from-default-registry"
+        self.workspace_root = workspace_root
+        self.runs_root = runs_root
+        self.model_gateway = model_gateway
+        self.model_profile_name = model_profile_name
+        self.model_name = model_name
+        self.model_base_url = model_base_url
+        self.max_turns = max_turns
+        self.session_path = runs_root / self.session_id
+
+    def switch_model_gateway(
+        self,
+        *,
+        profile_name: str,
+        provider: str,
+        model: str,
+        base_url: str,
+        gateway,
+    ) -> None:
+        self.model_gateway = gateway
+        self.model_profile_name = profile_name
+        self.model_name = model
+        self.model_base_url = base_url
 
 
 def _set_home(monkeypatch, home: Path) -> None:
@@ -69,15 +127,210 @@ def _write_user_profile(
     )
 
 
-def _service(tmp_path: Path, *, environ: dict[str, str] | None = None) -> AssistantService:
+def _service(
+    tmp_path: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+    gateway_factory=None,
+    config_dir: Path | None = None,
+) -> AssistantService:
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
+    if config_dir is not None:
+        config_dir.mkdir(parents=True, exist_ok=True)
     return AssistantService(
         workspace_root=workspace,
         runs_root=tmp_path / ".runs",
         environ=environ or {},
-        gateway_factory=lambda profile: RecordingGateway(profile.name),
+        gateway_factory=gateway_factory or (lambda profile: RecordingGateway(profile.name)),
     )
+
+
+def test_service_lists_model_profiles_with_active_and_credential_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_active_profile("router", config_dir=config_dir)
+    service = _service(tmp_path, config_dir=config_dir)
+
+    profiles = service.list_model_profiles()
+
+    assert len(profiles) == 1
+    assert profiles[0].name == "router"
+    assert profiles[0].active is True
+    assert profiles[0].capability.status == "runnable"
+
+
+def test_service_sets_default_model_profile_without_switching_current_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    service = _service(tmp_path, config_dir=config_dir)
+
+    service.set_default_model_profile("router")
+
+    assert service.current_session() is None
+    assert provider_profile.load_active_profile_name(settings_path=config_dir / "settings.json") == "router"
+
+
+def test_service_configures_model_profile_with_keyring_without_writing_secret(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    store = FakeCredentialStore()
+    monkeypatch.setattr(provider_profile, "DEFAULT_CREDENTIAL_STORE", store)
+    service = _service(tmp_path)
+
+    record = service.configure_model_profile(
+        ModelProfileConfigureRequest(
+            name="requesty-openai-gpt-5-2-chat",
+            provider="openai-chat",
+            base_url="https://router.requesty.ai/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="REQUESTY_API_KEY",
+            credential_source="keyring",
+            api_key="sk-test-secret",
+        )
+    )
+
+    providers_text = (home / ".haagent" / "providers.json").read_text(encoding="utf-8")
+    assert record.name == "requesty-openai-gpt-5-2-chat"
+    assert store.values["profile:requesty-openai-gpt-5-2-chat"] == "sk-test-secret"
+    assert "sk-test-secret" not in providers_text
+
+
+def test_service_deletes_model_profile_and_refreshes_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="local",
+            provider="openai-chat",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            api_key_env="DEEPSEEK_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_active_profile("local", config_dir=config_dir)
+    service = _service(tmp_path)
+
+    service.delete_model_profile("local")
+
+    assert [profile.name for profile in service.list_model_profiles()] == ["router"]
+    assert provider_profile.load_active_profile_name(settings_path=config_dir / "settings.json") == "router"
+
+
+def test_service_refreshes_model_catalog(tmp_path: Path) -> None:
+    provider = ModelCatalogProvider(
+        id="requesty",
+        name="Requesty",
+        env_names=["REQUESTY_API_KEY"],
+        api_base_url="https://router.requesty.ai/v1",
+        provider_package="@ai-sdk/openai-compatible",
+        documentation_url="https://requesty.ai/models",
+        models=[],
+    )
+    service = _service(tmp_path)
+
+    result = service.refresh_model_catalog(
+        transport=lambda: {
+            "requesty": {
+                "id": "requesty",
+                "name": "Requesty",
+                "env": ["REQUESTY_API_KEY"],
+                "api": "https://router.requesty.ai/v1",
+                "npm": "@ai-sdk/openai-compatible",
+                "doc": "https://requesty.ai/models",
+                "models": {},
+            }
+        }
+    )
+
+    assert result.providers == [provider]
+    assert result.used_cache is False
+
+
+def test_service_connection_test_uses_gateway_factory_and_redacts_secret(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class ConnectionGateway:
+        provider_name = "openai-chat"
+
+        def generate(self, messages, tool_schemas):
+            calls.append((messages, tool_schemas))
+            return ModelResponse(content="OK")
+
+    def gateway_factory(profile):
+        assert profile.api_key == "sk-test-secret"
+        return ConnectionGateway()
+
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    _write_user_profile(
+        Path.home(),
+        name="router",
+        base_url="https://openrouter.ai/api/v1",
+        model="openai/gpt-5.2-chat",
+        api_key_env="OPENROUTER_API_KEY",
+    )
+    service = _service(
+        tmp_path,
+        gateway_factory=gateway_factory,
+        environ={"OPENROUTER_API_KEY": "sk-test-secret"},
+    )
+
+    result = service.test_model_profile("router")
+
+    assert result.ok is True
+    assert result.message == "OK"
+    assert calls
+    assert "sk-test-secret" not in repr(result)
 
 
 def test_active_profile_status_reports_api_key_available(tmp_path: Path, monkeypatch) -> None:
@@ -178,6 +431,206 @@ def test_create_new_session_sets_current_session(tmp_path: Path, monkeypatch) ->
     assert session.turn_count == 0
     assert session.workspace_root == (tmp_path / "workspace").resolve()
     assert service.current_session().session_id == session.session_id
+
+
+def test_create_new_session_uses_registry_as_default_gateway_factory(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    _write_user_profile(Path.home())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = AssistantService(
+        workspace_root=workspace,
+        runs_root=tmp_path / ".runs",
+        environ={"DEEPSEEK_API_KEY": "secret"},
+        session_cls=RecordingSession,
+    )
+
+    service.create_session()
+
+    assert service.gateway_factory is gateway_from_profile
+    assert isinstance(service._session.model_gateway, OpenAIChatCompletionsGateway)
+
+
+def test_service_switches_current_session_model_without_changing_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="local",
+            provider="openai-chat",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            api_key_env="DEEPSEEK_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_active_profile("local", config_dir=config_dir)
+    service = _service(
+        tmp_path,
+        environ={"DEEPSEEK_API_KEY": "local-secret", "OPENROUTER_API_KEY": "router-secret"},
+    )
+    service.create_session()
+
+    status = service.switch_current_session_model("router")
+
+    assert status.model_profile_name == "router"
+    assert service.current_session().model_profile_name == "router"
+    assert provider_profile.load_active_profile_name(settings_path=config_dir / "settings.json") == "local"
+
+
+def test_service_switch_before_session_uses_profile_for_next_session_without_creating_one(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="local",
+            provider="openai-chat",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            api_key_env="DEEPSEEK_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_active_profile("local", config_dir=config_dir)
+    service = _service(
+        tmp_path,
+        environ={"DEEPSEEK_API_KEY": "local-secret", "OPENROUTER_API_KEY": "router-secret"},
+    )
+
+    pending = service.switch_current_session_model("router")
+
+    assert pending.session_id == "pending"
+    assert pending.model_profile_name == "router"
+    assert service.current_session() is None
+
+    created = service.create_session()
+
+    assert created.model_profile_name == "router"
+    assert provider_profile.load_active_profile_name(settings_path=config_dir / "settings.json") == "local"
+
+
+def test_resume_session_preserves_switched_model_profile_when_default_differs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="local",
+            provider="openai-chat",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            api_key_env="DEEPSEEK_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_active_profile("local", config_dir=config_dir)
+    service = _service(
+        tmp_path,
+        environ={"DEEPSEEK_API_KEY": "local-secret", "OPENROUTER_API_KEY": "router-secret"},
+    )
+    created = service.create_session()
+    switched = service.switch_current_session_model("router")
+
+    resumed = service.resume_session(created.session_path)
+
+    assert switched.model_profile_name == "router"
+    assert resumed.model_profile_name == "router"
+    assert provider_profile.load_active_profile_name(settings_path=config_dir / "settings.json") == "local"
+
+
+def test_service_rejects_model_switch_while_current_run_is_active(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="local",
+            provider="openai-chat",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            api_key_env="DEEPSEEK_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        config_dir=config_dir,
+    )
+    save_active_profile("local", config_dir=config_dir)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def gateway_factory(profile):
+        if profile.name == "local":
+            return BlockingGateway(entered, release)
+        return RecordingGateway(profile.name)
+
+    service = _service(
+        tmp_path,
+        environ={"DEEPSEEK_API_KEY": "local-secret", "OPENROUTER_API_KEY": "router-secret"},
+        gateway_factory=gateway_factory,
+    )
+    service.create_session()
+    thread = threading.Thread(target=lambda: service.run_prompt_events("hello"))
+    thread.start()
+    assert entered.wait(timeout=2)
+
+    try:
+        with pytest.raises(AssistantServiceError, match="current task is running"):
+            service.switch_current_session_model("router")
+    finally:
+        release.set()
+        thread.join(timeout=3)
 
 
 def test_resume_session_sets_current_session(tmp_path: Path, monkeypatch) -> None:

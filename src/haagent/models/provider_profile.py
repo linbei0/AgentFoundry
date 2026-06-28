@@ -14,10 +14,13 @@ from typing import Mapping
 from haagent.models.credentials import (
     CredentialError,
     CredentialRecord,
+    CredentialStatus,
     CredentialStore,
     KeyringCredentialStore,
     credential_status,
     resolve_api_key,
+    save_insecure_api_key,
+    save_keyring_api_key,
 )
 
 
@@ -137,6 +140,73 @@ def load_provider_profile_record(
     )
 
 
+def list_provider_profile_records(*, config_path: Path | None = None) -> list[ProviderProfileRecord]:
+    path = config_path or user_provider_profile_path()
+    records = _load_profile_records(path) if path.exists() else []
+    return [
+        ProviderProfileRecord(
+            name=_required_string(record, "name"),
+            provider=_required_provider(record),
+            base_url=_required_string(record, "base_url"),
+            model=_required_string(record, "model"),
+            api_key_env=_required_string(record, "api_key_env"),
+            credential_source=_credential_source(record),
+        )
+        for record in records
+    ]
+
+
+def provider_profile_credential_status(
+    name: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+    credential_store: CredentialStore | None = None,
+    config_dir: Path | None = None,
+) -> CredentialStatus:
+    config_path = (config_dir / USER_PROVIDERS_FILE) if config_dir is not None else None
+    record = load_provider_profile_record(name, config_path=config_path)
+    return credential_status(
+        CredentialRecord(
+            profile_name=record.name,
+            api_key_env=record.api_key_env,
+            credential_source=record.credential_source,
+        ),
+        environ=environ,
+        credential_store=credential_store,
+        config_dir=config_dir,
+    )
+
+
+def save_provider_profile_with_key(
+    record: ProviderProfileRecord,
+    api_key: str | None,
+    *,
+    credential_store: CredentialStore | None = None,
+    config_dir: Path | None = None,
+) -> Path:
+    has_api_key = api_key is not None and bool(api_key.strip())
+    if record.credential_source == "env" and has_api_key:
+        raise ProviderProfileError("env credential_source does not allow saving api_key")
+    path = save_provider_profile(record, config_dir=config_dir)
+    if not has_api_key:
+        return path
+    if record.credential_source == "keyring":
+        save_keyring_api_key(
+            record.name,
+            api_key,
+            credential_store=credential_store,
+        )
+        return path
+    if record.credential_source == "insecure_file":
+        save_insecure_api_key(
+            record.name,
+            api_key,
+            config_dir=config_dir or user_config_dir(),
+        )
+        return path
+    raise ProviderProfileError(f"unsupported credential_source in profile: {record.credential_source}")
+
+
 def load_active_provider_profile(
     *,
     environ: Mapping[str, str] | None = None,
@@ -216,6 +286,31 @@ def save_provider_profile(record: ProviderProfileRecord, *, config_dir: Path | N
     if not updated:
         next_records.append(record.to_dict())
     _write_json(path, {"profiles": next_records})
+    return path
+
+
+def delete_provider_profile(name: str, *, config_dir: Path | None = None) -> Path:
+    if not name.strip():
+        raise ProviderProfileError("provider profile name is required")
+    directory = config_dir or user_config_dir()
+    path = directory / USER_PROVIDERS_FILE
+    records = _load_profile_records(path)
+    next_records = [record for record in records if record.get("name") != name]
+    if len(next_records) == len(records):
+        raise ProviderProfileError(f"provider profile not found: {name}")
+    _write_json(path, {"profiles": next_records})
+
+    settings_path = directory / USER_SETTINGS_FILE
+    try:
+        active_profile = load_active_profile_name(settings_path=settings_path)
+    except ProviderProfileError:
+        active_profile = None
+    if active_profile == name:
+        if next_records:
+            replacement = _required_string(next_records[0], "name")
+            save_active_profile(replacement, config_dir=directory)
+        elif settings_path.exists():
+            settings_path.unlink()
     return path
 
 

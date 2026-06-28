@@ -135,6 +135,9 @@ class AgentSession:
         workspace_root: Path,
         runs_root: Path,
         model_gateway: ModelGateway | None = None,
+        model_profile_name: str | None = None,
+        model_name: str | None = None,
+        model_base_url: str | None = None,
         max_turns: int = CHAT_MAX_TURNS,
         session_id: str | None = None,
         memory_extraction_enabled: bool = True,
@@ -142,6 +145,9 @@ class AgentSession:
         self.workspace_root = workspace_root.resolve()
         self.runs_root = runs_root
         self.model_gateway = model_gateway
+        self.model_profile_name = model_profile_name
+        self.model_name = model_name
+        self.model_base_url = model_base_url
         self.max_turns = max_turns
         self.memory_extraction_enabled = memory_extraction_enabled
         self.session_id = session_id or _new_session_id()
@@ -161,6 +167,9 @@ class AgentSession:
         *,
         runs_root: Path | None = None,
         model_gateway: ModelGateway | None = None,
+        model_profile_name: str | None = None,
+        model_name: str | None = None,
+        model_base_url: str | None = None,
         max_turns: int = CHAT_MAX_TURNS,
     ) -> "AgentSession":
         session_path = _resolve_session_path(session, runs_root or Path(".runs"))
@@ -171,6 +180,9 @@ class AgentSession:
         instance.workspace_root = Path(str(metadata["workspace_root"])).resolve()
         instance.runs_root = session_path.parent.parent
         instance.model_gateway = model_gateway
+        instance.model_profile_name = model_profile_name or _optional_string(metadata.get("model_profile_name"))
+        instance.model_name = model_name or _optional_string(metadata.get("model"))
+        instance.model_base_url = model_base_url or _optional_string(metadata.get("base_url"))
         instance.max_turns = max_turns
         instance.memory_extraction_enabled = True
         instance.session_id = str(metadata["session_id"])
@@ -335,6 +347,23 @@ class AgentSession:
     def cancel_current_run(self) -> None:
         if self._current_cancellation_token is not None:
             self._current_cancellation_token.cancel()
+
+    def switch_model_gateway(
+        self,
+        *,
+        profile_name: str,
+        provider: str,
+        model: str,
+        base_url: str,
+        gateway: ModelGateway,
+    ) -> None:
+        if self._current_cancellation_token is not None:
+            raise ChatSessionError("current task is running")
+        self.model_gateway = gateway
+        self.model_profile_name = profile_name
+        self.model_name = model
+        self.model_base_url = base_url
+        self._write_session_metadata()
 
     def _run_memory_extraction(
         self,
@@ -507,6 +536,9 @@ class AgentSession:
             "session_id": self.session_id,
             "workspace_root": str(self.workspace_root),
             "provider": self.provider_name,
+            "model_profile_name": self.model_profile_name,
+            "model": self.model_name,
+            "base_url": self.model_base_url,
             "created_at": created_at,
             "updated_at": datetime.now(UTC).isoformat(),
             "turn_count": self.turn_count,
@@ -862,6 +894,12 @@ def _read_session_turns(session_path: Path) -> list[dict[str, object]]:
                 raise ChatSessionError(f"invalid turns.jsonl line {index}: {field_name} must be a string")
         turns.append(record)
     return turns
+
+
+def _optional_string(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def _new_session_id() -> str:

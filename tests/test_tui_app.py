@@ -22,6 +22,7 @@ from haagent.tui.changes import changed_files_from_tool_event, path_stays_in_wor
 from haagent.tui.failures import failure_next_steps
 from haagent.tui.file_refs import fuzzy_file_matches, path_reference_token
 from haagent.tui.keys import footer_text, help_body, key_help_lines
+from haagent.tui.models import ModelCatalogLoadingOverlay
 from haagent.tui.copy import MODAL_TITLES, PANEL_TITLES
 from haagent.tui.renderers import memory_panel_text, status_line
 from haagent.tui.search import ConversationSearchState
@@ -95,6 +96,23 @@ class FakeAssistantService:
         self.resumed_sessions: list[str] = []
         self.continued_latest_count = 0
         self.cancelled_count = 0
+        self.model_profiles: list[SimpleNamespace] = []
+        self.switched_model_profile: str | None = None
+        self.default_model_profile: str | None = None
+        self.deleted_model_profile: str | None = None
+        self.catalog_providers: list[SimpleNamespace] = []
+        self.configured_model_profile = None
+        self.configured_api_key: str | None = None
+        self.connection_test_result = SimpleNamespace(
+            ok=True,
+            profile_name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            message="OK",
+        )
+        self.tested_model_profile: str | None = None
+        self.refreshed_catalog_count = 0
+        self.catalog_refresh_release: threading.Event | None = None
 
     def get_workspace_status(self) -> AssistantWorkspaceStatus:
         return AssistantWorkspaceStatus(
@@ -197,6 +215,49 @@ class FakeAssistantService:
     def list_sessions(self) -> list[AssistantSessionSummary]:
         return list(self.sessions)
 
+    def list_model_profiles(self):
+        return list(self.model_profiles)
+
+    def refresh_model_catalog(self):
+        self.refreshed_catalog_count += 1
+        if self.catalog_refresh_release is not None:
+            self.catalog_refresh_release.wait(timeout=5)
+        return SimpleNamespace(providers=list(self.catalog_providers), used_cache=False, error=None)
+
+    def configure_model_profile(self, request):
+        self.configured_model_profile = request
+        self.configured_api_key = request.api_key
+        return request
+
+    def test_model_profile(self, profile_name: str):
+        self.tested_model_profile = profile_name
+        return self.connection_test_result
+
+    def switch_current_session_model(self, profile_name: str) -> AssistantSessionStatus:
+        self.switched_model_profile = profile_name
+        return AssistantSessionStatus(
+            session_id=self.current_session_id,
+            workspace_root=self.workspace_root,
+            runs_root=self.workspace_root / ".runs",
+            session_path=self.workspace_root / ".runs" / "sessions" / self.current_session_id,
+            turn_count=len(self.prompts),
+            provider=self.provider or "-",
+            model_profile_name=profile_name,
+            model=next((item.model for item in self.model_profiles if item.name == profile_name), self.model),
+            base_url="https://api.deepseek.com",
+        )
+
+    def set_default_model_profile(self, profile_name: str) -> None:
+        self.default_model_profile = profile_name
+        for index, profile in enumerate(self.model_profiles):
+            self.model_profiles[index] = SimpleNamespace(
+                **{**profile.__dict__, "active": profile.name == profile_name},
+            )
+
+    def delete_model_profile(self, profile_name: str) -> None:
+        self.deleted_model_profile = profile_name
+        self.model_profiles = [profile for profile in self.model_profiles if profile.name != profile_name]
+
     def _session_status(self, session_id: str) -> AssistantSessionStatus:
         return AssistantSessionStatus(
             session_id=session_id,
@@ -261,7 +322,13 @@ def _all_text(app: HaAgentTuiApp) -> str:
     widgets = list(app.query("*"))
     if app.screen is not None:
         widgets.extend(app.screen.query("*"))
-    return "\n".join(str(widget.render()) for widget in widgets)
+    pieces = []
+    for widget in widgets:
+        if isinstance(widget, RichLog):
+            pieces.append("\n".join("".join(segment.text for segment in line) for line in widget.lines))
+        else:
+            pieces.append(str(widget.render()))
+    return "\n".join(pieces)
 
 
 def _interaction_requested_event(request: HumanInteractionRequest, turn_index: int) -> ChatEvent:
@@ -503,14 +570,29 @@ def test_tui_slash_command_registry_parses_known_and_unknown_commands() -> None:
     registry = command_registry()
 
     result = parse_slash_command("/sessions", registry)
+    model = parse_slash_command("/model", registry)
+    models = parse_slash_command("/models", registry)
     unknown = parse_slash_command("/wat", registry)
     not_command = parse_slash_command(" /help", registry)
 
     assert result == SlashCommandResult(command=registry.require("sessions"), argument="")
+    assert model.command.action == "open_models"
+    assert model.command.name == "model"
+    assert models.command.action == "open_models"
+    assert models.command.name == "model"
     assert unknown.command is None
     assert unknown.error == "未知命令：/wat"
     assert not_command is None
-    assert {command.name for command in registry.commands()} >= {"help", "sessions", "memory", "tools", "new", "resume"}
+    assert {command.name for command in registry.commands()} >= {
+        "help",
+        "sessions",
+        "memory",
+        "tools",
+        "new",
+        "resume",
+        "model",
+    }
+    assert "models" not in {command.name for command in registry.commands()}
 
 
 def test_tui_conversation_search_state_tracks_matches_and_navigation() -> None:
@@ -544,6 +626,653 @@ def test_tui_session_overlay_state_filters_and_selects_sessions(tmp_path: Path) 
     assert selected.selected_session.session_id == "session-beta"
     assert empty.selected_session is None
     assert "无匹配会话" in empty.render()
+
+
+def test_tui_model_overlay_switches_session_and_sets_default(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.model_profiles = [
+        SimpleNamespace(
+            name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            active=False,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            assert "router" in _all_text(app)
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert service.switched_model_profile == "router"
+            assert "模型已切换到当前会话：router" in _text(app, "#conversation")
+
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("p")
+            await pilot.pause(0.1)
+            assert service.default_model_profile == "router"
+            assert "默认模型 profile 已设为：router" in _text(app, "#conversation")
+
+    asyncio.run(run())
+
+
+def test_tui_model_overlay_deletes_profile_after_confirmation(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.model_profiles = [
+        SimpleNamespace(
+            name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            active=False,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        ),
+        SimpleNamespace(
+            name="local",
+            provider="openai-chat",
+            model="deepseek-chat",
+            active=True,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        ),
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("d")
+            await pilot.pause(0.1)
+            assert "删除模型 profile：router" in _all_text(app)
+
+            await pilot.press("n")
+            await pilot.pause(0.1)
+            assert service.deleted_model_profile is None
+
+            await pilot.press("d")
+            await pilot.pause(0.1)
+            await pilot.press("y")
+            await pilot.pause(0.1)
+
+            assert service.deleted_model_profile == "router"
+            text = _all_text(app)
+            assert "模型 profile 已删除：router" in text
+            assert "router" not in service.model_profiles
+            assert "local" in text
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_masks_key_and_saves_keyring_profile(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[SimpleNamespace(id="openai/gpt-5.2-chat", name="GPT 5.2 Chat")],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("s", "k", "-", "t", "e", "s", "t", "-", "s", "e", "c", "r", "e", "t")
+            await pilot.pause(0.1)
+            assert "sk-test-secret" not in _all_text(app)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert service.configured_model_profile.name == "requesty-openai-gpt-5-2-chat"
+            assert service.configured_api_key == "sk-test-secret"
+
+    asyncio.run(run())
+
+
+def test_tui_model_new_profile_keeps_model_center_visible_while_catalog_refreshes(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_refresh_release = threading.Event()
+    service.model_profiles = [
+        SimpleNamespace(
+            name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            active=False,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        )
+    ]
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[SimpleNamespace(id="openai/gpt-5.2-chat", name="GPT 5.2 Chat")],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+
+            text = _all_text(app)
+            assert isinstance(app.screen, ModelCatalogLoadingOverlay)
+            assert "模型中心" in text
+            assert "正在刷新模型目录" in text
+
+            service.catalog_refresh_release.set()
+            await pilot.pause(0.2)
+            assert "provider: Requesty" in _all_text(app)
+
+    asyncio.run(run())
+
+
+def test_tui_model_new_profile_reports_empty_catalog_instead_of_opening_empty_wizard(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+
+            text = _all_text(app)
+            assert "没有可配置的目录模型" not in text
+            assert "模型目录没有可配置模型" in text
+            assert "请刷新目录或检查网络" in text
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_filters_out_adapter_required_catalog_providers(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="mistral",
+            name="Mistral",
+            env_names=["MISTRAL_API_KEY"],
+            api_base_url="https://api.mistral.ai",
+            provider_package="@ai-sdk/mistral",
+            models=[SimpleNamespace(id="mistral-large-latest", name="Mistral Large")],
+        ),
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[SimpleNamespace(id="openai/gpt-5.2-chat", name="GPT 5.2 Chat")],
+        ),
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            text = _all_text(app)
+            assert "Mistral" not in text
+            assert "Requesty" in text
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("s", "k", "-", "t", "e", "s", "t")
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.configured_model_profile.provider == "openai-chat"
+            assert service.configured_model_profile.base_url == "https://router.requesty.ai/v1"
+            assert service.configured_model_profile.model == "openai/gpt-5.2-chat"
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_can_configure_native_anthropic_provider(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="anthropic",
+            name="Anthropic",
+            env_names=["ANTHROPIC_API_KEY"],
+            api_base_url="https://api.anthropic.com",
+            provider_package="@ai-sdk/anthropic",
+            models=[SimpleNamespace(id="claude-sonnet-4-5", name="Claude Sonnet 4.5")],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            assert "provider: Anthropic" in _all_text(app)
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("s", "k", "-", "a", "n", "t")
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.configured_model_profile.name == "anthropic-claude-sonnet-4-5"
+            assert service.configured_model_profile.provider == "anthropic"
+            assert service.configured_model_profile.base_url == "https://api.anthropic.com"
+            assert service.configured_model_profile.model == "claude-sonnet-4-5"
+            assert service.configured_model_profile.api_key_env == "ANTHROPIC_API_KEY"
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_can_configure_native_google_provider(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="google",
+            name="Google",
+            env_names=["GEMINI_API_KEY"],
+            api_base_url="https://generativelanguage.googleapis.com/v1beta",
+            provider_package="@ai-sdk/google",
+            models=[SimpleNamespace(id="gemini-2.5-pro", name="Gemini 2.5 Pro")],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            assert "provider: Google" in _all_text(app)
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("g", "e", "m", "i", "n", "i", "-", "t", "e", "s", "t")
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.configured_model_profile.name == "google-gemini-2-5-pro"
+            assert service.configured_model_profile.provider == "google"
+            assert service.configured_model_profile.base_url == "https://generativelanguage.googleapis.com/v1beta"
+            assert service.configured_model_profile.model == "gemini-2.5-pro"
+            assert service.configured_model_profile.api_key_env == "GEMINI_API_KEY"
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_can_select_provider_and_model(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[
+                SimpleNamespace(id="openai/gpt-5.2-chat", name="GPT 5.2 Chat"),
+                SimpleNamespace(id="openai/gpt-5.2-coder", name="GPT 5.2 Coder"),
+            ],
+        ),
+        SimpleNamespace(
+            id="deepseek",
+            name="DeepSeek",
+            env_names=["DEEPSEEK_API_KEY"],
+            api_base_url="https://api.deepseek.com",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[
+                SimpleNamespace(id="deepseek-chat", name="DeepSeek Chat"),
+                SimpleNamespace(id="deepseek-reasoner", name="DeepSeek Reasoner"),
+            ],
+        ),
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+
+            assert "provider: Requesty" in _all_text(app)
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert "provider: DeepSeek" in _all_text(app)
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert "model: DeepSeek Chat" in _all_text(app)
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert "model: DeepSeek Reasoner" in _all_text(app)
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("s", "k", "-", "d", "s")
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.configured_model_profile.name == "deepseek-deepseek-reasoner"
+            assert service.configured_model_profile.provider == "openai-chat"
+            assert service.configured_model_profile.base_url == "https://api.deepseek.com"
+            assert service.configured_model_profile.model == "deepseek-reasoner"
+            assert service.configured_model_profile.api_key_env == "DEEPSEEK_API_KEY"
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_filters_provider_and_model_lists(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[SimpleNamespace(id="openai/gpt-5.2-chat", name="GPT 5.2 Chat")],
+        ),
+        SimpleNamespace(
+            id="deepseek",
+            name="DeepSeek",
+            env_names=["DEEPSEEK_API_KEY"],
+            api_base_url="https://api.deepseek.com",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[
+                SimpleNamespace(id="deepseek-chat", name="DeepSeek Chat"),
+                SimpleNamespace(id="deepseek-reasoner", name="DeepSeek Reasoner"),
+                SimpleNamespace(id="deepseek-coder", name="DeepSeek Coder"),
+            ],
+        ),
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+
+            await pilot.press("d", "e", "e", "p")
+            await pilot.pause(0.1)
+            text = _all_text(app)
+            assert "provider 搜索: deep" in text
+            assert "DeepSeek" in text
+            assert "Requesty" not in text
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            text = _all_text(app)
+            assert "DeepSeek Chat" in text
+            assert "DeepSeek Reasoner" in text
+            assert "DeepSeek Coder" in text
+            assert "模型 1/3" in text
+
+            await pilot.press("r", "e", "a")
+            await pilot.pause(0.1)
+            text = _all_text(app)
+            assert "model 搜索: rea" in text
+            assert "DeepSeek Reasoner" in text
+            assert "DeepSeek Chat" not in text
+            assert "DeepSeek Coder" not in text
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("s", "k", "-", "d", "s")
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.configured_model_profile.name == "deepseek-deepseek-reasoner"
+            assert service.configured_model_profile.model == "deepseek-reasoner"
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_scrolls_provider_window_with_selection(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id=f"provider-{index:02d}",
+            name=f"Provider {index:02d}",
+            env_names=[f"PROVIDER_{index:02d}_API_KEY"],
+            api_base_url=f"https://provider-{index:02d}.example/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[SimpleNamespace(id=f"model-{index:02d}", name=f"Model {index:02d}")],
+        )
+        for index in range(15)
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            for _ in range(13):
+                await pilot.press("down")
+            await pilot.pause(0.1)
+
+            text = _all_text(app)
+            assert "Provider 14/15" in text
+            assert "> Provider 13" in text
+            assert "Provider 00" not in text
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_scrolls_model_window_with_selection(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="many",
+            name="Many Models",
+            env_names=["MANY_API_KEY"],
+            api_base_url="https://many.example/v1",
+            provider_package="@ai-sdk/openai-compatible",
+            models=[
+                SimpleNamespace(id=f"model-{index:02d}", name=f"Model {index:02d}")
+                for index in range(20)
+            ],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            for _ in range(17):
+                await pilot.press("down")
+            await pilot.pause(0.1)
+
+            text = _all_text(app)
+            assert "模型 18/20" in text
+            assert "> Model 17" in text
+            assert "Model 00" not in text
+
+    asyncio.run(run())
+
+
+def test_tui_model_setup_wizard_supports_official_openai_catalog_provider(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="openai",
+            name="OpenAI",
+            env_names=["OPENAI_API_KEY"],
+            api_base_url="https://api.openai.com/v1",
+            provider_package=None,
+            models=[
+                SimpleNamespace(id="gpt-5.2-chat", name="GPT 5.2 Chat"),
+                SimpleNamespace(id="gpt-5.2-coder", name="GPT 5.2 Coder"),
+            ],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("n")
+            await pilot.pause(0.2)
+
+            assert "provider: OpenAI" in _all_text(app)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert "model: GPT 5.2 Coder" in _all_text(app)
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("s", "k", "-", "o", "a", "i")
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.configured_model_profile.name == "openai-gpt-5-2-coder"
+            assert service.configured_model_profile.provider == "openai"
+            assert service.configured_model_profile.base_url == "https://api.openai.com/v1"
+            assert service.configured_model_profile.model == "gpt-5.2-coder"
+            assert service.configured_model_profile.api_key_env == "OPENAI_API_KEY"
+
+    asyncio.run(run())
+
+
+def test_tui_model_overlay_runs_connection_test_without_showing_secret(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.model_profiles = [
+        SimpleNamespace(
+            name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            active=False,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        )
+    ]
+    service.connection_test_result = SimpleNamespace(
+        ok=True,
+        profile_name="router",
+        provider="openai-chat",
+        model="openai/gpt-5.2-chat",
+        message="OK",
+    )
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("t")
+            await pilot.pause(0.2)
+            assert service.tested_model_profile == "router"
+            assert "OK" in _all_text(app)
+            assert "sk-test-secret" not in _all_text(app)
+
+    asyncio.run(run())
+
+
+def test_tui_model_overlay_refreshes_catalog_via_worker(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+    service.model_profiles = [
+        SimpleNamespace(
+            name="router",
+            provider="openai-chat",
+            model="openai/gpt-5.2-chat",
+            active=False,
+            credential_available=True,
+            capability=SimpleNamespace(status="runnable"),
+        )
+    ]
+    service.catalog_providers = [
+        SimpleNamespace(
+            id="requesty",
+            name="Requesty",
+            env_names=["REQUESTY_API_KEY"],
+            api_base_url="https://router.requesty.ai/v1",
+            models=[],
+        )
+    ]
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("r")
+            await pilot.pause(0.2)
+            assert service.refreshed_catalog_count >= 1
+            assert "模型目录已刷新：1 个 provider" in _text(app, "#conversation")
+
+    asyncio.run(run())
 
 
 def test_tui_file_reference_fuzzy_search_stays_inside_workspace(tmp_path: Path) -> None:
@@ -968,6 +1697,8 @@ def test_tui_api_key_missing_shows_env_name(tmp_path: Path) -> None:
             assert "key: missing" in status
             assert "DEEPSEEK_API_KEY" not in status
             assert "DEEPSEEK_API_KEY" in conversation
+            assert "/model" in conversation
+            assert "不会在 TUI 中输入" not in conversation
 
     asyncio.run(run())
 

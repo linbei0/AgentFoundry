@@ -7,21 +7,33 @@ haagent/app/assistant_service.py - 个人助手应用服务层
 from __future__ import annotations
 
 import os
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from haagent.models.gateway import (
-    ModelGateway,
-    OpenAIChatCompletionsGateway,
-    OpenAIResponsesGateway,
-)
+from haagent.models import provider_profile as provider_profile_module
+from haagent.models.catalog import CatalogFetchResult, CatalogTransport, fetch_model_catalog
+from haagent.models.credentials import CredentialError
+from haagent.models.gateway import ModelGateway
+from haagent.models.gateway import ModelCallError
+from haagent.models.gateway_registry import GatewayCapability, gateway_capability_for_profile, gateway_from_profile
 from haagent.models.provider_profile import (
     ProviderProfile,
     ProviderProfileError,
+    ProviderProfileRecord,
     active_provider_credential_status,
+    list_provider_profile_records,
+    load_active_profile_name,
     load_active_provider_profile,
     load_active_provider_profile_record,
+    load_provider_profile,
+    load_provider_profile_record,
+    provider_profile_credential_status,
+    delete_provider_profile,
+    save_active_profile,
+    save_provider_profile_with_key,
+    user_config_dir,
 )
 from haagent.runtime.chat_session import (
     CHAT_MAX_TURNS,
@@ -80,6 +92,9 @@ class AssistantSessionStatus:
     session_path: Path
     turn_count: int
     provider: str
+    model_profile_name: str | None = None
+    model: str | None = None
+    base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +114,40 @@ class AssistantCancelResult:
     reason: str
 
 
+@dataclass(frozen=True)
+class AssistantModelProfile:
+    name: str
+    provider: str
+    base_url: str
+    model: str
+    api_key_env: str
+    credential_source: str
+    active: bool
+    credential_available: bool
+    credential_source_used: str | None
+    capability: GatewayCapability
+
+
+@dataclass(frozen=True)
+class AssistantModelTestResult:
+    ok: bool
+    profile_name: str
+    provider: str
+    model: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ModelProfileConfigureRequest:
+    name: str
+    provider: str
+    base_url: str
+    model: str
+    api_key_env: str
+    credential_source: str
+    api_key: str | None = None
+
+
 class AssistantService:
     def __init__(
         self,
@@ -113,10 +162,11 @@ class AssistantService:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
         self.runs_root = runs_root
         self.environ = os.environ if environ is None else environ
-        self.gateway_factory = gateway_factory or _gateway_from_profile
+        self.gateway_factory = gateway_factory or gateway_from_profile
         self.session_cls = session_cls
         self.max_turns = max_turns
         self._session: AgentSession | None = None
+        self._pending_model_profile_name: str | None = None
 
     def get_workspace_status(self) -> AssistantWorkspaceStatus:
         profile_name: str | None = None
@@ -171,10 +221,14 @@ class AssistantService:
 
     def create_session(self) -> AssistantSessionStatus:
         try:
+            profile = self._load_session_profile()
             self._session = self.session_cls(
                 workspace_root=self.workspace_root,
                 runs_root=self.runs_root,
-                model_gateway=self._build_model_gateway(),
+                model_gateway=self.gateway_factory(profile),
+                model_profile_name=profile.name,
+                model_name=profile.model,
+                model_base_url=profile.base_url,
                 max_turns=self.max_turns,
             )
         except ProviderProfileError as error:
@@ -183,10 +237,14 @@ class AssistantService:
 
     def resume_session(self, session: str | Path) -> AssistantSessionStatus:
         try:
+            profile = self._load_resume_profile(session)
             self._session = self.session_cls.resume(
                 session,
                 runs_root=self.runs_root,
-                model_gateway=self._build_model_gateway(),
+                model_gateway=self.gateway_factory(profile),
+                model_profile_name=profile.name,
+                model_name=profile.model,
+                model_base_url=profile.base_url,
                 max_turns=self.max_turns,
             )
         except (ChatSessionError, ProviderProfileError) as error:
@@ -207,6 +265,131 @@ class AssistantService:
             return [_session_summary(summary) for summary in list_sessions(self.runs_root, self.workspace_root)]
         except ChatSessionError as error:
             raise AssistantServiceError(str(error)) from error
+
+    def list_model_profiles(self) -> list[AssistantModelProfile]:
+        try:
+            active_profile_name = load_active_profile_name()
+        except ProviderProfileError:
+            active_profile_name = None
+        profiles: list[AssistantModelProfile] = []
+        for record in list_provider_profile_records():
+            credential = provider_profile_credential_status(
+                record.name,
+                environ=self.environ,
+                config_dir=user_config_dir(),
+            )
+            profiles.append(
+                AssistantModelProfile(
+                    name=record.name,
+                    provider=record.provider,
+                    base_url=record.base_url,
+                    model=record.model,
+                    api_key_env=record.api_key_env,
+                    credential_source=record.credential_source,
+                    active=record.name == active_profile_name,
+                    credential_available=credential.api_key_available,
+                    credential_source_used=credential.credential_source_used,
+                    capability=gateway_capability_for_profile(record),
+                )
+            )
+        return profiles
+
+    def set_default_model_profile(self, profile_name: str) -> None:
+        load_provider_profile_record(profile_name)
+        save_active_profile(profile_name, config_dir=user_config_dir())
+
+    def configure_model_profile(self, request: ModelProfileConfigureRequest) -> ProviderProfileRecord:
+        record = ProviderProfileRecord(
+            name=request.name,
+            provider=request.provider,
+            base_url=request.base_url,
+            model=request.model,
+            api_key_env=request.api_key_env,
+            credential_source=request.credential_source,
+        )
+        try:
+            save_provider_profile_with_key(
+                record,
+                request.api_key,
+                credential_store=provider_profile_module.DEFAULT_CREDENTIAL_STORE,
+                config_dir=user_config_dir(),
+            )
+        except (ProviderProfileError, CredentialError) as error:
+            raise AssistantServiceError(str(error)) from error
+        return record
+
+    def delete_model_profile(self, profile_name: str) -> None:
+        try:
+            delete_provider_profile(profile_name, config_dir=user_config_dir())
+        except ProviderProfileError as error:
+            raise AssistantServiceError(str(error)) from error
+
+    def refresh_model_catalog(self, *, transport: CatalogTransport | None = None) -> CatalogFetchResult:
+        try:
+            return fetch_model_catalog(transport=transport)
+        except Exception as error:
+            raise AssistantServiceError(str(error)) from error
+
+    def test_model_profile(self, profile_name: str) -> AssistantModelTestResult:
+        try:
+            profile = load_provider_profile(
+                profile_name,
+                environ=self.environ,
+                config_dir=user_config_dir(),
+            )
+            gateway = self.gateway_factory(profile)
+            response = gateway.generate(
+                [{"role": "user", "content": "Reply with OK."}],
+                [],
+            )
+            return AssistantModelTestResult(
+                ok=True,
+                profile_name=profile.name,
+                provider=profile.provider,
+                model=profile.model,
+                message=_redact_secret_text(response.content, [profile.api_key]),
+            )
+        except (ProviderProfileError, CredentialError, ModelCallError) as error:
+            record = _load_profile_record_for_result(profile_name)
+            return AssistantModelTestResult(
+                ok=False,
+                profile_name=profile_name,
+                provider=record.provider if record is not None else "",
+                model=record.model if record is not None else "",
+                message=_redact_secret_text(str(error), _secret_candidates(self.environ)),
+            )
+
+    def switch_current_session_model(self, profile_name: str) -> AssistantSessionStatus:
+        try:
+            profile = load_provider_profile(
+                profile_name,
+                environ=self.environ,
+                config_dir=user_config_dir(),
+            )
+            if self._session is None:
+                self._pending_model_profile_name = profile.name
+                return AssistantSessionStatus(
+                    session_id="pending",
+                    workspace_root=self.workspace_root,
+                    runs_root=self.runs_root,
+                    session_path=self.runs_root,
+                    turn_count=0,
+                    provider=profile.provider,
+                    model_profile_name=profile.name,
+                    model=profile.model,
+                    base_url=profile.base_url,
+                )
+            gateway = self.gateway_factory(profile)
+            self._session.switch_model_gateway(
+                profile_name=profile.name,
+                provider=profile.provider,
+                model=profile.model,
+                base_url=profile.base_url,
+                gateway=gateway,
+            )
+        except (ProviderProfileError, ChatSessionError) as error:
+            raise AssistantServiceError(str(error)) from error
+        return _session_status(self._session)
 
     def run_prompt_events(
         self,
@@ -260,9 +443,24 @@ class AssistantService:
         except (CandidateQueueError, MemoryStoreError, MemoryGovernanceError) as error:
             raise AssistantServiceError(str(error)) from error
 
-    def _build_model_gateway(self) -> ModelGateway:
-        profile = load_active_provider_profile(environ=self.environ)
-        return self.gateway_factory(profile)
+    def _load_session_profile(self) -> ProviderProfile:
+        if self._pending_model_profile_name is not None:
+            return load_provider_profile(
+                self._pending_model_profile_name,
+                environ=self.environ,
+                config_dir=user_config_dir(),
+            )
+        return load_active_provider_profile(environ=self.environ)
+
+    def _load_resume_profile(self, session: str | Path) -> ProviderProfile:
+        profile_name = _session_model_profile_name(session, self.runs_root)
+        if profile_name is not None:
+            return load_provider_profile(
+                profile_name,
+                environ=self.environ,
+                config_dir=user_config_dir(),
+            )
+        return load_active_provider_profile(environ=self.environ)
 
     def _memory_queue(self) -> CandidateQueue:
         if self._session is None:
@@ -278,19 +476,6 @@ class AssistantService:
         return MemoryStore(workspace_root=self.workspace_root)
 
 
-def _gateway_from_profile(profile: ProviderProfile) -> ModelGateway:
-    gateway_kwargs = {
-        "api_key": profile.api_key,
-        "model": profile.model,
-        "base_url": profile.base_url,
-    }
-    if profile.provider == "openai":
-        return OpenAIResponsesGateway(**gateway_kwargs)
-    if profile.provider == "openai-chat":
-        return OpenAIChatCompletionsGateway(**gateway_kwargs)
-    raise ProviderProfileError(f"unsupported provider in profile: {profile.provider}")
-
-
 def _session_status(session: AgentSession) -> AssistantSessionStatus:
     return AssistantSessionStatus(
         session_id=session.session_id,
@@ -299,6 +484,9 @@ def _session_status(session: AgentSession) -> AssistantSessionStatus:
         session_path=session.session_path.resolve(),
         turn_count=session.turn_count,
         provider=session.provider_name,
+        model_profile_name=getattr(session, "model_profile_name", None),
+        model=getattr(session, "model_name", None),
+        base_url=getattr(session, "model_base_url", None),
     )
 
 
@@ -312,3 +500,43 @@ def _session_summary(summary: SessionSummary) -> AssistantSessionSummary:
         first_request=summary.first_request,
         session_path=summary.session_path,
     )
+
+
+def _session_model_profile_name(session: str | Path, runs_root: Path) -> str | None:
+    raw = Path(session)
+    if raw.is_absolute() or raw.exists() or raw.name != str(session):
+        session_path = raw.resolve()
+    else:
+        session_path = (runs_root / "sessions" / str(session)).resolve()
+    metadata_path = session_path / "session.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    profile_name = metadata.get("model_profile_name")
+    if isinstance(profile_name, str) and profile_name:
+        return profile_name
+    return None
+
+
+def _load_profile_record_for_result(profile_name: str):
+    try:
+        return load_provider_profile_record(profile_name)
+    except ProviderProfileError:
+        return None
+
+
+def _secret_candidates(environ: Mapping[str, str]) -> list[str]:
+    return [value for value in environ.values() if isinstance(value, str) and value.strip()]
+
+
+def _redact_secret_text(text: str, secrets: list[str]) -> str:
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted

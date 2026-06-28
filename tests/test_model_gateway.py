@@ -9,10 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from haagent.models.catalog import ModelCatalogProvider
 from haagent.models.fake import FakeModelGateway
 from haagent.models.gateway import (
+    AnthropicMessagesGateway,
     DEFAULT_CHAT_COMPLETIONS_ENDPOINT,
     DEFAULT_RESPONSES_ENDPOINT,
+    GoogleGeminiGateway,
     ModelCallError,
     ModelResponse,
     OpenAIChatCompletionsGateway,
@@ -20,7 +23,21 @@ from haagent.models.gateway import (
     ToolCall,
 )
 from haagent.models.credentials import FakeCredentialStore, save_insecure_api_key
-from haagent.models.provider_profile import ProviderProfileError, load_provider_profile
+from haagent.models.gateway_registry import (
+    catalog_provider_capability,
+    gateway_capability_for_profile,
+    gateway_from_profile,
+    GatewayRegistryError,
+)
+from haagent.models.provider_profile import (
+    ProviderProfile,
+    ProviderProfileError,
+    ProviderProfileRecord,
+    list_provider_profile_records,
+    load_provider_profile,
+    provider_profile_credential_status,
+    save_provider_profile,
+)
 from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.task_contract import TaskSpec
 
@@ -73,6 +90,652 @@ verification_commands: []
         encoding="utf-8",
     )
     return EpisodeWriter.create(runs_root=tmp_path / ".runs", task_path=task_path)
+
+
+def test_gateway_registry_maps_openai_chat_profile_to_runnable_gateway() -> None:
+    record = ProviderProfileRecord(
+        name="router",
+        provider="openai-chat",
+        base_url="https://openrouter.ai/api/v1",
+        model="openai/gpt-5.2-chat",
+        api_key_env="OPENROUTER_API_KEY",
+    )
+
+    capability = gateway_capability_for_profile(record)
+
+    assert capability.status == "runnable"
+    assert capability.gateway_provider == "openai-chat"
+
+
+def test_gateway_registry_maps_anthropic_catalog_provider_to_native_gateway() -> None:
+    provider = ModelCatalogProvider(
+        id="anthropic",
+        name="Anthropic",
+        env_names=["ANTHROPIC_API_KEY"],
+        api_base_url=None,
+        provider_package="@ai-sdk/anthropic",
+        documentation_url="https://docs.anthropic.com/",
+        models=[],
+    )
+
+    capability = catalog_provider_capability(provider)
+
+    assert capability.status == "runnable"
+    assert capability.gateway_provider == "anthropic"
+
+
+def test_gateway_registry_tolerates_catalog_provider_without_provider_package() -> None:
+    provider = ModelCatalogProvider(
+        id="openrouter",
+        name="OpenRouter",
+        env_names=["OPENROUTER_API_KEY"],
+        api_base_url="https://openrouter.ai/api/v1",
+        provider_package=None,
+        documentation_url="https://openrouter.ai/docs",
+        models=[],
+    )
+
+    capability = catalog_provider_capability(provider)
+
+    assert capability.status == "runnable"
+    assert capability.gateway_provider == "openai-chat"
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "name", "api_base_url", "provider_package"),
+    [
+        ("requesty", "Requesty", "https://router.requesty.ai/v1", "@ai-sdk/openai-compatible"),
+        ("deepseek", "DeepSeek", "https://api.deepseek.com", "@ai-sdk/openai-compatible"),
+        ("lmstudio", "LMStudio", "http://127.0.0.1:1234/v1", "@ai-sdk/openai-compatible"),
+        ("ollama-cloud", "Ollama Cloud", "https://ollama.com/v1", "@ai-sdk/openai-compatible"),
+        ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "@openrouter/ai-sdk-provider"),
+    ],
+)
+def test_gateway_registry_maps_openai_compatible_catalog_provider_to_chat_gateway(
+    provider_id: str,
+    name: str,
+    api_base_url: str,
+    provider_package: str,
+) -> None:
+    provider = ModelCatalogProvider(
+        id=provider_id,
+        name=name,
+        env_names=[f"{provider_id.upper().replace('-', '_')}_API_KEY"],
+        api_base_url=api_base_url,
+        provider_package=provider_package,
+        documentation_url=f"https://{provider_id}.example/docs",
+        models=[],
+    )
+
+    capability = catalog_provider_capability(provider)
+
+    assert capability.status == "runnable"
+    assert capability.gateway_provider == "openai-chat"
+
+
+def test_gateway_registry_builds_existing_openai_chat_gateway() -> None:
+    gateway = gateway_from_profile(
+        ProviderProfile(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+            credential_source="keyring",
+            credential_source_used="direct",
+            api_key="sk-test",
+        )
+    )
+
+    assert isinstance(gateway, OpenAIChatCompletionsGateway)
+
+
+def test_gateway_registry_builds_anthropic_gateway() -> None:
+    gateway = gateway_from_profile(
+        ProviderProfile(
+            name="anthropic-main",
+            provider="anthropic",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-20250514",
+            api_key_env="ANTHROPIC_API_KEY",
+            credential_source="keyring",
+            credential_source_used="direct",
+            api_key="sk-test",
+        )
+    )
+
+    assert isinstance(gateway, AnthropicMessagesGateway)
+
+
+def test_gateway_registry_builds_google_gemini_gateway() -> None:
+    gateway = gateway_from_profile(
+        ProviderProfile(
+            name="google-main",
+            provider="google",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-2.5-pro",
+            api_key_env="GEMINI_API_KEY",
+            credential_source="keyring",
+            credential_source_used="direct",
+            api_key="gemini-test-key",
+        )
+    )
+
+    assert isinstance(gateway, GoogleGeminiGateway)
+
+
+def test_gateway_registry_maps_google_catalog_provider_to_gemini_gateway() -> None:
+    provider = ModelCatalogProvider(
+        id="google",
+        name="Google",
+        env_names=["GEMINI_API_KEY"],
+        api_base_url="https://generativelanguage.googleapis.com/v1beta",
+        provider_package="@ai-sdk/google",
+        documentation_url="https://ai.google.dev/gemini-api/docs",
+        models=[],
+    )
+
+    capability = catalog_provider_capability(provider)
+
+    assert capability.status == "runnable"
+    assert capability.gateway_provider == "google"
+
+
+def test_anthropic_gateway_text_response_uses_messages_payload() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        captured["payload"] = payload
+        captured["api_key"] = api_key
+        captured["endpoint"] = endpoint
+        return {
+            "content": [{"type": "text", "text": "hello"}],
+            "stop_reason": "end_turn",
+        }
+
+    gateway = AnthropicMessagesGateway(
+        api_key="sk-ant-test",
+        model="claude-sonnet-4-5",
+        transport=transport,
+    )
+
+    result = gateway.generate([{"role": "user", "content": "hi"}], [])
+
+    assert result.content == "hello"
+    assert result.tool_calls == []
+    assert captured["payload"] == {
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    assert captured["api_key"] == "sk-ant-test"
+    assert captured["endpoint"] == "https://api.anthropic.com/v1/messages"
+
+
+def test_anthropic_gateway_normalizes_tool_use_blocks() -> None:
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        assert payload["tools"] == [
+            {
+                "name": "file_read",
+                "description": "Read a file",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            }
+        ]
+        return {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_123",
+                    "name": "file_read",
+                    "input": {"path": "README.md"},
+                }
+            ],
+            "stop_reason": "tool_use",
+        }
+
+    gateway = AnthropicMessagesGateway(
+        api_key="sk-ant-test",
+        model="claude-sonnet-4-5",
+        transport=transport,
+    )
+
+    result = gateway.generate(
+        [{"role": "user", "content": "read"}],
+        [
+            {
+                "name": "file_read",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            }
+        ],
+    )
+
+    assert result.content == ""
+    assert result.tool_calls == [
+        ToolCall(id="toolu_123", name="file_read", args={"path": "README.md"})
+    ]
+
+
+def test_anthropic_gateway_moves_system_message_to_top_level_system() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        captured["payload"] = payload
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    gateway = AnthropicMessagesGateway(
+        api_key="sk-ant-test",
+        model="claude-sonnet-4-5",
+        transport=transport,
+    )
+
+    gateway.generate(
+        [
+            {"role": "system", "content": "system instructions"},
+            {"role": "user", "content": "task"},
+        ],
+        [],
+    )
+
+    assert captured["payload"] == {
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 4096,
+        "system": "system instructions",
+        "messages": [{"role": "user", "content": "task"}],
+    }
+
+
+def test_anthropic_gateway_converts_tool_loop_messages() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        captured["payload"] = payload
+        return {"content": [{"type": "text", "text": "done"}]}
+
+    gateway = AnthropicMessagesGateway(
+        api_key="sk-ant-test",
+        model="claude-sonnet-4-5",
+        transport=transport,
+    )
+
+    gateway.generate(
+        [
+            {"role": "user", "content": "read"},
+            {
+                "role": "assistant",
+                "content": "I will read it.",
+                "tool_calls": [
+                    {
+                        "id": "toolu_123",
+                        "type": "function",
+                        "function": {
+                            "name": "file_read",
+                            "arguments": "{\"path\": \"README.md\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_123",
+                "name": "file_read",
+                "content": "{\"content\": \"hello\"}",
+            },
+        ],
+        [],
+    )
+
+    assert captured["payload"]["messages"] == [
+        {"role": "user", "content": "read"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will read it."},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_123",
+                    "name": "file_read",
+                    "input": {"path": "README.md"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_123",
+                    "content": "{\"content\": \"hello\"}",
+                }
+            ],
+        },
+    ]
+
+
+def test_anthropic_gateway_groups_multiple_tool_results_in_one_user_message() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        captured["payload"] = payload
+        return {"content": [{"type": "text", "text": "done"}]}
+
+    gateway = AnthropicMessagesGateway(
+        api_key="sk-ant-test",
+        model="claude-sonnet-4-5",
+        transport=transport,
+    )
+
+    gateway.generate(
+        [
+            {"role": "user", "content": "read files"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {
+                            "name": "file_read",
+                            "arguments": "{\"path\": \"README.md\"}",
+                        },
+                    },
+                    {
+                        "id": "toolu_2",
+                        "type": "function",
+                        "function": {
+                            "name": "file_read",
+                            "arguments": "{\"path\": \"AGENTS.md\"}",
+                        },
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_1",
+                "name": "file_read",
+                "content": "{\"content\": \"readme\"}",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_2",
+                "name": "file_read",
+                "content": "{\"content\": \"agents\"}",
+            },
+        ],
+        [],
+    )
+
+    assert captured["payload"]["messages"] == [
+        {"role": "user", "content": "read files"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "file_read",
+                    "input": {"path": "README.md"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "file_read",
+                    "input": {"path": "AGENTS.md"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "{\"content\": \"readme\"}",
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_2",
+                    "content": "{\"content\": \"agents\"}",
+                },
+            ],
+        },
+    ]
+
+
+def test_google_gemini_gateway_text_response_uses_generate_content_payload() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        captured["payload"] = payload
+        captured["api_key"] = api_key
+        captured["endpoint"] = endpoint
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": "hello"}], "role": "model"}}
+            ]
+        }
+
+    gateway = GoogleGeminiGateway(
+        api_key="gemini-test-key",
+        model="gemini-2.5-pro",
+        transport=transport,
+    )
+
+    result = gateway.generate([{"role": "user", "content": "hi"}], [])
+
+    assert result.content == "hello"
+    assert result.tool_calls == []
+    assert captured["payload"] == {
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+    }
+    assert captured["api_key"] == "gemini-test-key"
+    assert captured["endpoint"] == (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-2.5-pro:generateContent"
+    )
+
+
+def test_google_gemini_gateway_normalizes_function_calls() -> None:
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        assert payload["tools"] == [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "file_read",
+                        "description": "Read a file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                        },
+                    }
+                ]
+            }
+        ]
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "name": "file_read",
+                                    "args": {"path": "README.md"},
+                                }
+                            }
+                        ],
+                        "role": "model",
+                    }
+                }
+            ]
+        }
+
+    gateway = GoogleGeminiGateway(
+        api_key="gemini-test-key",
+        model="gemini-2.5-pro",
+        transport=transport,
+    )
+
+    result = gateway.generate(
+        [{"role": "user", "content": "read"}],
+        [
+            {
+                "name": "file_read",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            }
+        ],
+    )
+
+    assert result.content == ""
+    assert result.tool_calls == [ToolCall(name="file_read", args={"path": "README.md"})]
+
+
+def test_google_gemini_gateway_moves_system_message_to_system_instruction() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        captured["payload"] = payload
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": "hello"}], "role": "model"}}
+            ]
+        }
+
+    gateway = GoogleGeminiGateway(
+        api_key="gemini-test-key",
+        model="gemini-2.5-pro",
+        transport=transport,
+    )
+
+    gateway.generate(
+        [
+            {"role": "system", "content": "system instructions"},
+            {"role": "user", "content": "task"},
+        ],
+        [],
+    )
+
+    assert captured["payload"] == {
+        "systemInstruction": {"parts": [{"text": "system instructions"}]},
+        "contents": [{"role": "user", "parts": [{"text": "task"}]}],
+    }
+
+
+def test_google_gemini_gateway_converts_tool_loop_messages() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        payload: dict[str, object],
+        api_key: str,
+        endpoint: str,
+    ) -> dict[str, object]:
+        captured["payload"] = payload
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": "done"}], "role": "model"}}
+            ]
+        }
+
+    gateway = GoogleGeminiGateway(
+        api_key="gemini-test-key",
+        model="gemini-2.5-pro",
+        transport=transport,
+    )
+
+    gateway.generate(
+        [
+            {"role": "user", "content": "read"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "file_read",
+                            "arguments": "{\"path\": \"README.md\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "name": "file_read",
+                "content": "{\"content\": \"hello\"}",
+            },
+        ],
+        [],
+    )
+
+    assert captured["payload"]["contents"] == [
+        {"role": "user", "parts": [{"text": "read"}]},
+        {
+            "role": "model",
+            "parts": [
+                {
+                    "functionCall": {
+                        "name": "file_read",
+                        "args": {"path": "README.md"},
+                    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "file_read",
+                        "response": {"content": "{\"content\": \"hello\"}"},
+                    }
+                }
+            ],
+        },
+    ]
 
 
 def test_fake_model_gateway_returns_configured_response() -> None:
@@ -188,6 +851,50 @@ def test_provider_profile_loads_api_key_from_keyring_when_env_missing(tmp_path: 
     assert profile.api_key == "keyring-secret"
     assert profile.credential_source == "keyring"
     assert profile.credential_source_used == "keyring"
+
+
+def test_provider_profiles_can_be_listed_without_secrets(tmp_path: Path) -> None:
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+            credential_source="keyring",
+        ),
+        config_dir=tmp_path,
+    )
+
+    records = list_provider_profile_records(config_path=tmp_path / "providers.json")
+
+    assert [record.name for record in records] == ["router"]
+    assert records[0].model == "openai/gpt-5.2-chat"
+    assert "secret" not in records[0].to_dict()
+
+
+def test_provider_profile_credential_status_for_named_profile(tmp_path: Path) -> None:
+    save_provider_profile(
+        ProviderProfileRecord(
+            name="router",
+            provider="openai-chat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.2-chat",
+            api_key_env="OPENROUTER_API_KEY",
+            credential_source="keyring",
+        ),
+        config_dir=tmp_path,
+    )
+
+    status = provider_profile_credential_status(
+        "router",
+        config_dir=tmp_path,
+        credential_store=FakeCredentialStore({"profile:router": "sk-test-secret"}),
+    )
+
+    assert status.api_key_available is True
+    assert status.credential_source_used == "keyring"
+    assert "sk-test-secret" not in repr(status)
 
 
 def test_provider_profile_loads_api_key_from_explicit_insecure_file(tmp_path: Path) -> None:

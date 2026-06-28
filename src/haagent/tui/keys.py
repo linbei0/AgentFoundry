@@ -18,7 +18,7 @@ APP_BINDINGS = [
     Binding("ctrl+t", "toggle_theme", "主题", priority=True),
     ("?", "help", "帮助"),
     Binding("tab", "focus_tools", "工具", priority=True),
-    Binding("m", "toggle_memory", "记忆", priority=True),
+    ("m", "toggle_memory", "记忆"),
     ("enter", "memory_enter", "详情"),
     ("a", "confirm_memory", "确认记忆"),
     ("y", "confirm_memory", "确认记忆"),

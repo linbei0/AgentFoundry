@@ -11,6 +11,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 
 from haagent.app.assistant_service import AssistantService
+from haagent.models.gateway_registry import catalog_provider_capability
 from haagent.memory import MemoryCandidate
 from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
@@ -22,7 +23,8 @@ from haagent.tui.failures import FailureView, failure_from_payload
 from haagent.tui.file_ref_modal import FileReferenceOverlay
 from haagent.tui.file_refs import query_after_at, replace_at_query
 from haagent.tui.keys import APP_BINDINGS, footer_text
-from haagent.tui.modals import HelpModal, ToolApprovalModal, ToolDetailsModal
+from haagent.tui.modals import ConfirmModal, HelpModal, ToolApprovalModal, ToolDetailsModal
+from haagent.tui.models import ModelCatalogLoadingOverlay, ModelCenterOverlay, ModelCenterResult, ModelSetupWizard
 from haagent.tui.renderers import (
     failure_body,
     memory_panel_text,
@@ -160,6 +162,12 @@ class HaAgentTuiApp(App[None]):
             prompt_input.insert("s")
             return
         self.push_screen(SessionOverlay(self.service.list_sessions()), self._handle_session_overlay_result)
+
+    def action_open_models(self) -> None:
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        if prompt_input.has_focus and self._prompt_value(prompt_input):
+            return
+        self.push_screen(ModelCenterOverlay(self.service.list_model_profiles()), self._handle_model_center_result)
 
     def action_open_search(self) -> None:
         prompt_input = self.query_one("#prompt-input", PromptInput)
@@ -311,6 +319,8 @@ class HaAgentTuiApp(App[None]):
             self.action_help()
         elif command.action == "sessions":
             self.action_open_sessions()
+        elif command.action == "open_models":
+            self.action_open_models()
         elif command.action == "memory":
             if not self._memory_mode:
                 self.action_toggle_memory()
@@ -342,6 +352,139 @@ class HaAgentTuiApp(App[None]):
             self._append_line(f"当前会话：{status.session_id}")
         self._refresh()
         self.set_timer(0.01, self._restore_prompt_focus)
+
+    def _handle_model_center_result(self, result: ModelCenterResult | None) -> None:
+        if result is None:
+            self.set_timer(0.01, self._restore_prompt_focus)
+            return
+        try:
+            if result.action == "switch_session":
+                status = self.service.switch_current_session_model(result.profile_name)
+                profile_name = status.model_profile_name or result.profile_name
+                self._append_line(f"模型已切换到当前会话：{profile_name}")
+            elif result.action == "set_default":
+                self.service.set_default_model_profile(result.profile_name)
+                self._append_line(f"默认模型 profile 已设为：{result.profile_name}")
+            elif result.action == "delete_profile" and result.profile_name is not None:
+                self.push_screen(
+                    ConfirmModal(
+                        f"删除模型 profile：{result.profile_name}",
+                        "删除后不会清理 keyring 中的 API key。确认删除？",
+                    ),
+                    lambda confirmed, profile_name=result.profile_name: self._handle_delete_model_profile_result(
+                        profile_name,
+                        confirmed,
+                    ),
+                )
+                return
+            elif result.action == "new_profile":
+                self.push_screen(ModelCatalogLoadingOverlay())
+                self._refresh_model_catalog_and_open_setup()
+                return
+            elif result.action == "refresh_catalog":
+                self._refresh_model_catalog_only()
+                return
+            elif result.action == "test_profile" and result.profile_name is not None:
+                self._run_model_connection_test(result.profile_name)
+                return
+        except Exception as error:
+            self._append_block("Model warning", f"模型操作失败：{error}")
+        self._refresh()
+        self.set_timer(0.01, self._restore_prompt_focus)
+
+    def _handle_delete_model_profile_result(self, profile_name: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            self.action_open_models()
+            return
+        try:
+            self.service.delete_model_profile(profile_name)
+        except Exception as error:
+            self._append_block("Model warning", f"模型删除失败：{error}")
+        else:
+            self._append_line(f"模型 profile 已删除：{profile_name}")
+        self._refresh()
+        self.action_open_models()
+
+    def _handle_model_setup_result(self, request) -> None:
+        if request is None:
+            self.set_timer(0.01, self._restore_prompt_focus)
+            return
+        try:
+            record = self.service.configure_model_profile(request)
+        except Exception as error:
+            self._append_block("Model warning", f"模型配置失败：{error}")
+        else:
+            self._append_line(f"模型 profile 已保存：{record.name}")
+        self._refresh()
+        self.set_timer(0.01, self._restore_prompt_focus)
+
+    @work(thread=True, exclusive=True)
+    def _refresh_model_catalog_and_open_setup(self) -> None:
+        try:
+            catalog = self.service.refresh_model_catalog()
+        except Exception as error:
+            self.call_from_thread(self._handle_model_catalog_error, error)
+            return
+        self.call_from_thread(self._open_model_setup_wizard, list(catalog.providers))
+
+    @work(thread=True, exclusive=True)
+    def _refresh_model_catalog_only(self) -> None:
+        try:
+            catalog = self.service.refresh_model_catalog()
+        except Exception as error:
+            self.call_from_thread(self._handle_model_catalog_error, error)
+            return
+        self.call_from_thread(self._handle_model_catalog_success, list(catalog.providers))
+
+    @work(thread=True, exclusive=True)
+    def _run_model_connection_test(self, profile_name: str) -> None:
+        try:
+            result = self.service.test_model_profile(profile_name)
+        except Exception as error:
+            self.call_from_thread(self._handle_model_catalog_error, error)
+            return
+        self.call_from_thread(self._handle_model_connection_test_result, result)
+
+    def _open_model_setup_wizard(self, providers: list[object]) -> None:
+        configurable_providers = [
+            provider
+            for provider in providers
+            if getattr(catalog_provider_capability(provider), "status", None) == "runnable"
+            and list(getattr(provider, "models", []) or [])
+        ]
+        if not configurable_providers:
+            self._dismiss_model_catalog_loading_overlay()
+            self._append_block(
+                "Model warning",
+                "模型目录没有可配置模型。\n请刷新目录或检查网络；如果使用缓存，请删除损坏的 models_catalog_cache.json 后重试。",
+            )
+            self._refresh()
+            self.set_timer(0.01, self._restore_prompt_focus)
+            return
+        self._dismiss_model_catalog_loading_overlay()
+        self.push_screen(ModelSetupWizard(configurable_providers), self._handle_model_setup_result)
+
+    def _handle_model_catalog_success(self, providers: list[object]) -> None:
+        self._append_line(f"模型目录已刷新：{len(providers)} 个 provider")
+        self._refresh()
+        self.set_timer(0.01, self._restore_prompt_focus)
+
+    def _handle_model_connection_test_result(self, result) -> None:
+        status = "OK" if bool(getattr(result, "ok", False)) else "失败"
+        message = str(getattr(result, "message", ""))
+        self._append_line(f"模型连接测试 {status}: {message}")
+        self._refresh()
+        self.set_timer(0.01, self._restore_prompt_focus)
+
+    def _handle_model_catalog_error(self, error: Exception) -> None:
+        self._dismiss_model_catalog_loading_overlay()
+        self._append_block("Model warning", f"模型操作失败：{error}")
+        self._refresh()
+        self.set_timer(0.01, self._restore_prompt_focus)
+
+    def _dismiss_model_catalog_loading_overlay(self) -> None:
+        if isinstance(self.screen, ModelCatalogLoadingOverlay):
+            self.screen.dismiss(None)
 
     def _handle_command_suggestion_result(self, command) -> None:
         if command is not None:
@@ -557,7 +700,10 @@ class HaAgentTuiApp(App[None]):
             reason = status.credential_store_error or "unknown"
             self._append_block("Config", f"系统凭据库不可用：{reason}\n请运行：uv run haagent setup 重新选择凭据来源。")
         elif status.api_key_env and not status.api_key_available:
-            self._append_block("Config", f"API key 缺失：{status.api_key_env}\nHaAgent 不会在 TUI 中输入、保存或显示真实 API key。")
+            self._append_block(
+                "Config",
+                f"API key 缺失：{status.api_key_env}\n输入 /model 可以配置或测试模型；HaAgent 不会显示真实 API key。",
+            )
 
     def _refresh(self) -> None:
         status = self.service.get_workspace_status()

@@ -269,6 +269,35 @@ def test_sessions_lists_only_current_workspace_sessions(tmp_path: Path, monkeypa
     assert "Other workspace task" not in output
 
 
+def test_session_metadata_records_model_profile_without_api_key(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = AgentSession(
+        workspace_root=workspace,
+        runs_root=tmp_path / ".runs",
+        model_gateway=RecordingGateway(),
+        model_profile_name="router",
+        model_name="openai/gpt-5.2-chat",
+        model_base_url="https://openrouter.ai/api/v1",
+    )
+    session.switch_model_gateway(
+        profile_name="requesty",
+        provider="openai-chat",
+        model="openai/gpt-5.2",
+        base_url="https://router.requesty.ai/v1",
+        gateway=RecordingGateway(),
+    )
+
+    metadata_text = (session.session_path / "session.json").read_text(encoding="utf-8")
+    metadata = json.loads(metadata_text)
+
+    assert metadata["model_profile_name"] == "requesty"
+    assert metadata["model"] == "openai/gpt-5.2"
+    assert metadata["base_url"] == "https://router.requesty.ai/v1"
+    assert "api_key" not in metadata
+    assert "sk-" not in metadata_text
+
+
 def test_continue_restores_latest_current_workspace_session(
     tmp_path: Path,
     monkeypatch,

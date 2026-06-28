@@ -88,3 +88,33 @@ class ToolDetailsModal(ModalScreen[None]):
 
     def action_dismiss_help(self) -> None:
         self.dismiss(None)
+
+
+class ConfirmModal(ModalScreen[bool]):
+    def __init__(self, title: str, body: str) -> None:
+        super().__init__()
+        self.title = title
+        self.body = body
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Static(self.title, id="confirm-title")
+            yield Static(self.body, id="confirm-body")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("确认 y", id="confirm-yes", variant="error", classes="action-danger")
+                yield Button("取消 n", id="confirm-no", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm-no", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-yes")
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape" or event.character == "n":
+            event.stop()
+            self.dismiss(False)
+            return
+        if event.character == "y":
+            event.stop()
+            self.dismiss(True)
