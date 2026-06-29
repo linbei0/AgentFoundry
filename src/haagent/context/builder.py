@@ -11,6 +11,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from haagent.context.compaction import (
+    ContextBudget,
+    ContextCompactionResult,
+    ContextSection,
+    ContextSelectionRecord,
+    compact_context_sections,
+)
 from haagent.context.manifest import (
     ContextIndex,
     ContextManifest,
@@ -57,6 +64,7 @@ class BuiltContext:
     context_id: str
     messages: list[dict]
     manifest: ContextManifest
+    diagnostics: list[ContextSelectionRecord]
 
     @property
     def model_input(self) -> str:
@@ -99,17 +107,20 @@ class ContextBuilder:
         contexts_dir = self._episode_writer.path / "contexts"
         contexts_dir.mkdir(parents=True, exist_ok=True)
 
+        compaction = compact_context_sections(self._build_compaction_sections(project_instructions, plan))
+        selected_sections = {section.key: section.content for section in compaction.sections}
+        interaction_state_lines = selected_sections.get("interaction_history", "").splitlines()
         system_msg = build_system_message(
-            project_instructions=project_instructions[:PROJECT_INSTRUCTIONS_CHAR_LIMIT] if project_instructions else None,
+            project_instructions=selected_sections.get("project_instructions") or None,
             tool_workflow_hints=self._tool_workflow_hints(),
-            session_summary=(self._session_summary or "")[:SESSION_SUMMARY_CHAR_LIMIT] or None,
+            session_summary=selected_sections.get("session_summary") or None,
         )
         task_msg = build_task_message(
             task=self._task,
             plan_steps=list(plan.get("planned_steps", [])),
-            working_state_content=self._working_state_content(),
-            memory_block=self._memory_block(),
-            interaction_state_lines=self._format_interaction_state(),
+            working_state_content=selected_sections.get("working_state") or None,
+            memory_block=selected_sections.get("memory") or None,
+            interaction_state_lines=interaction_state_lines,
         )
         messages = [system_msg, task_msg]
 
@@ -131,6 +142,7 @@ class ContextBuilder:
             system_chars=system_chars,
             task_chars=task_chars,
             memory=self._memory_manifest(),
+            compaction=_compaction_manifest(compaction),
         )
         manifest_path = contexts_dir / f"{context_id}-manifest.json"
         manifest_path.write_text(
@@ -142,9 +154,15 @@ class ContextBuilder:
                 context_id=context_id,
                 model_input_path=f"contexts/{context_id}.json",
                 manifest_path=f"contexts/{context_id}-manifest.json",
+                budget=_context_index_budget(context_id, compaction),
             ),
         )
-        return BuiltContext(context_id=context_id, messages=messages, manifest=manifest)
+        return BuiltContext(
+            context_id=context_id,
+            messages=messages,
+            manifest=manifest,
+            diagnostics=compaction.diagnostics,
+        )
 
     def _validate_tools(self) -> None:
         unknown_tools = [tool for tool in self._task.allowed_tools if tool not in TOOL_REGISTRY]
@@ -244,6 +262,78 @@ class ContextBuilder:
     def _format_interaction_state(self) -> list[str]:
         return [f"- {_interaction_state_summary(r)}" for r in self._interaction_state[-8:]]
 
+    def _build_compaction_sections(self, project_instructions: str | None, plan: dict) -> list[ContextSection]:
+        sections = [
+            ContextSection(
+                key="task_envelope",
+                title="Task Envelope",
+                content=_task_envelope_content(self._task, plan),
+                source="task",
+                priority=100,
+                kind="task",
+            ),
+        ]
+        if project_instructions and project_instructions.strip():
+            sections.append(
+                ContextSection(
+                    key="project_instructions",
+                    title="Project Instructions",
+                    content=project_instructions.strip()[:PROJECT_INSTRUCTIONS_CHAR_LIMIT],
+                    source="project",
+                    priority=80,
+                    kind="project_instructions",
+                ),
+            )
+        session_summary = (self._session_summary or "").strip()
+        if session_summary:
+            sections.append(
+                ContextSection(
+                    key="session_summary",
+                    title="Session Summary",
+                    content=session_summary[:SESSION_SUMMARY_CHAR_LIMIT],
+                    source="session",
+                    priority=70,
+                    kind="session_summary",
+                ),
+            )
+        working_state = self._working_state_content()
+        if working_state and working_state.strip():
+            sections.append(
+                ContextSection(
+                    key="working_state",
+                    title="Working State",
+                    content=working_state.strip(),
+                    source="working_state",
+                    priority=75,
+                    kind="working_state",
+                ),
+            )
+        memory_block = self._memory_block()
+        if memory_block and memory_block.strip():
+            sections.append(
+                ContextSection(
+                    key="memory",
+                    title="Relevant Memory",
+                    content=memory_block.strip(),
+                    source="memory",
+                    priority=60,
+                    kind="memory",
+                ),
+            )
+        interaction_state = "\n".join(self._format_interaction_state())
+        if interaction_state.strip():
+            sections.append(
+                ContextSection(
+                    key="interaction_history",
+                    title="Interaction History",
+                    content=interaction_state.strip(),
+                    source="interaction_state",
+                    priority=55,
+                    kind="interaction",
+                ),
+            )
+        return sections
+
     def _write_run_manifest(self, index: ContextIndex) -> None:
         manifest_path = self._episode_writer.path / "context-manifest.json"
         contexts = []
@@ -270,6 +360,54 @@ def _format_list(items: list[str]) -> list[str]:
     if not items:
         return ["- none"]
     return [f"- {item}" for item in items]
+
+
+def _task_envelope_content(task: TaskSpec, plan: dict) -> str:
+    lines = [f"goal: {task.goal}"]
+    lines.append("constraints:")
+    lines.extend(_format_list(task.constraints))
+    lines.append("acceptance_criteria:")
+    lines.extend(_format_list(task.acceptance_criteria))
+    lines.append("verification_commands:")
+    lines.extend(_format_list(task.verification_commands))
+    lines.append("plan:")
+    lines.extend(_format_list(list(plan.get("planned_steps", []))))
+    return "\n".join(lines)
+
+
+def _compaction_manifest(compaction: ContextCompactionResult) -> dict:
+    return {
+        "original_chars": compaction.original_chars,
+        "final_chars": compaction.final_chars,
+        "saved_chars": compaction.original_chars - compaction.final_chars,
+        "diagnostics": [_selection_record_dict(record) for record in compaction.diagnostics],
+    }
+
+
+def _context_index_budget(context_id: str, compaction: ContextCompactionResult) -> dict:
+    included_count = sum(1 for record in compaction.diagnostics if record.decision != "skipped")
+    max_chars = ContextBudget().max_total_chars
+    return {
+        "context_id": context_id,
+        "total_chars": compaction.final_chars,
+        "max_chars": max_chars,
+        "source_count": len(compaction.diagnostics),
+        "included_source_count": included_count,
+        "status": "within_limit" if compaction.final_chars <= max_chars else "over_limit",
+    }
+
+
+def _selection_record_dict(record: ContextSelectionRecord) -> dict:
+    return {
+        "key": record.key,
+        "source": record.source,
+        "kind": record.kind,
+        "decision": record.decision,
+        "reason": record.reason,
+        "original_chars": record.original_chars,
+        "final_chars": record.final_chars,
+        "priority": record.priority,
+    }
 
 
 def _interaction_state_summary(record: dict) -> str:
