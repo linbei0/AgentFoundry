@@ -1435,6 +1435,169 @@ verification_commands: []
     assert contract["required_preserve_recent"] == 6
 
 
+def test_full_compact_success_is_written_to_transcript_by_orchestrator(tmp_path: Path, monkeypatch) -> None:
+    from haagent.context.builder import BuiltContext
+    from haagent.context.manifest import ContextManifest
+    from haagent.models.gateway import ModelResponse
+    from haagent.runtime.full_compact_contract import FullCompactEligibility
+    from haagent.runtime.orchestrator import RunOrchestrator
+
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Record full compact execution
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    compact_response = ModelResponse(
+        content=json.dumps(
+            {
+                "task_focus": "compact orchestrator context",
+                "completed_work": ["older context summarized"],
+                "open_issues": [],
+                "important_files": ["src/haagent/runtime/orchestrator.py"],
+                "tool_results": [],
+                "constraints": ["preserve recent messages"],
+                "verification": ["pytest"],
+                "risks": [],
+            },
+        ),
+        tool_calls=[],
+    )
+    gateway = FakeModelGateway(response=compact_response)
+    original_build = __import__("haagent.runtime.orchestrator", fromlist=["ContextBuilder"]).ContextBuilder.build
+
+    def fake_build(self):
+        context = original_build(self)
+        manifest = ContextManifest(
+            context_id=context.context_id,
+            provider=context.manifest.provider,
+            workspace_root=context.manifest.workspace_root,
+            generated_at=context.manifest.generated_at,
+            message_count=8,
+            system_chars=context.manifest.system_chars,
+            task_chars=context.manifest.task_chars,
+            compaction=context.manifest.compaction,
+            source_diagnostics=context.manifest.source_diagnostics,
+            compact_readiness=context.manifest.compact_readiness,
+            auto_compact_trigger=context.manifest.auto_compact_trigger,
+            session_compaction=context.manifest.session_compaction,
+            full_compact_contract=FullCompactEligibility(True, "full_compact_candidate_after_deterministic_compaction", "full_compact_candidate", 2).to_dict(),
+        )
+        return BuiltContext(
+            context_id=context.context_id,
+            messages=[{"role": "user", "content": f"older-{index}"} for index in range(6)]
+            + [{"role": "user", "content": "recent-user"}, {"role": "assistant", "content": "recent-assistant"}],
+            manifest=manifest,
+            diagnostics=context.diagnostics,
+        )
+
+    monkeypatch.setattr("haagent.runtime.orchestrator.ContextBuilder.build", fake_build)
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=gateway,
+    ).run(task_path)
+
+    transcript = [
+        json.loads(line)
+        for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    start_index = next(index for index, record in enumerate(transcript) if record.get("event") == "full_compact_start")
+    success_index = next(index for index, record in enumerate(transcript) if record.get("event") == "full_compact_success")
+    model_call_index = next(index for index, record in enumerate(transcript) if record.get("event") == "model_call")
+    assert start_index < success_index < model_call_index
+    success = transcript[success_index]
+    assert success["reason"] == "applied"
+    assert success["older_message_count"] == 6
+    assert success["preserved_recent_count"] == 2
+    context_manifest = json.loads((result.episode_path / "contexts" / "0001-manifest.json").read_text(encoding="utf-8"))
+    assert context_manifest["full_compact"]["applied"] is True
+    assert gateway.calls[0]["tool_schemas"] == []
+    assert gateway.calls[1]["messages"][0]["content"] == "[full_compact_boundary older_messages=6 preserved_recent=2]"
+
+
+def test_full_compact_failure_is_written_to_transcript_and_original_messages_continue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from haagent.context.builder import BuiltContext
+    from haagent.context.manifest import ContextManifest
+    from haagent.models.gateway import ModelResponse
+    from haagent.runtime.full_compact_contract import FullCompactEligibility
+    from haagent.runtime.orchestrator import RunOrchestrator
+
+    class TwoStepGateway:
+        provider_name = "two-step"
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def generate(self, messages, tool_schemas):
+            self.calls.append({"messages": messages, "tool_schemas": tool_schemas})
+            if len(self.calls) == 1:
+                return ModelResponse(content=json.dumps({"task_focus": "missing fields"}), tool_calls=[])
+            return ModelResponse(content="continue after compact failure", tool_calls=[])
+
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Record full compact failure
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    original_build = __import__("haagent.runtime.orchestrator", fromlist=["ContextBuilder"]).ContextBuilder.build
+
+    def fake_build(self):
+        context = original_build(self)
+        manifest = ContextManifest(
+            context_id=context.context_id,
+            provider=context.manifest.provider,
+            workspace_root=context.manifest.workspace_root,
+            generated_at=context.manifest.generated_at,
+            message_count=5,
+            system_chars=context.manifest.system_chars,
+            task_chars=context.manifest.task_chars,
+            compaction=context.manifest.compaction,
+            full_compact_contract=FullCompactEligibility(True, "full_compact_candidate_after_deterministic_compaction", "full_compact_candidate", 2).to_dict(),
+        )
+        return BuiltContext(
+            context_id=context.context_id,
+            messages=[{"role": "user", "content": f"original-{index}"} for index in range(5)],
+            manifest=manifest,
+            diagnostics=context.diagnostics,
+        )
+
+    monkeypatch.setattr("haagent.runtime.orchestrator.ContextBuilder.build", fake_build)
+    gateway = TwoStepGateway()
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=gateway,
+    ).run(task_path)
+
+    transcript = [
+        json.loads(line)
+        for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    failed = next(record for record in transcript if record.get("event") == "full_compact_failed")
+    assert failed["reason"] == "schema_invalid"
+    assert gateway.calls[1]["messages"] == [{"role": "user", "content": f"original-{index}"} for index in range(5)]
+    context_manifest = json.loads((result.episode_path / "contexts" / "0001-manifest.json").read_text(encoding="utf-8"))
+    assert context_manifest["full_compact"]["applied"] is False
+    assert context_manifest["full_compact"]["reason"] == "schema_invalid"
+
+
 def test_orchestrator_microcompacts_old_tool_result_messages(tmp_path: Path) -> None:
     from haagent.runtime.orchestrator import RunOrchestrator
 

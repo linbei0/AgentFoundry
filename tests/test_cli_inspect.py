@@ -641,6 +641,15 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
                     "trigger_kind": None,
                     "required_preserve_recent": 6,
                 },
+                "full_compact": {
+                    "applied": True,
+                    "reason": "applied",
+                    "pre_message_count": 18,
+                    "post_message_count": 8,
+                    "older_message_count": 12,
+                    "preserved_recent_count": 6,
+                    "summary_chars": 900,
+                },
             },
         ),
         encoding="utf-8",
@@ -686,6 +695,75 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
         "full_compact_contract: eligible=false "
         "reason=deterministic_session_memory_sufficient preserve_recent=6"
     ) in output
+    assert "full_compact: applied=true older=12 preserved=6 summary_chars=900 reason=applied" in output
+
+
+def test_cli_inspect_outputs_failed_full_compact_result(tmp_path: Path) -> None:
+    episode_path = tmp_path / "episode-full-compact-failed"
+    write_minimal_episode(
+        episode_path,
+        episode_json=valid_episode_json(tmp_path),
+        failure_json={"status": "success", "failure": None},
+    )
+    contexts_dir = episode_path / "contexts"
+    contexts_dir.mkdir()
+    (contexts_dir / "0001.json").write_text(
+        json.dumps([{"role": "system", "content": "compact model input"}]),
+        encoding="utf-8",
+    )
+    (contexts_dir / "0001-manifest.json").write_text(
+        json.dumps(
+            {
+                "context_id": "0001",
+                "provider": "fake",
+                "workspace_root": str(tmp_path),
+                "generated_at": "2026-06-19T00:00:00+00:00",
+                "message_count": 1,
+                "system_chars": 19,
+                "task_chars": 0,
+                "compaction": {
+                    "original_chars": 1000,
+                    "final_chars": 300,
+                    "saved_chars": 700,
+                    "selected_count": 2,
+                    "collapsed_count": 1,
+                    "skipped_count": 1,
+                },
+                "full_compact": {
+                    "applied": False,
+                    "reason": "schema_invalid",
+                    "pre_message_count": 18,
+                    "post_message_count": 18,
+                    "older_message_count": 12,
+                    "preserved_recent_count": 6,
+                    "summary_chars": 0,
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    (episode_path / "context-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "2.0",
+                "generated_at": "2026-06-19T00:00:00+00:00",
+                "context_count": 1,
+                "summary": {"provider": "fake", "goal": "Inspect me"},
+                "contexts": [
+                    {
+                        "context_id": "0001",
+                        "model_input_path": "contexts/0001.json",
+                        "manifest_path": "contexts/0001-manifest.json",
+                    },
+                ],
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    output = cli_inspect.render_episode_summary(episode_path)
+
+    assert "full_compact: applied=false reason=schema_invalid" in output
 
 
 def test_cli_inspect_outputs_tool_argument_errors(tmp_path: Path, capsys) -> None:

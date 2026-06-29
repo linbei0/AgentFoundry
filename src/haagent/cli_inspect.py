@@ -144,6 +144,7 @@ def _format_context_compaction(episode_path: Path, context: dict[str, Any]) -> l
     lines.extend(_format_auto_compact_trigger(context_manifest.get("auto_compact_trigger")))
     lines.extend(_format_session_compaction(context_manifest.get("session_compaction")))
     lines.extend(_format_full_compact_contract(context_manifest.get("full_compact_contract")))
+    lines.extend(_format_full_compact(context_manifest.get("full_compact")))
     return lines
 
 
@@ -180,6 +181,26 @@ def _format_full_compact_contract(full_compact_contract: Any) -> list[str]:
         f"eligible={_format_bool(full_compact_contract.get('eligible'))} "
         f"reason={full_compact_contract.get('reason', 'unknown')} "
         f"preserve_recent={full_compact_contract.get('required_preserve_recent', 0)}",
+    ]
+
+
+def _format_full_compact(full_compact: Any) -> list[str]:
+    if not isinstance(full_compact, dict):
+        return []
+    applied = full_compact.get("applied")
+    if applied is True:
+        return [
+            "  full_compact: "
+            "applied=true "
+            f"older={full_compact.get('older_message_count', 0)} "
+            f"preserved={full_compact.get('preserved_recent_count', 0)} "
+            f"summary_chars={full_compact.get('summary_chars', 0)} "
+            f"reason={full_compact.get('reason', 'unknown')}",
+        ]
+    return [
+        "  full_compact: "
+        f"applied={_format_bool(applied)} "
+        f"reason={full_compact.get('reason', 'unknown')}",
     ]
 
 

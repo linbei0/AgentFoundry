@@ -45,6 +45,7 @@ class ContextManifest:
     auto_compact_trigger: dict[str, Any] | None = None
     session_compaction: dict[str, Any] | None = None
     full_compact_contract: dict[str, Any] | None = None
+    full_compact: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         manifest: dict[str, Any] = {
@@ -72,4 +73,6 @@ class ContextManifest:
             manifest["session_compaction"] = self.session_compaction
         if self.full_compact_contract is not None:
             manifest["full_compact_contract"] = self.full_compact_contract
+        if self.full_compact is not None:
+            manifest["full_compact"] = self.full_compact
         return manifest

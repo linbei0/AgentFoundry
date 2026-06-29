@@ -30,6 +30,8 @@ from haagent.models.gateway import ModelCallError, ModelGateway, ToolCall
 from haagent.runtime.cancellation import CancellationToken, RunCancelled
 from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.failure import FailureCategory
+from haagent.runtime.full_compact import FullCompactResult, maybe_full_compact_messages
+from haagent.runtime.full_compact_contract import FullCompactEligibility
 from haagent.runtime.guardrails import (
     GuardrailResult,
     check_assistant_output,
@@ -199,6 +201,33 @@ class RunOrchestrator:
                     {"event": "full_compact_contract", **context.manifest.full_compact_contract},
                 )
             messages: list[dict[str, Any]] = list(context.messages)
+            if context.manifest.full_compact_contract is not None:
+                if context.manifest.full_compact_contract.get("eligible") is True:
+                    writer.append_transcript(
+                        {
+                            "event": "full_compact_start",
+                            "context_id": context.context_id,
+                            "reason": context.manifest.full_compact_contract.get("reason"),
+                            "preserve_recent": context.manifest.full_compact_contract.get("required_preserve_recent", 6),
+                            "pre_message_count": len(messages),
+                        },
+                    )
+                full_compact_result = maybe_full_compact_messages(
+                    messages=messages,
+                    eligibility=_full_compact_eligibility_from_manifest(context.manifest.full_compact_contract),
+                    gateway=self._model_gateway,
+                    preserve_recent=_full_compact_preserve_recent(context.manifest.full_compact_contract),
+                )
+                if context.manifest.full_compact_contract.get("eligible") is True:
+                    writer.append_transcript(
+                        {
+                            "event": "full_compact_success" if full_compact_result.applied else "full_compact_failed",
+                            "context_id": context.context_id,
+                            **_full_compact_event_fields(full_compact_result),
+                        },
+                    )
+                _write_full_compact_manifest_result(writer, context.context_id, full_compact_result.manifest)
+                messages = full_compact_result.messages
 
             # 追踪 completion 用的最后一次文件变更 observation（供 _successful_file_change_without_declared_verification）
             completion_observations: list[dict[str, object]] = []
@@ -605,6 +634,45 @@ def _verification_evidence(verification_result) -> str:
     if verification_result.stderr_excerpt:
         lines.append(f"stderr: {verification_result.stderr_excerpt}")
     return "\n".join(lines)
+
+
+def _full_compact_eligibility_from_manifest(contract: dict[str, Any]) -> FullCompactEligibility:
+    return FullCompactEligibility(
+        eligible=contract.get("eligible") is True,
+        reason=str(contract.get("reason", "unknown")),
+        trigger_kind=contract.get("trigger_kind") if isinstance(contract.get("trigger_kind"), str) else None,
+        required_preserve_recent=_full_compact_preserve_recent(contract),
+    )
+
+
+def _full_compact_preserve_recent(contract: dict[str, Any]) -> int:
+    preserve_recent = contract.get("required_preserve_recent", 6)
+    return preserve_recent if isinstance(preserve_recent, int) else 6
+
+
+def _full_compact_event_fields(result: FullCompactResult) -> dict[str, object]:
+    return {
+        "applied": result.applied,
+        "reason": result.reason,
+        "pre_message_count": result.pre_message_count,
+        "post_message_count": result.post_message_count,
+        "older_message_count": result.older_message_count,
+        "preserved_recent_count": result.preserved_recent_count,
+        "summary_chars": result.summary_chars,
+    }
+
+
+def _write_full_compact_manifest_result(
+    writer: EpisodeWriter,
+    context_id: str,
+    full_compact: dict[str, Any],
+) -> None:
+    manifest_path = writer.path / "contexts" / f"{context_id}-manifest.json"
+    if not manifest_path.exists():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["full_compact"] = full_compact
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _microcompact_old_tool_messages(
