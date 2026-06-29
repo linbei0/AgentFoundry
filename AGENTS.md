@@ -51,7 +51,8 @@ If documents disagree, prefer the narrower and more current rule. Do not silentl
 
 - Install dependencies: `uv sync`
 - Run a focused test file during development: `uv run pytest tests/test_tool_router.py -q`
-- Run all tests when needed for final regression: `uv run pytest -q`
+- Run the fast local suite (excludes slow TUI/agent tests, ~34s): `uv run pytest -m "not slow" -q`
+- Run all tests when needed for final regression (~2min): `uv run pytest -q`
 - Run the fast local quality gate: `uv run haagent check`
 
 ## Development Workflow
@@ -90,6 +91,7 @@ If documents disagree, prefer the narrower and more current rule. Do not silentl
 - For bug fixes and new behavior, write the failing test first, then implement the smallest code that passes.
 - During the TDD inner loop, run the smallest relevant pytest target first: a single test, a single test file, or the directly affected test group.
 - Do not automatically run full `uv run pytest` after every small edit.
+- For a broad-but-fast check, run `uv run pytest -m "not slow" -q` (~34s; excludes `test_tui_app.py`, `test_real_task_smoke.py`, `test_dogfood.py`). Slow tests are tagged in `tests/conftest.py` by measured runtime — adjust that list with timings, not guesses.
 - Before claiming completion, run the tests directly relevant to the changed behavior.
 - Run full `uv run pytest -q` when a change crosses multiple core modules, changes shared runtime contracts, touches `ToolRouter`, `ModelGateway`, context, episode, CLI entry points, workspace boundaries, or secret handling, or when preparing a commit, merge, release, or user-facing handoff.
 - Run `uv run haagent check` before user-facing handoff when the change affects harness, eval, smoke behavior, CLI quality gates, or runtime task execution.
