@@ -597,6 +597,12 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
                     "observations": {
                         "included_in_model_input": False,
                         "observation_section_count": 0,
+                        "compacted_count": 2,
+                        "truncated_count": 1,
+                        "skipped_count": 0,
+                        "original_chars": 5000,
+                        "final_chars": 1400,
+                        "saved_chars": 3600,
                     },
                 },
                 "compact_readiness": {
@@ -638,7 +644,7 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
     assert "skipped_reasons: over_total_budget=1" in output
     assert "source_diagnostics: session_summary included=true chars=512/1000" in output
     assert "source_diagnostics: memory used=3 skipped_over_budget=2 included=true" in output
-    assert "source_diagnostics: observations included=false sections=0" in output
+    assert "source_diagnostics: observations included=false sections=0 compacted=2 truncated=1 saved=3600" in output
     assert "compact_readiness: status=watch pressure=0.84 saved_ratio=0.22 recommendation=keep_deterministic" in output
     assert "readiness_reasons: near_budget_limit, collapsed_context_present" in output
 

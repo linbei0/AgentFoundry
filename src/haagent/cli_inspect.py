@@ -185,7 +185,10 @@ def _format_source_diagnostics(source_diagnostics: Any) -> list[str]:
         lines.append(
             "  source_diagnostics: observations "
             f"included={_format_bool(observations.get('included_in_model_input'))} "
-            f"sections={observations.get('observation_section_count', 0)}",
+            f"sections={observations.get('observation_section_count', 0)} "
+            f"compacted={observations.get('compacted_count', 0)} "
+            f"truncated={observations.get('truncated_count', 0)} "
+            f"saved={observations.get('saved_chars', 0)}",
         )
     return lines
 

@@ -20,6 +20,11 @@ from haagent.context.messages import (
     build_tool_result_message,
     generate_tool_call_id,
 )
+from haagent.context.observation_compaction import (
+    OBSERVATION_MICROCOMPACT_CHAR_LIMIT,
+    OBSERVATION_MICROCOMPACT_HEAD_CHARS,
+    OBSERVATION_MICROCOMPACT_TAIL_CHARS,
+)
 from haagent.models.fake import FakeModelGateway
 from haagent.models.gateway import ModelCallError, ModelGateway, ToolCall
 from haagent.runtime.cancellation import CancellationToken, RunCancelled
@@ -177,6 +182,7 @@ class RunOrchestrator:
             for turn in range(1, self._max_turns + 1):
                 self._raise_if_cancelled()
                 tool_schemas = [] if final_response_requested else export_tool_schemas(task.allowed_tools)
+                _microcompact_old_tool_messages(messages, writer, turn)
 
                 writer.append_transcript(
                     {
@@ -574,6 +580,49 @@ def _verification_evidence(verification_result) -> str:
     if verification_result.stderr_excerpt:
         lines.append(f"stderr: {verification_result.stderr_excerpt}")
     return "\n".join(lines)
+
+
+def _microcompact_old_tool_messages(
+    messages: list[dict[str, Any]],
+    writer: EpisodeWriter,
+    turn: int,
+) -> None:
+    for index, message in enumerate(messages):
+        if message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or len(content) <= OBSERVATION_MICROCOMPACT_CHAR_LIMIT:
+            continue
+        compacted = _collapse_text_head_tail(
+            content,
+            head_chars=OBSERVATION_MICROCOMPACT_HEAD_CHARS,
+            tail_chars=OBSERVATION_MICROCOMPACT_TAIL_CHARS,
+        )
+        if len(compacted) >= len(content):
+            continue
+        message["content"] = compacted
+        writer.append_transcript(
+            {
+                "event": "tool_result_microcompact",
+                "turn": turn,
+                "message_index": index,
+                "tool_name": str(message.get("name", "unknown_tool")),
+                "original_chars": len(content),
+                "final_chars": len(compacted),
+                "decision": "collapsed",
+                "reason": "old_tool_result_over_budget",
+            },
+        )
+
+
+def _collapse_text_head_tail(text: str, *, head_chars: int, tail_chars: int) -> str:
+    head = text[:head_chars].rstrip()
+    tail = text[-tail_chars:].lstrip() if tail_chars > 0 else ""
+    collapsed_chars = len(text) - head_chars - tail_chars
+    marker = f"...[collapsed {collapsed_chars} chars]..."
+    if tail:
+        return f"{head}\n{marker}\n{tail}"
+    return f"{head}\n{marker}"
 
 
 def _verification_loop_limit_evidence(max_turns: int, verification_result) -> str:

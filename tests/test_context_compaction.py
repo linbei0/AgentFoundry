@@ -214,12 +214,51 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert manifest["source_diagnostics"]["observations"] == {
         "included_in_model_input": False,
         "observation_section_count": 0,
+        "compacted_count": 0,
+        "truncated_count": 0,
+        "skipped_count": 0,
+        "original_chars": 0,
+        "final_chars": 0,
+        "saved_chars": 0,
         "reason": "context_builder_does_not_include_observation_sections",
     }
     assert "diagnostics" not in context.model_input
     assert "compaction" not in context.model_input
     assert "source_diagnostics" not in context.model_input
     assert "compact_readiness" not in context.model_input
+
+
+def test_context_builder_records_observation_compaction_source_diagnostics(tmp_path: Path) -> None:
+    writer = _make_writer(tmp_path)
+    raw_output = "OBS-HEAD-" + ("body-" * 500) + "OBS-TAIL"
+
+    context = ContextBuilder(
+        task=_task("summarize project"),
+        workspace_root=tmp_path,
+        provider_name="test-provider",
+        episode_writer=writer,
+        observations=[
+            {
+                "tool_name": "shell",
+                "args": {"command": "pytest"},
+                "result": {"status": "success", "stdout": raw_output, "stderr": ""},
+            },
+        ],
+    ).build()
+
+    manifest_path = writer.path / "contexts" / f"{context.context_id}-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    observations = manifest["source_diagnostics"]["observations"]
+
+    assert observations["included_in_model_input"] is False
+    assert observations["observation_section_count"] == 0
+    assert observations["compacted_count"] == 1
+    assert observations["truncated_count"] == 0
+    assert observations["skipped_count"] == 0
+    assert observations["original_chars"] > observations["final_chars"]
+    assert observations["saved_chars"] == observations["original_chars"] - observations["final_chars"]
+    assert "source_diagnostics" not in context.model_input
+    assert "OBS-HEAD-" not in context.model_input
 
 
 def test_context_builder_diagnostics_match_real_model_input(tmp_path: Path) -> None:

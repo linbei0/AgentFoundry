@@ -1401,3 +1401,57 @@ verification_commands: []
     model_call = next(record for record in transcript if record.get("event") == "model_call")
     assert model_call["context_id"] == "0001"
     assert any(record.get("event") == "model_response" for record in transcript)
+
+
+def test_orchestrator_microcompacts_old_tool_result_messages(tmp_path: Path) -> None:
+    from haagent.runtime.orchestrator import RunOrchestrator
+
+    class LargeToolResultGateway:
+        provider_name = "large-tool-result"
+
+        def __init__(self) -> None:
+            self.model_inputs: list[str] = []
+            self._turn = 0
+
+        def generate(self, messages, tool_schemas):
+            self._turn += 1
+            self.model_inputs.append("\n".join(str(m.get("content", "")) for m in messages))
+            if self._turn == 1:
+                return ModelResponse("read", [ToolCall("file_read", {"path": "large.txt", "limit": 80})])
+            return ModelResponse("done", [])
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    large_content = "HEAD-" + ("body-" * 2000) + "TAIL"
+    (workspace / "large.txt").write_text(large_content, encoding="utf-8")
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        f"""
+goal: Read large file
+workspace_root: {workspace}
+constraints: []
+allowed_tools:
+  - file_read
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+    gateway = LargeToolResultGateway()
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=gateway,
+        max_turns=2,
+    ).run(task_path)
+
+    second_input = gateway.model_inputs[1]
+    assert "HEAD-" in second_input
+    assert "TAIL" in second_input
+    assert "...[collapsed " in second_input
+    assert large_content not in second_input
+    transcript = [
+        json.loads(line)
+        for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(record.get("event") == "tool_result_microcompact" for record in transcript)

@@ -6,12 +6,30 @@ haagent/context/observation_compaction.py - 工具 observation 摘要与压缩
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from typing import Any
+from typing import Literal
 
 from haagent.runtime.command import redact_secret_like_text
 
 
 OBSERVATION_EXCERPT_CHAR_LIMIT = 240
+OBSERVATION_MICROCOMPACT_CHAR_LIMIT = 1200
+OBSERVATION_MICROCOMPACT_HEAD_CHARS = 600
+OBSERVATION_MICROCOMPACT_TAIL_CHARS = 300
+
+ObservationDecision = Literal["selected", "collapsed", "truncated", "skipped"]
+
+
+@dataclass(frozen=True)
+class ObservationCompactionRecord:
+    tool_name: str
+    kind: str
+    original_chars: int
+    final_chars: int
+    decision: ObservationDecision
+    reason: str
 
 
 def observation_tool_name(observation: dict[str, object]) -> str:
@@ -48,6 +66,56 @@ def observation_summary(observation: dict[str, object]) -> dict[str, object]:
     if tool_name in {"loop_suggestion", "safety_warning"}:
         return _loop_suggestion_observation_summary(args, result)
     return _generic_observation_summary(args, result)
+
+
+def compact_observation_with_record(
+    observation: dict[str, object],
+    *,
+    max_chars: int = OBSERVATION_MICROCOMPACT_CHAR_LIMIT,
+    head_chars: int = OBSERVATION_MICROCOMPACT_HEAD_CHARS,
+    tail_chars: int = OBSERVATION_MICROCOMPACT_TAIL_CHARS,
+) -> tuple[str, ObservationCompactionRecord]:
+    """返回 observation 的确定性 microcompact 文本和机器可读记录。"""
+    tool_name = observation_tool_name(observation)
+    summary = observation_summary(observation)
+    raw_text = json.dumps(raw_observation_summary(observation), ensure_ascii=False)
+    compacted_summary, field_collapsed = _microcompact_summary_fields(
+        summary,
+        observation,
+        max_chars=max_chars,
+        head_chars=head_chars,
+        tail_chars=tail_chars,
+    )
+    compacted_text = json.dumps(compacted_summary, ensure_ascii=False)
+    whole_collapsed = False
+    if len(compacted_text) > max_chars and not field_collapsed:
+        compacted_text = _collapse_head_tail(
+            compacted_text,
+            max_chars=max_chars,
+            head_chars=head_chars,
+            tail_chars=tail_chars,
+        )
+        whole_collapsed = True
+    decision: ObservationDecision = "selected"
+    reason = "within_budget"
+    if field_collapsed or whole_collapsed:
+        decision = "collapsed"
+        reason = "observation_over_budget"
+    elif bool(summary.get("truncated")):
+        decision = "truncated"
+        reason = "summary_truncated"
+    original_chars = len(raw_text) if decision in {"collapsed", "truncated"} else len(compacted_text)
+    return (
+        compacted_text,
+        ObservationCompactionRecord(
+            tool_name=tool_name,
+            kind="observation",
+            original_chars=original_chars,
+            final_chars=len(compacted_text),
+            decision=decision,
+            reason=reason,
+        ),
+    )
 
 
 def raw_observation_summary(observation: dict[str, object]) -> dict[str, object]:
@@ -342,6 +410,58 @@ def _compact_excerpt(value: str) -> tuple[str, bool]:
     safe_value, redacted = redact_secret_like_text(value)
     truncated = len(safe_value) > OBSERVATION_EXCERPT_CHAR_LIMIT
     return safe_value[:OBSERVATION_EXCERPT_CHAR_LIMIT], truncated or redacted
+
+
+def _microcompact_summary_fields(
+    summary: dict[str, object],
+    observation: dict[str, object],
+    *,
+    max_chars: int,
+    head_chars: int,
+    tail_chars: int,
+) -> tuple[dict[str, object], bool]:
+    result = _dict_or_empty(observation.get("result"))
+    compacted = dict(summary)
+    collapsed = False
+    for raw_key, summary_key in _long_text_summary_keys().items():
+        raw_value = result.get(raw_key)
+        if not isinstance(raw_value, str):
+            continue
+        safe_value, redacted = redact_secret_like_text(raw_value)
+        if len(safe_value) <= OBSERVATION_EXCERPT_CHAR_LIMIT and not redacted:
+            continue
+        compacted[summary_key] = _collapse_head_tail(
+            safe_value,
+            max_chars=max_chars,
+            head_chars=head_chars,
+            tail_chars=tail_chars,
+        )
+        compacted["truncated"] = True
+        collapsed = collapsed or len(safe_value) > max_chars
+    return compacted, collapsed
+
+
+def _long_text_summary_keys() -> dict[str, str]:
+    return {
+        "stdout": "stdout_excerpt",
+        "stderr": "stderr_excerpt",
+        "content": "excerpt",
+        "tree": "tree_excerpt",
+        "answer": "answer_excerpt",
+        "message": "message",
+    }
+
+
+def _collapse_head_tail(text: str, *, max_chars: int, head_chars: int, tail_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    head = text[:head_chars].rstrip()
+    tail = text[-tail_chars:].lstrip() if tail_chars > 0 else ""
+    collapsed_chars = len(text) - head_chars - tail_chars
+    marker = f"...[collapsed {collapsed_chars} chars]..."
+    if tail:
+        return f"{head}\n{marker}\n{tail}"
+    return f"{head}\n{marker}"
 
 
 def _dict_or_empty(value: object) -> dict[str, Any]:

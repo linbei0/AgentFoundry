@@ -27,6 +27,10 @@ from haagent.context.messages import (
     build_system_message,
     build_task_message,
 )
+from haagent.context.observation_compaction import (
+    ObservationCompactionRecord,
+    compact_observation_with_record,
+)
 from haagent.memory.retrieval import (
     MemoryRetrievalRequest,
     MemoryRetriever,
@@ -96,6 +100,7 @@ class ContextBuilder:
         self._workspace_root = workspace_root
         self._provider_name = provider_name
         self._episode_writer = episode_writer
+        self._observations = list(observations or [])
         self._session_summary = session_summary
         self._working_state = working_state
         self._interaction_state = list(interaction_state or [])
@@ -153,6 +158,7 @@ class ContextBuilder:
                 session_summary=self._session_summary,
                 memory_manifest=self._memory_manifest(),
                 compaction=compaction,
+                observation_records=_compact_observation_records(self._observations),
             ),
             compact_readiness=assess_compact_readiness(compaction, self._compaction_budget),
         )
@@ -397,15 +403,12 @@ def _source_diagnostics(
     session_summary: str | None,
     memory_manifest: dict | None,
     compaction: ContextCompactionResult,
+    observation_records: list[ObservationCompactionRecord],
 ) -> dict:
     return {
         "session_summary": _session_summary_source_diagnostics(session_summary, compaction),
         "memory": _memory_source_diagnostics(memory_manifest, compaction),
-        "observations": {
-            "included_in_model_input": False,
-            "observation_section_count": 0,
-            "reason": "context_builder_does_not_include_observation_sections",
-        },
+        "observations": _observation_source_diagnostics(observation_records),
     }
 
 
@@ -435,6 +438,30 @@ def _memory_source_diagnostics(memory_manifest: dict | None, compaction: Context
         "diagnostics": dict(diagnostics) if isinstance(diagnostics, dict) else {},
         "budget": dict(budget) if isinstance(budget, dict) else {},
         "included_in_model_input": record is not None and record.decision != "skipped",
+    }
+
+
+def _compact_observation_records(observations: list[dict]) -> list[ObservationCompactionRecord]:
+    records: list[ObservationCompactionRecord] = []
+    for observation in observations:
+        _content, record = compact_observation_with_record(observation)
+        records.append(record)
+    return records
+
+
+def _observation_source_diagnostics(records: list[ObservationCompactionRecord]) -> dict:
+    original_chars = sum(record.original_chars for record in records)
+    final_chars = sum(record.final_chars for record in records)
+    return {
+        "included_in_model_input": False,
+        "observation_section_count": 0,
+        "compacted_count": sum(1 for record in records if record.decision == "collapsed"),
+        "truncated_count": sum(1 for record in records if record.decision == "truncated"),
+        "skipped_count": sum(1 for record in records if record.decision == "skipped"),
+        "original_chars": original_chars,
+        "final_chars": final_chars,
+        "saved_chars": original_chars - final_chars,
+        "reason": "context_builder_does_not_include_observation_sections",
     }
 
 
