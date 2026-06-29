@@ -27,6 +27,7 @@ class TaskSpec:
     acceptance_criteria: list[str]
     verification_commands: list[str]
     workspace_root: str | None = None
+    path_policy: dict[str, Any] | None = None
     policy: dict[str, list[str]] = field(
         default_factory=lambda: {"approval_allowed_tools": [], "approved_tools": []},
     )
@@ -46,6 +47,7 @@ def load_task(path: Path) -> TaskSpec:
         acceptance_criteria=_required_str_list(raw, "acceptance_criteria"),
         verification_commands=_required_str_list(raw, "verification_commands"),
         workspace_root=_optional_str(raw, "workspace_root"),
+        path_policy=_optional_path_policy(raw),
         policy=_optional_policy(raw),
     )
 
@@ -129,3 +131,12 @@ def _optional_policy(raw: dict[str, Any]) -> dict[str, list[str]]:
         "approval_allowed_tools": approval_allowed_tools,
         "approved_tools": approved_tools,
     }
+
+
+def _optional_path_policy(raw: dict[str, Any]) -> dict[str, Any] | None:
+    value = raw.get("path_policy")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TaskLoadError("path_policy must be a mapping")
+    return value

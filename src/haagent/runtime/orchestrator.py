@@ -55,6 +55,7 @@ from haagent.runtime.loop_guidance import (
 )
 from haagent.runtime.safety_guard import SafetyGuard
 from haagent.runtime.plan import build_plan
+from haagent.runtime.path_policy import default_path_policy, load_path_policy
 from haagent.runtime.state import RunStatus
 from haagent.runtime.task_contract import TaskLoadError, load_task, resolve_workspace_root
 from haagent.runtime.workspace_preflight import build_workspace_preflight
@@ -121,6 +122,7 @@ class RunOrchestrator:
             workspace_candidate = _workspace_root_candidate(task.workspace_root, task_path)
             writer.write_workspace_preflight(build_workspace_preflight(workspace_candidate))
             workspace_root = resolve_workspace_root(task, task_path)
+            path_policy = load_path_policy(task.path_policy) if task.path_policy is not None else default_path_policy(workspace_root)
             writer.write_episode_metadata(
                 status=RunStatus.CREATED.value,
                 provider=self._model_gateway.provider_name,
@@ -174,6 +176,7 @@ class RunOrchestrator:
                 task.allowed_tools,
                 writer,
                 workspace_root=workspace_root,
+                path_policy=path_policy,
                 approval_allowed_tools=task.policy["approval_allowed_tools"],
                 approved_tools=task.policy["approved_tools"],
             )

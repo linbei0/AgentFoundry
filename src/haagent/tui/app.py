@@ -6,6 +6,9 @@ haagent/tui/app.py - HaAgent TUI 应用编排
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -23,7 +26,7 @@ from haagent.tui.failures import FailureView, failure_from_payload
 from haagent.tui.file_ref_modal import FileReferenceOverlay
 from haagent.tui.file_refs import query_after_at, replace_at_query
 from haagent.tui.keys import APP_BINDINGS, footer_text
-from haagent.tui.modals import ConfirmModal, HelpModal, ToolApprovalModal, ToolDetailsModal
+from haagent.tui.modals import ConfirmModal, ExternalDirectoryDecisionModal, HelpModal, ToolApprovalModal, ToolDetailsModal
 from haagent.tui.models import (
     ManualModelSetupWizard,
     ModelCatalogLoadingOverlay,
@@ -56,6 +59,41 @@ from haagent.tui.utils import safe_summary
 from haagent.tui.widgets import ConversationView, FooterBar, PromptInput, ResizeMessage, SideBar, StatusBar, _end_location
 
 
+WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r'(?:"([A-Za-z]:[\\/][^"\r\n]+)"|([A-Za-z]:[\\/][^\s"\']+))')
+POSIX_ABSOLUTE_PATH_PATTERN = re.compile(r'(?:"(/[^"\r\n]+)"|(?<!\S)(/[^ \t\r\n"\']+))')
+
+
+def find_untrusted_absolute_paths(
+    text: str,
+    *,
+    project_root: Path,
+    external_roots: list[dict[str, str]] | None = None,
+) -> list[Path]:
+    roots = [project_root.resolve()]
+    for item in external_roots or []:
+        raw_path = item.get("path")
+        if raw_path:
+            roots.append(Path(raw_path).resolve())
+    matches: list[Path] = []
+    for candidate in _absolute_path_candidates(text):
+        resolved = candidate.resolve()
+        if any(resolved == root or root in resolved.parents for root in roots):
+            continue
+        if resolved not in matches:
+            matches.append(resolved)
+    return matches
+
+
+def _absolute_path_candidates(text: str) -> list[Path]:
+    paths: list[Path] = []
+    for pattern in (WINDOWS_ABSOLUTE_PATH_PATTERN, POSIX_ABSOLUTE_PATH_PATTERN):
+        for match in pattern.finditer(text):
+            raw = next((group for group in match.groups() if group), "")
+            if raw:
+                paths.append(Path(raw.rstrip(".,;，。；")))
+    return paths
+
+
 class HaAgentTuiApp(App[None]):
     MIN_WIDTH = MIN_WIDTH
     MIN_HEIGHT = MIN_HEIGHT
@@ -82,6 +120,8 @@ class HaAgentTuiApp(App[None]):
         self._memory_selected = 0
         self._memory_error: str | None = None
         self._memory_notice: str | None = None
+        self._pending_external_prompt: str | None = None
+        self._pending_external_path: Path | None = None
         self._model_catalog_providers: list[object] | None = None
         self._commands = command_registry()
         self._theme_choice = select_theme()
@@ -173,6 +213,20 @@ class HaAgentTuiApp(App[None]):
         if self._pending_interaction is not None and self._pending_interaction.request.interaction_type == "user_input":
             self._complete_interaction(HumanInteractionResponse(approved=True, answer=prompt))
             return
+        status = self.service.get_workspace_status()
+        untrusted_paths = find_untrusted_absolute_paths(
+            prompt,
+            project_root=status.workspace_root,
+            external_roots=status.external_roots or [],
+        )
+        if untrusted_paths:
+            self._pending_external_prompt = prompt
+            self._pending_external_path = untrusted_paths[0]
+            self.push_screen(ExternalDirectoryDecisionModal(untrusted_paths[0]), self._handle_external_directory_decision)
+            return
+        self._start_prompt(prompt)
+
+    def _start_prompt(self, prompt: str) -> None:
         self._append_block("You", prompt)
         if self._state == "cancelled":
             self._pending_decision = None
@@ -357,6 +411,8 @@ class HaAgentTuiApp(App[None]):
                 self.action_open_tool_details()
         elif command.action == "web":
             self._handle_web_command(result.argument)
+        elif command.action == "permissions":
+            self._show_permissions()
         elif command.action == "cancel_task":
             self.action_cancel_current_task()
         elif command.action == "new_session":
@@ -376,6 +432,52 @@ class HaAgentTuiApp(App[None]):
         state = "开启" if enabled else "关闭"
         self._append_block("Command", f"联网已{state}；后续任务可使用 web_search / web_fetch。")
         self._refresh()
+
+    def _show_permissions(self) -> None:
+        status = self.service.get_workspace_status()
+        roots = status.external_roots or []
+        if not roots:
+            body = "项目根：\n  " + str(status.workspace_root) + "\n\n外部目录：无"
+        else:
+            lines = ["项目根：", f"  {status.workspace_root}", "", "外部目录："]
+            for root in roots:
+                access = root.get("access", "")
+                label = "只读参考" if access == "read" else "完全信任" if access == "full" else access or "-"
+                lines.append(f"  {root.get('path', '-')}  {label}")
+            body = "\n".join(lines)
+        self._append_block("Permissions", body)
+        self._refresh()
+
+    def _handle_external_directory_decision(self, decision: str | None) -> None:
+        prompt = self._pending_external_prompt
+        path = self._pending_external_path
+        self._pending_external_prompt = None
+        self._pending_external_path = None
+        if prompt is None or path is None:
+            self._restore_prompt_focus()
+            return
+        try:
+            if decision == "read":
+                self.service.add_external_root(path, "read")
+                self._append_block("Permissions", f"已作为只读参考加入：{path}")
+            elif decision == "full":
+                self.service.add_external_root(path, "full")
+                self._append_block("Permissions", f"已完全信任：{path}")
+            elif decision == "switch":
+                self.service.switch_project_root(path)
+                self._append_block("Permissions", f"已切换工作区：{path}")
+            else:
+                self._append_block("Permissions", f"已取消外部目录授权：{path}")
+                self._refresh()
+                self._restore_prompt_focus()
+                return
+        except Exception as error:
+            self._append_block("Permissions warning", f"外部目录授权失败：{error}")
+            self._refresh()
+            self._restore_prompt_focus()
+            return
+        self._refresh()
+        self._start_prompt(prompt)
 
     def _handle_session_overlay_result(self, result: SessionOverlayResult | None) -> None:
         if result is None:

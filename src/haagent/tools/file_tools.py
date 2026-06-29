@@ -19,6 +19,7 @@ from haagent.memory.path_policy import (
     MEMORY_STORE_PATH_MESSAGE,
     is_workspace_memory_store_path,
 )
+from haagent.runtime.path_policy import PathPolicy, default_path_policy, resolve_path_for_access
 from haagent.tools.base import tool_error
 
 
@@ -64,13 +65,14 @@ NOISE_DIRECTORIES = {
 }
 
 
-def file_list(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def file_list(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     path_arg = args.get("path", ".")
     if not isinstance(path_arg, str):
         return tool_error("tool_argument_invalid", "path must be a string")
-    root = resolve_workspace_path(path_arg, workspace_root)
-    if root is None:
-        return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    policy = path_policy or default_path_policy(workspace_root)
+    root = resolve_path_for_access(path_arg, policy, "read")
+    if isinstance(root, str):
+        return tool_error("path_policy_denied", root)
     if not root.exists():
         return tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
     if not root.is_dir():
@@ -106,7 +108,7 @@ def file_list(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     }
 
 
-def file_search(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def file_search(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     """优先使用 ripgrep 搜索文本；rg 不可用时退回 Python 遍历。"""
     query = args.get("query")
     if not isinstance(query, str) or not query:
@@ -115,9 +117,10 @@ def file_search(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     root_arg = args.get("root", ".")
     if not isinstance(root_arg, str):
         return tool_error("tool_argument_invalid", "root must be a string")
-    root = resolve_workspace_path(root_arg, workspace_root)
-    if root is None:
-        return tool_error("tool_argument_invalid", f"root must stay inside workspace_root; {ROOT_GUIDANCE}")
+    policy = path_policy or default_path_policy(workspace_root)
+    root = resolve_path_for_access(root_arg, policy, "read")
+    if isinstance(root, str):
+        return tool_error("path_policy_denied", root)
     if not root.exists():
         return tool_error("tool_argument_invalid", f"root does not exist: {root_arg}; {ROOT_GUIDANCE}")
     if not root.is_dir():
@@ -141,7 +144,7 @@ def file_search(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
                 if query in line:
                     matches.append(
                         {
-                            "path": path.relative_to(workspace_root.resolve()).as_posix(),
+            "path": _display_path(path, workspace_root),
                             "line": line_number,
                             "column": line.find(query) + 1,
                             "text": line,
@@ -152,7 +155,7 @@ def file_search(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     return {"status": "success", "matches": matches}
 
 
-def context_find(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def context_find(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
         return tool_error("tool_argument_invalid", "query must be a non-empty string")
@@ -166,6 +169,7 @@ def context_find(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     if max_chars <= 0:
         return tool_error("tool_argument_invalid", "max_chars must be positive")
 
+    # context_find 保持紧凑上下文搜索：默认搜项目根；显式授权外部目录通过 file_search/file_read 处理。
     root = workspace_root.resolve()
     keywords = extract_context_keywords(query)
     scored: dict[str, dict[str, Any]] = {}
@@ -243,13 +247,14 @@ def extract_context_keywords(query: str) -> list[str]:
     return keywords or [query.strip().lower()]
 
 
-def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def file_read(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     path_arg = args.get("path")
     if not isinstance(path_arg, str):
         return tool_error("tool_argument_invalid", "path must be a string")
-    path = resolve_workspace_path(path_arg, workspace_root)
-    if path is None:
-        return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    policy = path_policy or default_path_policy(workspace_root)
+    path = resolve_path_for_access(path_arg, policy, "read")
+    if isinstance(path, str):
+        return tool_error("path_policy_denied", path)
     if not path.exists():
         result = tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
         result["suggestions"] = _similar_workspace_paths(path_arg, workspace_root)
@@ -257,10 +262,7 @@ def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     if not path.is_file():
         result = tool_error("tool_argument_invalid", f"path must be a file: {path_arg}; {PATH_GUIDANCE}")
         if path.is_dir():
-            result["suggested_tool"] = {
-                "name": "file_list",
-                "args": {"path": path.relative_to(workspace_root.resolve()).as_posix(), "max_depth": 1},
-            }
+            result["suggested_tool"] = {"name": "file_list", "args": {"path": _display_path(path, workspace_root), "max_depth": 1}}
         return result
 
     offset = int(args.get("offset", 0))
@@ -288,7 +290,7 @@ def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     selected = lines[start_index:end_index]
     return {
         "status": "success",
-        "path": path.relative_to(workspace_root.resolve()).as_posix(),
+        "path": _display_path(path, workspace_root),
         "offset": offset,
         "limit": limit,
         "keyword": keyword,
@@ -300,7 +302,7 @@ def file_read(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     }
 
 
-def file_write(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def file_write(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     path_arg = args.get("path")
     content = args.get("content")
     mode = args.get("mode")
@@ -309,9 +311,10 @@ def file_write(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     if mode not in {"create", "overwrite", "append"}:
         return tool_error("tool_argument_invalid", "mode must be create, overwrite, or append")
 
-    path = resolve_workspace_path(path_arg, workspace_root)
-    if path is None:
-        return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    policy = path_policy or default_path_policy(workspace_root)
+    path = resolve_path_for_access(path_arg, policy, "full")
+    if isinstance(path, str):
+        return tool_error("path_policy_denied", path)
     if is_workspace_memory_store_path(path, workspace_root):
         return tool_error(MEMORY_STORE_PATH_ERROR, MEMORY_STORE_PATH_MESSAGE)
     if not path.parent.exists():
@@ -342,7 +345,7 @@ def file_write(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     }
 
 
-def apply_patch(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def apply_patch(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     """仅允许工作区内文件，并要求 old_text 唯一匹配后再写回。"""
     path_arg = args.get("path")
     old_text = args.get("old_text")
@@ -350,9 +353,10 @@ def apply_patch(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     if not all(isinstance(value, str) for value in (path_arg, old_text, new_text)):
         return tool_error("tool_argument_invalid", "path, old_text, and new_text must be strings")
 
-    path = resolve_workspace_path(path_arg, workspace_root)
-    if path is None:
-        return tool_error("tool_argument_invalid", f"path must stay inside workspace_root; {PATH_GUIDANCE}")
+    policy = path_policy or default_path_policy(workspace_root)
+    path = resolve_path_for_access(path_arg, policy, "full")
+    if isinstance(path, str):
+        return tool_error("path_policy_denied", path)
     if is_workspace_memory_store_path(path, workspace_root):
         return tool_error(MEMORY_STORE_PATH_ERROR, MEMORY_STORE_PATH_MESSAGE)
     if not path.exists():
@@ -371,7 +375,7 @@ def apply_patch(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     return {"status": "success", "path": str(path), "replacements": 1}
 
 
-def apply_patch_set(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def apply_patch_set(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     """原子校验多个唯一文本替换；全部可应用后才写文件。"""
     replacements = args.get("replacements")
     if not isinstance(replacements, list) or not replacements:
@@ -402,11 +406,12 @@ def apply_patch_set(args: dict[str, Any], workspace_root: Path) -> dict[str, Any
                 path_arg,
             )
 
-        path = resolve_workspace_path(path_arg, workspace_root)
-        if path is None:
+        policy = path_policy or default_path_policy(workspace_root)
+        path = resolve_path_for_access(path_arg, policy, "full")
+        if isinstance(path, str):
             return _patch_set_error(
-                "tool_argument_invalid",
-                f"path must stay inside workspace_root; {PATH_GUIDANCE}",
+                "path_policy_denied",
+                path,
                 summaries,
                 replacements,
                 index,
@@ -500,6 +505,15 @@ def resolve_workspace_path(path: str, workspace_root: Path) -> Path | None:
     if resolved == root or root in resolved.parents:
         return resolved
     return None
+
+
+def _display_path(path: Path, workspace_root: Path) -> str:
+    root = workspace_root.resolve()
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 def _patch_set_error(

@@ -18,10 +18,11 @@ from haagent.runtime.command import (
     normalize_timeout,
     resolve_execution_cwd,
 )
+from haagent.runtime.path_policy import PathPolicy, default_path_policy, resolve_cwd_for_execution
 from haagent.tools.base import tool_error
 
 
-def code_run(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+def code_run(args: dict[str, Any], workspace_root: Path, path_policy: PathPolicy | None = None) -> dict[str, Any]:
     code = args.get("code")
     if not isinstance(code, str) or not code:
         return tool_error("tool_argument_invalid", "code must be a non-empty string")
@@ -29,9 +30,13 @@ def code_run(args: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
     cwd_arg = args.get("cwd")
     if cwd_arg is not None and not isinstance(cwd_arg, str):
         return tool_error("tool_argument_invalid", f"cwd must be a string; {CWD_GUIDANCE}")
-    cwd_result = resolve_execution_cwd(cwd_arg, workspace_root)
+    if path_policy is None:
+        cwd_result = resolve_execution_cwd(cwd_arg, workspace_root)
+    else:
+        cwd_result = resolve_cwd_for_execution(cwd_arg, path_policy or default_path_policy(workspace_root))
     if isinstance(cwd_result, str):
-        return tool_error("tool_argument_invalid", cwd_result)
+        error_type = "path_policy_denied" if path_policy is not None else "tool_argument_invalid"
+        return tool_error(error_type, cwd_result)
 
     timeout_result = normalize_timeout(args.get("timeout_seconds"))
     if isinstance(timeout_result, str):

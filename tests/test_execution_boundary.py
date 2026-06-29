@@ -13,6 +13,7 @@ from pathlib import Path
 
 from haagent.context.builder import ContextBuilder
 from haagent.runtime.episode import EpisodeWriter
+from haagent.runtime.path_policy import ExternalRoot, PathPolicy
 from haagent.runtime.plan import build_plan
 from haagent.runtime.task_contract import TaskSpec
 from haagent.tools.code_run import code_run
@@ -203,6 +204,43 @@ def test_guardrail_blocks_shell_and_code_run_before_real_execution(tmp_path: Pat
         "shell_secret_exfiltration",
         "code_run_secret_access",
     ]
+
+
+def test_external_read_root_cannot_be_execution_cwd(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    result = shell(
+        {"command": f"{sys.executable} -c \"print('should not run')\"", "cwd": str(external), "timeout_seconds": 5},
+        project,
+        path_policy=PathPolicy(
+            project_root=project,
+            external_roots=[ExternalRoot(path=external, access="read", source="user", created_at="now")],
+        ),
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "path_policy_denied"
+    assert "需要完全信任" in result["error"]["message"]
+
+
+def test_external_full_root_can_be_execution_cwd(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    result = shell(
+        {"command": f"{sys.executable} -c \"from pathlib import Path; print(Path.cwd().resolve())\"", "cwd": str(external), "timeout_seconds": 5},
+        project,
+        path_policy=PathPolicy(
+            project_root=project,
+            external_roots=[ExternalRoot(path=external, access="full", source="user", created_at="now")],
+        ),
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout_excerpt"].strip() == str(external.resolve())
 
 
 def _task() -> TaskSpec:

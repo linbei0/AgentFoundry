@@ -75,7 +75,8 @@ def side_bar(
         f"{PANEL_TITLES['workspace']}\n"
         f"  root: {status.workspace_root}\n"
         f"  runs: {status.runs_root}\n"
-        f"  web: {web_state(status)}\n\n"
+        f"  web: {web_state(status)}\n"
+        f"{external_roots_text(status)}\n\n"
         f"{PANEL_TITLES['profile']}\n"
         f"  name: {status.profile_name or 'missing'}\n"
         f"  provider: {status.provider or '-'}\n"
@@ -214,6 +215,18 @@ def compact_key_state(status: AssistantWorkspaceStatus) -> str:
 
 def web_state(status: AssistantWorkspaceStatus) -> str:
     return "on" if status.web_enabled else "off"
+
+
+def external_roots_text(status: AssistantWorkspaceStatus) -> str:
+    roots = status.external_roots or []
+    if not roots:
+        return "  外部目录: none"
+    lines = ["  外部目录:"]
+    for root in roots:
+        access = root.get("access", "")
+        label = "只读参考" if access == "read" else "完全信任" if access == "full" else access or "-"
+        lines.append(f"    {root.get('path', '-')}  {label}")
+    return "\n".join(lines)
 
 
 def keyring_status(status: AssistantWorkspaceStatus) -> str:

@@ -17,6 +17,7 @@ from haagent.runtime.human_interaction import (
     HumanInteractionRequest,
     interaction_args_summary,
 )
+from haagent.runtime.path_policy import PathPolicy, default_path_policy
 from haagent.runtime.policy import (
     PolicyDecision,
     deny_tool_approval,
@@ -37,6 +38,7 @@ class ToolRouter:
         allowed_tools: list[str],
         episode_writer: EpisodeWriter,
         workspace_root: Path,
+        path_policy: PathPolicy | None = None,
         approval_allowed_tools: list[str] | None = None,
         approved_tools: list[str] | None = None,
     ) -> None:
@@ -45,21 +47,22 @@ class ToolRouter:
         self._approved_tools = list(approved_tools or [])
         self._episode_writer = episode_writer
         self._workspace_root = workspace_root.resolve()
+        self._path_policy = path_policy.resolved() if path_policy is not None else default_path_policy(self._workspace_root)
         self._handlers: dict[str, ToolHandler] = {
             "fake_tool": self._fake_tool,
-            "file_list": lambda args: file_list(args, self._workspace_root),
-            "file_search": lambda args: file_search(args, self._workspace_root),
-            "context_find": lambda args: context_find(args, self._workspace_root),
-            "file_read": lambda args: file_read(args, self._workspace_root),
+            "file_list": lambda args: file_list(args, self._workspace_root, self._path_policy),
+            "file_search": lambda args: file_search(args, self._workspace_root, self._path_policy),
+            "context_find": lambda args: context_find(args, self._workspace_root, self._path_policy),
+            "file_read": lambda args: file_read(args, self._workspace_root, self._path_policy),
             "request_user_input": self._request_user_input_without_handler,
             "start_memory_update": self._start_memory_update,
             "web_search": web_search,
             "web_fetch": web_fetch,
-            "file_write": lambda args: file_write(args, self._workspace_root),
-            "code_run": lambda args: code_run(args, self._workspace_root),
-            "apply_patch": lambda args: apply_patch(args, self._workspace_root),
-            "apply_patch_set": lambda args: apply_patch_set(args, self._workspace_root),
-            "shell": lambda args: shell(args, self._workspace_root),
+            "file_write": lambda args: file_write(args, self._workspace_root, self._path_policy),
+            "code_run": lambda args: code_run(args, self._workspace_root, self._path_policy),
+            "apply_patch": lambda args: apply_patch(args, self._workspace_root, self._path_policy),
+            "apply_patch_set": lambda args: apply_patch_set(args, self._workspace_root, self._path_policy),
+            "shell": lambda args: shell(args, self._workspace_root, self._path_policy),
         }
         try:
             validate_tool_registry()

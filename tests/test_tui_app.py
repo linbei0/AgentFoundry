@@ -16,7 +16,7 @@ from haagent.app.assistant_service import AssistantSessionStatus, AssistantSessi
 from haagent.memory import CandidateEvidence, MemoryCandidate, MemoryRecord
 from haagent.runtime.chat_session import ChatEvent
 from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
-from haagent.tui.app import HaAgentTuiApp
+from haagent.tui.app import HaAgentTuiApp, find_untrusted_absolute_paths
 from haagent.tui.commands import SlashCommandResult, command_registry, parse_slash_command
 from haagent.tui.changes import changed_files_from_tool_event, path_stays_in_workspace
 from haagent.tui.failures import failure_next_steps
@@ -66,6 +66,7 @@ class FakeAssistantService:
         current_session_id: str = "session-test",
         sessions: list[AssistantSessionSummary] | None = None,
         enable_web: bool = False,
+        external_roots: list[dict[str, str]] | None = None,
     ) -> None:
         self.workspace_root = workspace_root
         self.profile_name = profile_name
@@ -88,6 +89,7 @@ class FakeAssistantService:
         self.current_session_id = current_session_id
         self.sessions = list(sessions or [])
         self.enable_web = enable_web
+        self.external_roots = list(external_roots or [])
         self.started = threading.Event()
         self.release = threading.Event()
         self.prompts: list[str] = []
@@ -136,6 +138,7 @@ class FakeAssistantService:
             current_session_id=self.current_session_id,
             current_turn_count=len(self.prompts),
             web_enabled=self.enable_web,
+            external_roots=list(self.external_roots),
         )
 
     def run_prompt_events(self, prompt: str, *, event_sink=None, interaction_handler=None):
@@ -257,6 +260,7 @@ class FakeAssistantService:
             model_profile_name=profile_name,
             model=next((item.model for item in self.model_profiles if item.name == profile_name), self.model),
             base_url="https://api.deepseek.com",
+            external_roots=list(self.external_roots),
         )
 
     def set_default_model_profile(self, profile_name: str) -> None:
@@ -283,7 +287,32 @@ class FakeAssistantService:
             turn_count=len(self.prompts),
             provider=self.provider or "-",
             web_enabled=self.enable_web,
+            external_roots=list(self.external_roots),
         )
+
+    def add_external_root(self, path: str | Path, access: str) -> AssistantSessionStatus:
+        resolved = str(Path(path).resolve())
+        self.external_roots = [root for root in self.external_roots if root["path"] != resolved]
+        self.external_roots.append({"path": resolved, "access": access, "source": "user"})
+        return self._session_status(self.current_session_id)
+
+    def remove_external_root(self, path: str | Path) -> AssistantSessionStatus:
+        resolved = str(Path(path).resolve())
+        self.external_roots = [root for root in self.external_roots if root["path"] != resolved]
+        return self._session_status(self.current_session_id)
+
+    def set_external_root_access(self, path: str | Path, access: str) -> AssistantSessionStatus:
+        self.add_external_root(path, access)
+        return self._session_status(self.current_session_id)
+
+    def clear_external_roots(self) -> AssistantSessionStatus:
+        self.external_roots = []
+        return self._session_status(self.current_session_id)
+
+    def switch_project_root(self, path: str | Path) -> AssistantSessionStatus:
+        self.workspace_root = Path(path).resolve()
+        self.external_roots = []
+        return self._session_status(self.current_session_id)
 
     def list_memory_candidates(self, status: str | None = "pending") -> list[MemoryCandidate]:
         if self.memory_error is not None:
@@ -618,8 +647,85 @@ def test_tui_slash_command_registry_parses_known_and_unknown_commands() -> None:
         "resume",
         "model",
         "web",
+        "permissions",
     }
     assert "models" not in {command.name for command in registry.commands()}
+
+
+def test_side_bar_shows_external_roots(tmp_path: Path) -> None:
+    external = tmp_path / "external"
+    status = FakeAssistantService(
+        workspace_root=tmp_path,
+        external_roots=[{"path": str(external), "access": "read", "source": "user"}],
+    ).get_workspace_status()
+
+    text = side_bar(status, ui_state="idle", last_failure=None)
+
+    assert "外部目录" in text
+    assert str(external) in text
+    assert "只读参考" in text
+
+
+def test_untrusted_absolute_path_detection_ignores_authorized_roots(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    other = tmp_path / "other"
+    project.mkdir()
+    external.mkdir()
+    other.mkdir()
+    prompt = f'介绍 "{external}" 和 "{other}"'
+
+    matches = find_untrusted_absolute_paths(
+        prompt,
+        project_root=project,
+        external_roots=[{"path": str(external), "access": "read", "source": "user"}],
+    )
+
+    assert matches == [other.resolve()]
+
+
+def test_tui_external_directory_read_decision_continues_prompt(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path / "project")
+    service.workspace_root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            prompt = f'介绍 "{external}"'
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = prompt
+            await pilot.press("enter")
+            await pilot.press("enter")
+
+            assert service.external_roots == [
+                {"path": str(external.resolve()), "access": "read", "source": "user"},
+            ]
+            assert service.prompts == [prompt]
+
+    asyncio.run(run())
+
+
+def test_tui_permissions_command_shows_current_external_roots(tmp_path: Path) -> None:
+    external = tmp_path / "external"
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        external_roots=[{"path": str(external), "access": "full", "source": "user"}],
+    )
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/permissions"
+            await pilot.press("enter")
+            conversation = _text(app, "#conversation")
+            assert "Permissions" in conversation
+            assert "external" in conversation
+            assert "完全信任" in conversation
+
+    asyncio.run(run())
 
 
 def test_tui_web_command_toggles_networking_inside_app(tmp_path: Path) -> None:

@@ -28,6 +28,14 @@ from haagent.runtime.human_interaction import (
     interaction_args_summary,
 )
 from haagent.runtime.orchestrator import RunOrchestrator
+from haagent.runtime.path_policy import (
+    ExternalRoot,
+    PathAccess,
+    PathPolicy,
+    default_path_policy,
+    load_path_policy,
+    serialize_path_policy,
+)
 from haagent.runtime.session_memory_compaction import (
     DEFAULT_PRESERVED_RECENT_TURNS,
     SESSION_MEMORY_CHAR_LIMIT,
@@ -149,6 +157,7 @@ class AgentSession:
         enable_web: bool = False,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
+        self.path_policy = default_path_policy(self.workspace_root)
         self.runs_root = runs_root
         self.model_gateway = model_gateway
         self.model_profile_name = model_profile_name
@@ -187,6 +196,12 @@ class AgentSession:
 
         instance = cls.__new__(cls)
         instance.workspace_root = Path(str(metadata["workspace_root"])).resolve()
+        raw_policy = metadata.get("path_policy")
+        instance.path_policy = (
+            load_path_policy(raw_policy)
+            if isinstance(raw_policy, dict)
+            else default_path_policy(instance.workspace_root)
+        )
         instance.runs_root = session_path.parent.parent
         instance.model_gateway = model_gateway
         instance.model_profile_name = model_profile_name or _optional_string(metadata.get("model_profile_name"))
@@ -257,7 +272,13 @@ class AgentSession:
 
         with tempfile.TemporaryDirectory(prefix="haagent-chat-") as task_dir:
             task_path = Path(task_dir) / "task.yaml"
-            _write_chat_task_yaml(task_path, clean_prompt, self.workspace_root, enable_web=self.enable_web)
+            _write_chat_task_yaml(
+                task_path,
+                clean_prompt,
+                self.workspace_root,
+                path_policy=self.path_policy,
+                enable_web=self.enable_web,
+            )
             session_memory = self._session_memory()
             result = RunOrchestrator(
                 runs_root=self.runs_root,
@@ -379,6 +400,57 @@ class AgentSession:
         self.model_base_url = base_url
         self._write_session_metadata()
 
+    def add_external_root(self, path: Path, access: PathAccess) -> None:
+        resolved_path = path.resolve()
+        roots = [root for root in self.path_policy.external_roots if root.path.resolve() != resolved_path]
+        roots.append(
+            ExternalRoot(
+                path=resolved_path,
+                access=access,
+                source="user",
+                created_at=datetime.now(UTC).isoformat(),
+            ),
+        )
+        self.path_policy = PathPolicy(project_root=self.workspace_root, external_roots=roots).resolved()
+        self._write_session_metadata()
+
+    def remove_external_root(self, path: Path) -> None:
+        resolved_path = path.resolve()
+        roots = [root for root in self.path_policy.external_roots if root.path.resolve() != resolved_path]
+        self.path_policy = PathPolicy(project_root=self.workspace_root, external_roots=roots).resolved()
+        self._write_session_metadata()
+
+    def set_external_root_access(self, path: Path, access: PathAccess) -> None:
+        resolved_path = path.resolve()
+        roots: list[ExternalRoot] = []
+        found = False
+        for root in self.path_policy.external_roots:
+            if root.path.resolve() == resolved_path:
+                roots.append(ExternalRoot(path=resolved_path, access=access, source=root.source, created_at=root.created_at))
+                found = True
+            else:
+                roots.append(root)
+        if not found:
+            roots.append(
+                ExternalRoot(
+                    path=resolved_path,
+                    access=access,
+                    source="user",
+                    created_at=datetime.now(UTC).isoformat(),
+                ),
+            )
+        self.path_policy = PathPolicy(project_root=self.workspace_root, external_roots=roots).resolved()
+        self._write_session_metadata()
+
+    def clear_external_roots(self) -> None:
+        self.path_policy = default_path_policy(self.workspace_root)
+        self._write_session_metadata()
+
+    def switch_project_root(self, path: Path) -> None:
+        self.workspace_root = path.resolve()
+        self.path_policy = default_path_policy(self.workspace_root)
+        self._write_session_metadata()
+
     def _run_memory_extraction(
         self,
         prompt: str,
@@ -407,6 +479,7 @@ class AgentSession:
             "session_id": self.session_id,
             "session_path": str(self.session_path.resolve()),
             "workspace_root": str(self.workspace_root),
+            "path_policy": serialize_path_policy(self.path_policy),
             "provider": self.provider_name,
             "turn_count": self.turn_count,
             "working_state": self._working_state.status_summary(),
@@ -417,6 +490,7 @@ class AgentSession:
         self.turn_count = 0
         self._summaries = []
         self._working_state = empty_working_state()
+        self.path_policy = default_path_policy(self.workspace_root)
         self.session_path = self.runs_root / "sessions" / self.session_id
         self._created_at = datetime.now(UTC).isoformat()
         self._write_session_metadata()
@@ -554,6 +628,7 @@ class AgentSession:
         metadata = {
             "session_id": self.session_id,
             "workspace_root": str(self.workspace_root),
+            "path_policy": serialize_path_policy(self.path_policy),
             "provider": self.provider_name,
             "model_profile_name": self.model_profile_name,
             "model": self.model_name,
@@ -569,13 +644,21 @@ class AgentSession:
         )
 
 
-def _write_chat_task_yaml(path: Path, request: str, workspace_root: Path, *, enable_web: bool = False) -> None:
+def _write_chat_task_yaml(
+    path: Path,
+    request: str,
+    workspace_root: Path,
+    *,
+    path_policy: PathPolicy | None = None,
+    enable_web: bool = False,
+) -> None:
     allowed_tools = list(CHAT_ALLOWED_TOOLS)
     if enable_web:
         allowed_tools.extend(CHAT_WEB_TOOLS)
     task = {
         "goal": request,
         "workspace_root": str(workspace_root.resolve()),
+        "path_policy": serialize_path_policy(path_policy or default_path_policy(workspace_root)),
         "constraints": [],
         "allowed_tools": allowed_tools,
         "acceptance_criteria": ["Complete the requested chat task."],

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from haagent.runtime.human_interaction import HumanInteractionResponse
 from haagent.runtime.episode import EpisodeWriter
+from haagent.runtime.path_policy import ExternalRoot, PathPolicy
 from haagent.tools.registry import TOOL_REGISTRY
 from haagent.tools.router import ToolRouter
 from haagent.tools.shell import shell
@@ -384,10 +385,42 @@ def test_file_list_rejects_path_outside_workspace_root(tmp_path: Path) -> None:
     result = router.dispatch("file_list", {"path": ".."})
 
     assert result["status"] == "error"
-    assert result["error"] == {
-        "type": "tool_argument_invalid",
-        "message": "path must stay inside workspace_root; path is relative to workspace_root",
-    }
+    assert result["error"]["type"] == "path_policy_denied"
+    assert "目录未授权" in result["error"]["message"]
+
+
+def test_external_read_root_allows_file_read_but_denies_file_write(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    target = external / "notes.txt"
+    target.write_text("hello\n", encoding="utf-8")
+    writer = make_writer(project)
+    router = ToolRouter(
+        allowed_tools=["file_read", "file_write"],
+        episode_writer=writer,
+        workspace_root=project,
+        path_policy=PathPolicy(
+            project_root=project,
+            external_roots=[ExternalRoot(path=external, access="read", source="user", created_at="now")],
+        ),
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    read_result = router.dispatch("file_read", {"path": str(target)})
+    write_result = router.dispatch(
+        "file_write",
+        {"path": str(target), "content": "changed\n", "mode": "overwrite"},
+    )
+
+    assert read_result["status"] == "success"
+    assert read_result["content"] == "hello\n"
+    assert write_result["status"] == "error"
+    assert write_result["error"]["type"] == "path_policy_denied"
+    assert "外部目录只读" in write_result["error"]["message"]
+    assert target.read_text(encoding="utf-8") == "hello\n"
 
 
 def test_file_list_truncates_many_files(tmp_path: Path) -> None:
@@ -638,7 +671,7 @@ def test_apply_patch_set_rejects_workspace_escape(tmp_path: Path) -> None:
     )
 
     assert result["status"] == "error"
-    assert result["error"]["type"] == "tool_argument_invalid"
+    assert result["error"]["type"] == "path_policy_denied"
     assert outside.read_text(encoding="utf-8") == "old"
 
 
@@ -710,7 +743,7 @@ def test_file_write_rejects_workspace_escape_and_missing_parent(tmp_path: Path) 
     missing_parent = router.dispatch("file_write", {"path": "missing/notes.txt", "content": "x", "mode": "create"})
 
     assert escaped["status"] == "error"
-    assert escaped["error"]["type"] == "tool_argument_invalid"
+    assert escaped["error"]["type"] == "path_policy_denied"
     assert missing_parent["status"] == "error"
     assert missing_parent["error"]["type"] == "tool_argument_invalid"
     assert not (tmp_path.parent / "file_write_outside.txt").exists()
@@ -1096,7 +1129,7 @@ def test_code_run_cwd_is_workspace_bound(tmp_path: Path) -> None:
     assert absolute_success["status"] == "success"
     assert absolute_success["stdout_excerpt"].strip() == "pkg"
     assert escaped["status"] == "error"
-    assert escaped["error"]["type"] == "tool_argument_invalid"
+    assert escaped["error"]["type"] == "path_policy_denied"
 
 
 def test_code_run_denied_before_handler(tmp_path: Path) -> None:

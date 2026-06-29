@@ -6,6 +6,8 @@ haagent/tui/modals.py - TUI 弹窗组件
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
@@ -118,3 +120,31 @@ class ConfirmModal(ModalScreen[bool]):
         if event.character == "y":
             event.stop()
             self.dismiss(True)
+
+
+class ExternalDirectoryDecisionModal(ModalScreen[str | None]):
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self.path = path
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="external-directory-dialog"):
+            yield Static("检测到工作区外目录", id="external-directory-title")
+            yield Static(str(self.path), id="external-directory-body")
+            with Horizontal(id="external-directory-buttons"):
+                yield Button("只读参考", id="external-read", variant="primary")
+                yield Button("切换工作区", id="external-switch")
+                yield Button("完全信任", id="external-full", variant="warning")
+                yield Button("取消", id="external-cancel", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#external-read", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        mapping = {
+            "external-read": "read",
+            "external-switch": "switch",
+            "external-full": "full",
+            "external-cancel": None,
+        }
+        self.dismiss(mapping.get(event.button.id))

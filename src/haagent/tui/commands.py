@@ -53,6 +53,7 @@ def command_registry() -> CommandRegistry:
             SlashCommand("memory", "打开记忆候选审查", "memory"),
             SlashCommand("tools", "聚焦工具视图", "tools"),
             SlashCommand("web", "切换联网工具", "web"),
+            SlashCommand("permissions", "管理外部目录权限", "permissions"),
             SlashCommand("cancel", "取消当前任务", "cancel_task"),
             SlashCommand("new", "新建 session", "new_session"),
             SlashCommand("resume", "继续最新 session", "resume_latest"),

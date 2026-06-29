@@ -758,6 +758,44 @@ def test_resume_session_sets_current_session(tmp_path: Path, monkeypatch) -> Non
     assert service.current_session().session_id == created.session_id
 
 
+def test_external_root_authorization_is_saved_and_restored_with_session(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    _write_user_profile(Path.home())
+    service = _service(tmp_path, environ={"DEEPSEEK_API_KEY": "secret"})
+    external = tmp_path / "external"
+    external.mkdir()
+    created = service.create_session()
+
+    service.add_external_root(external, "read")
+    restored = service.resume_session(created.session_path)
+
+    assert restored.external_roots == [
+        {
+            "path": str(external.resolve()),
+            "access": "read",
+            "source": "user",
+        },
+    ]
+    assert service.get_workspace_status().external_roots == restored.external_roots
+
+
+def test_switch_project_root_clears_external_authorizations(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    _write_user_profile(Path.home())
+    service = _service(tmp_path, environ={"DEEPSEEK_API_KEY": "secret"})
+    external = tmp_path / "external"
+    new_project = tmp_path / "new-project"
+    external.mkdir()
+    new_project.mkdir()
+    service.create_session()
+    service.add_external_root(external, "full")
+
+    status = service.switch_project_root(new_project)
+
+    assert status.workspace_root == new_project.resolve()
+    assert status.external_roots == []
+
+
 def test_continue_latest_session_uses_current_workspace_only(tmp_path: Path, monkeypatch) -> None:
     _set_home(monkeypatch, tmp_path / "home")
     _write_user_profile(Path.home())

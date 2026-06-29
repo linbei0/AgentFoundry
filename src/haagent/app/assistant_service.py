@@ -51,6 +51,7 @@ from haagent.runtime.chat_session import (
     list_sessions,
 )
 from haagent.runtime.human_interaction import HumanInteractionHandler
+from haagent.runtime.path_policy import PathAccess
 from haagent.memory import (
     CandidateQueue,
     CandidateQueueError,
@@ -88,6 +89,7 @@ class AssistantWorkspaceStatus:
     current_session_id: str | None = None
     current_turn_count: int | None = None
     web_enabled: bool = False
+    external_roots: list[dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,7 @@ class AssistantSessionStatus:
     model: str | None = None
     base_url: str | None = None
     web_enabled: bool = False
+    external_roots: list[dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -226,6 +229,7 @@ class AssistantService:
             current_session_id=session_status.session_id if session_status is not None else None,
             current_turn_count=session_status.turn_count if session_status is not None else None,
             web_enabled=self.enable_web,
+            external_roots=session_status.external_roots if session_status is not None else [],
         )
 
     def current_session(self) -> AssistantSessionStatus | None:
@@ -423,6 +427,56 @@ class AssistantService:
             raise AssistantServiceError(str(error)) from error
         return _session_status(self._session)
 
+    def add_external_root(self, path: str | Path, access: PathAccess) -> AssistantSessionStatus:
+        if access not in {"read", "full"}:
+            raise AssistantServiceError("external root access must be read or full")
+        if self._session is None:
+            self.create_session()
+        assert self._session is not None
+        root = Path(path).resolve()
+        if not root.exists():
+            raise AssistantServiceError(f"外部目录不存在：{root}")
+        if not root.is_dir():
+            raise AssistantServiceError(f"外部路径必须是目录：{root}")
+        self._session.add_external_root(root, access)
+        return _session_status(self._session)
+
+    def remove_external_root(self, path: str | Path) -> AssistantSessionStatus:
+        if self._session is None:
+            self.create_session()
+        assert self._session is not None
+        self._session.remove_external_root(Path(path))
+        return _session_status(self._session)
+
+    def set_external_root_access(self, path: str | Path, access: PathAccess) -> AssistantSessionStatus:
+        if access not in {"read", "full"}:
+            raise AssistantServiceError("external root access must be read or full")
+        if self._session is None:
+            self.create_session()
+        assert self._session is not None
+        self._session.set_external_root_access(Path(path), access)
+        return _session_status(self._session)
+
+    def clear_external_roots(self) -> AssistantSessionStatus:
+        if self._session is None:
+            self.create_session()
+        assert self._session is not None
+        self._session.clear_external_roots()
+        return _session_status(self._session)
+
+    def switch_project_root(self, path: str | Path) -> AssistantSessionStatus:
+        root = Path(path).resolve()
+        if not root.exists():
+            raise AssistantServiceError(f"项目目录不存在：{root}")
+        if not root.is_dir():
+            raise AssistantServiceError(f"项目路径必须是目录：{root}")
+        if self._session is None:
+            self.create_session()
+        assert self._session is not None
+        self.workspace_root = root
+        self._session.switch_project_root(root)
+        return _session_status(self._session)
+
     def run_prompt_events(
         self,
         prompt: str,
@@ -520,6 +574,7 @@ def _session_status(session: AgentSession) -> AssistantSessionStatus:
         model=getattr(session, "model_name", None),
         base_url=getattr(session, "model_base_url", None),
         web_enabled=getattr(session, "enable_web", False),
+        external_roots=_external_root_summaries(session),
     )
 
 
@@ -533,6 +588,20 @@ def _session_summary(summary: SessionSummary) -> AssistantSessionSummary:
         first_request=summary.first_request,
         session_path=summary.session_path,
     )
+
+
+def _external_root_summaries(session: AgentSession) -> list[dict[str, str]]:
+    policy = getattr(session, "path_policy", None)
+    if policy is None:
+        return []
+    return [
+        {
+            "path": str(root.path.resolve()),
+            "access": root.access,
+            "source": root.source,
+        }
+        for root in policy.external_roots
+    ]
 
 
 def _session_model_profile_name(session: str | Path, runs_root: Path) -> str | None:
