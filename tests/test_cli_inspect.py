@@ -635,6 +635,12 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
                     "saved_chars": 6200,
                     "reason": "session_history_over_budget",
                 },
+                "full_compact_contract": {
+                    "eligible": False,
+                    "reason": "deterministic_session_memory_sufficient",
+                    "trigger_kind": None,
+                    "required_preserve_recent": 6,
+                },
             },
         ),
         encoding="utf-8",
@@ -675,6 +681,10 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
     assert (
         "session_compaction: decision=compacted original_turns=20 compacted_turns=14 "
         "preserved_recent=6 saved=6200"
+    ) in output
+    assert (
+        "full_compact_contract: eligible=false "
+        "reason=deterministic_session_memory_sufficient preserve_recent=6"
     ) in output
 
 

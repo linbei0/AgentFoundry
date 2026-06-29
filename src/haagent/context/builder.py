@@ -37,6 +37,7 @@ from haagent.memory.retrieval import (
     MemoryRetriever,
 )
 from haagent.runtime.episode import EpisodeWriter
+from haagent.runtime.full_compact_contract import assess_full_compact_eligibility
 from haagent.runtime.task_contract import TaskSpec
 from haagent.runtime.working_state import (
     WorkingStateError,
@@ -158,6 +159,14 @@ class ContextBuilder:
             session_summary_count=_session_trigger_count(self._session_summary, self._session_compaction),
             session_summary_chars=_session_trigger_chars(self._session_summary, self._session_compaction),
         )
+        full_compact_contract = assess_full_compact_eligibility(
+            auto_compact_trigger=auto_compact_trigger,
+            compact_readiness=compact_readiness,
+            session_compaction=self._session_compaction,
+            message_count=_session_trigger_count(self._session_summary, self._session_compaction),
+            summary_count=_session_trigger_count(self._session_summary, self._session_compaction),
+            recent_microcompact=self._tool_result_microcompact_count > 0,
+        )
         manifest = ContextManifest(
             context_id=context_id,
             provider=self._provider_name,
@@ -177,6 +186,7 @@ class ContextBuilder:
             compact_readiness=compact_readiness,
             auto_compact_trigger=auto_compact_trigger,
             session_compaction=self._session_compaction,
+            full_compact_contract=full_compact_contract.to_dict(),
         )
         manifest_path = contexts_dir / f"{context_id}-manifest.json"
         manifest_path.write_text(

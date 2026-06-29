@@ -346,6 +346,12 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert manifest["auto_compact_trigger"]["triggered"] is True
     assert manifest["auto_compact_trigger"]["trigger_kind"] == "session_memory"
     assert manifest["auto_compact_trigger"]["recommendation"] == "apply_session_memory_compaction"
+    assert manifest["full_compact_contract"] == {
+        "eligible": False,
+        "reason": "deterministic_context_sufficient",
+        "trigger_kind": None,
+        "required_preserve_recent": 6,
+    }
     assert manifest["source_diagnostics"]["session_summary"] == {
         "present": True,
         "included": True,
@@ -368,6 +374,7 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert "compaction" not in context.model_input
     assert "source_diagnostics" not in context.model_input
     assert "compact_readiness" not in context.model_input
+    assert "full_compact_contract" not in context.model_input
 
 
 def test_context_builder_records_tool_microcompact_count_in_auto_trigger(tmp_path: Path) -> None:

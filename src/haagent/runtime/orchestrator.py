@@ -194,6 +194,10 @@ class RunOrchestrator:
                 working_state=self._working_state,
                 interaction_state=interaction_resolver.state_records(),
             ).build()
+            if context.manifest.full_compact_contract is not None:
+                writer.append_transcript(
+                    {"event": "full_compact_contract", **context.manifest.full_compact_contract},
+                )
             messages: list[dict[str, Any]] = list(context.messages)
 
             # 追踪 completion 用的最后一次文件变更 observation（供 _successful_file_change_without_declared_verification）

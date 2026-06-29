@@ -1403,6 +1403,38 @@ verification_commands: []
     assert any(record.get("event") == "model_response" for record in transcript)
 
 
+def test_full_compact_contract_is_written_to_transcript_by_orchestrator(tmp_path: Path) -> None:
+    from haagent.runtime.orchestrator import RunOrchestrator
+
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        """
+goal: Record full compact contract
+constraints: []
+allowed_tools:
+  - fake_tool
+acceptance_criteria: []
+verification_commands: []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = RunOrchestrator(
+        runs_root=tmp_path / ".runs",
+        model_gateway=FakeModelGateway(),
+    ).run(task_path)
+
+    transcript = [
+        json.loads(line)
+        for line in (result.episode_path / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+    contract = next(record for record in transcript if record.get("event") == "full_compact_contract")
+    assert contract["eligible"] is False
+    assert contract["reason"] == "insufficient_compressible_history"
+    assert contract["required_preserve_recent"] == 6
+
+
 def test_orchestrator_microcompacts_old_tool_result_messages(tmp_path: Path) -> None:
     from haagent.runtime.orchestrator import RunOrchestrator
 
