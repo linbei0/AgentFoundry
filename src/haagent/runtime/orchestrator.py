@@ -76,6 +76,8 @@ class RunOrchestrator:
         model_gateway: ModelGateway | None = None,
         max_turns: int = 3,
         session_summary: str | None = None,
+        session_compaction: dict[str, object] | None = None,
+        tool_result_microcompact_count: int = 0,
         working_state: dict[str, object] | None = None,
         event_sink: Callable[[dict[str, object]], None] | None = None,
         interaction_handler: HumanInteractionHandler | None = None,
@@ -85,6 +87,8 @@ class RunOrchestrator:
         self._model_gateway = model_gateway or FakeModelGateway()
         self._max_turns = max_turns
         self._session_summary = session_summary
+        self._session_compaction = session_compaction
+        self._tool_result_microcompact_count = max(0, tool_result_microcompact_count)
         self._working_state = working_state
         self._event_sink = event_sink
         self._interaction_handler = interaction_handler
@@ -136,6 +140,21 @@ class RunOrchestrator:
                     "planned_step_count": len(plan["planned_steps"]),
                 },
             )
+            if isinstance(self._session_compaction, dict) and self._session_compaction.get("decision") == "compacted":
+                writer.append_transcript(
+                    {
+                        "event": "session_memory_compaction",
+                        "trigger_kind": "session_memory",
+                        "decision": self._session_compaction.get("decision"),
+                        "original_turn_count": self._session_compaction.get("original_turn_count"),
+                        "compacted_turn_count": self._session_compaction.get("compacted_turn_count"),
+                        "preserved_recent_count": self._session_compaction.get("preserved_recent_count"),
+                        "original_chars": self._session_compaction.get("original_chars"),
+                        "final_chars": self._session_compaction.get("final_chars"),
+                        "saved_chars": self._session_compaction.get("saved_chars"),
+                        "reason": self._session_compaction.get("reason"),
+                    },
+                )
             input_guardrail = check_user_input(task.goal)
             if input_guardrail is not None:
                 _record_guardrail(writer, self._emit_event, input_guardrail)
@@ -170,6 +189,8 @@ class RunOrchestrator:
                 provider_name=self._model_gateway.provider_name,
                 episode_writer=writer,
                 session_summary=self._session_summary,
+                session_compaction=self._session_compaction,
+                tool_result_microcompact_count=self._tool_result_microcompact_count,
                 working_state=self._working_state,
                 interaction_state=interaction_resolver.state_records(),
             ).build()
@@ -182,7 +203,7 @@ class RunOrchestrator:
             for turn in range(1, self._max_turns + 1):
                 self._raise_if_cancelled()
                 tool_schemas = [] if final_response_requested else export_tool_schemas(task.allowed_tools)
-                _microcompact_old_tool_messages(messages, writer, turn)
+                _microcompact_old_tool_messages(messages, writer, turn, emit_event=self._emit_event)
 
                 writer.append_transcript(
                     {
@@ -586,6 +607,7 @@ def _microcompact_old_tool_messages(
     messages: list[dict[str, Any]],
     writer: EpisodeWriter,
     turn: int,
+    emit_event: Callable[[dict[str, object]], None] | None = None,
 ) -> None:
     for index, message in enumerate(messages):
         if message.get("role") != "tool":
@@ -601,18 +623,19 @@ def _microcompact_old_tool_messages(
         if len(compacted) >= len(content):
             continue
         message["content"] = compacted
-        writer.append_transcript(
-            {
-                "event": "tool_result_microcompact",
-                "turn": turn,
-                "message_index": index,
-                "tool_name": str(message.get("name", "unknown_tool")),
-                "original_chars": len(content),
-                "final_chars": len(compacted),
-                "decision": "collapsed",
-                "reason": "old_tool_result_over_budget",
-            },
-        )
+        event = {
+            "event": "tool_result_microcompact",
+            "turn": turn,
+            "message_index": index,
+            "tool_name": str(message.get("name", "unknown_tool")),
+            "original_chars": len(content),
+            "final_chars": len(compacted),
+            "decision": "collapsed",
+            "reason": "old_tool_result_over_budget",
+        }
+        writer.append_transcript(event)
+        if emit_event is not None:
+            emit_event(event)
 
 
 def _collapse_text_head_tail(text: str, *, head_chars: int, tail_chars: int) -> str:

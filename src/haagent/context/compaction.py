@@ -94,6 +94,73 @@ def assess_compact_readiness(
     }
 
 
+def assess_auto_compact_trigger(
+    *,
+    compact_readiness: dict,
+    compaction: ContextCompactionResult,
+    budget: ContextBudget = ContextBudget(),
+    tool_result_microcompact_count: int = 0,
+    session_summary_count: int = 0,
+    session_summary_chars: int = 0,
+) -> dict:
+    """根据结构化上下文压力决定是否触发确定性 session memory 压缩。"""
+    skipped_count = sum(1 for record in compaction.diagnostics if record.decision == "skipped")
+    collapsed_count = sum(1 for record in compaction.diagnostics if record.decision == "collapsed")
+    budget_pressure = _ratio(compaction.final_chars, budget.max_total_chars)
+    session_history_over_budget = (
+        session_summary_count > 6
+        or session_summary_chars > 1000
+        or any(record.key == "session_summary" and record.decision != "selected" for record in compaction.diagnostics)
+    )
+
+    reasons: list[str] = []
+    if budget_pressure >= 0.8:
+        reasons.append("near_budget_limit")
+    if skipped_count:
+        reasons.append("skipped_context_present")
+    if collapsed_count:
+        reasons.append("collapsed_context_present")
+    if tool_result_microcompact_count:
+        reasons.append("tool_result_microcompact_present")
+    if session_history_over_budget:
+        reasons.append("session_history_over_budget")
+
+    triggered = session_history_over_budget and (
+        budget_pressure >= 0.9
+        or skipped_count > 0
+        or collapsed_count > 0
+        or tool_result_microcompact_count > 0
+        or session_summary_chars > 1000
+    )
+    if triggered:
+        status = "triggered"
+        recommendation = "apply_session_memory_compaction"
+        trigger_kind = "session_memory"
+    elif reasons:
+        status = "watch"
+        recommendation = "keep_deterministic"
+        trigger_kind = None
+    else:
+        status = "not_needed"
+        recommendation = "keep_deterministic"
+        trigger_kind = None
+        reasons = list(compact_readiness.get("reasons") or ["within_budget_after_compaction"])
+
+    return {
+        "triggered": triggered,
+        "trigger_kind": trigger_kind,
+        "status": status,
+        "recommendation": recommendation,
+        "reasons": reasons,
+        "budget_pressure": budget_pressure,
+        "skipped_count": skipped_count,
+        "collapsed_count": collapsed_count,
+        "tool_result_microcompact_count": max(0, tool_result_microcompact_count),
+        "session_summary_count": max(0, session_summary_count),
+        "session_summary_chars": max(0, session_summary_chars),
+    }
+
+
 def compact_context_sections(
     sections: list[ContextSection],
     budget: ContextBudget = ContextBudget(),

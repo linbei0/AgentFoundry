@@ -10,8 +10,10 @@ from haagent.context.compaction import (
     ContextSection,
     ContextSelectionRecord,
     assess_compact_readiness,
+    assess_auto_compact_trigger,
     compact_context_sections,
 )
+from haagent.runtime.session_memory_compaction import compact_session_memory
 from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.task_contract import TaskSpec
 
@@ -177,6 +179,122 @@ def test_compact_readiness_marks_full_compact_candidate_for_severe_pressure() ->
     assert "collapsed_context_present" in readiness["reasons"]
 
 
+def test_auto_compact_trigger_not_needed_under_low_pressure() -> None:
+    result = ContextCompactionResult(
+        sections=[],
+        diagnostics=[
+            ContextSelectionRecord("a", "test", "task", "selected", "within_budget", 40, 40, 10),
+        ],
+        original_chars=50,
+        final_chars=40,
+    )
+    readiness = assess_compact_readiness(result, ContextBudget(max_total_chars=100))
+
+    trigger = assess_auto_compact_trigger(
+        compact_readiness=readiness,
+        compaction=result,
+        budget=ContextBudget(max_total_chars=100),
+        tool_result_microcompact_count=0,
+        session_summary_count=2,
+        session_summary_chars=160,
+    )
+
+    assert trigger["status"] == "not_needed"
+    assert trigger["triggered"] is False
+    assert trigger["trigger_kind"] is None
+    assert trigger["recommendation"] == "keep_deterministic"
+    assert trigger["reasons"] == ["within_budget_after_compaction"]
+
+
+def test_auto_compact_trigger_watches_near_budget_limit() -> None:
+    result = ContextCompactionResult(
+        sections=[],
+        diagnostics=[
+            ContextSelectionRecord("a", "test", "task", "selected", "within_budget", 84, 84, 10),
+        ],
+        original_chars=100,
+        final_chars=84,
+    )
+    budget = ContextBudget(max_total_chars=100)
+    readiness = assess_compact_readiness(result, budget)
+
+    trigger = assess_auto_compact_trigger(
+        compact_readiness=readiness,
+        compaction=result,
+        budget=budget,
+        tool_result_microcompact_count=0,
+        session_summary_count=4,
+        session_summary_chars=300,
+    )
+
+    assert trigger["status"] == "watch"
+    assert trigger["triggered"] is False
+    assert trigger["recommendation"] == "keep_deterministic"
+    assert "near_budget_limit" in trigger["reasons"]
+
+
+def test_auto_compact_trigger_applies_session_memory_for_history_over_budget() -> None:
+    result = ContextCompactionResult(
+        sections=[],
+        diagnostics=[
+            ContextSelectionRecord("kept", "test", "task", "selected", "within_budget", 60, 60, 10),
+            ContextSelectionRecord("collapsed", "test", "memory", "collapsed", "section_over_budget", 100, 35, 9),
+        ],
+        original_chars=160,
+        final_chars=95,
+    )
+    budget = ContextBudget(max_total_chars=100)
+    readiness = assess_compact_readiness(result, budget)
+
+    trigger = assess_auto_compact_trigger(
+        compact_readiness=readiness,
+        compaction=result,
+        budget=budget,
+        tool_result_microcompact_count=1,
+        session_summary_count=12,
+        session_summary_chars=1800,
+    )
+
+    assert trigger["status"] == "triggered"
+    assert trigger["triggered"] is True
+    assert trigger["trigger_kind"] == "session_memory"
+    assert trigger["recommendation"] == "apply_session_memory_compaction"
+    assert "session_history_over_budget" in trigger["reasons"]
+    assert "collapsed_context_present" in trigger["reasons"]
+
+
+def test_session_memory_compaction_preserves_recent_summaries_and_compacts_older_turns(tmp_path: Path) -> None:
+    summaries = [
+        "\n".join(
+            [
+                f"- user_request: request {index}",
+                "  status: completed" if index % 3 else "  status: failed",
+                f"  episode_path: {tmp_path / f'episode-{index}'}",
+                f"  assistant_final_response: response {index}",
+                "  verification: passed" if index % 2 else "  verification: failed",
+            ],
+        )
+        for index in range(1, 13)
+    ]
+
+    result = compact_session_memory(summaries, keep_recent=6, memory_char_limit=2000)
+
+    assert result.diagnostics["decision"] == "compacted"
+    assert result.diagnostics["original_turn_count"] == 12
+    assert result.diagnostics["compacted_turn_count"] == 6
+    assert result.diagnostics["preserved_recent_count"] == 6
+    assert result.diagnostics["saved_chars"] > 0
+    assert "[session_memory_compacted 6 earlier turns]" in result.summary_text
+    lines = result.summary_text.splitlines()
+    for index in range(7, 13):
+        assert f"- user_request: request {index}" in lines
+    for index in range(1, 7):
+        assert f"- user_request: request {index}" not in lines
+    assert "total_turns: 6" in result.summary_text
+    assert "completed: 4" in result.summary_text
+    assert "failed: 2" in result.summary_text
+
+
 def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: Path) -> None:
     writer = _make_writer(tmp_path)
     context = ContextBuilder(
@@ -185,6 +303,16 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
         provider_name="test-provider",
         episode_writer=writer,
         session_summary="summary from previous turns",
+        session_compaction={
+            "decision": "compacted",
+            "original_turn_count": 20,
+            "compacted_turn_count": 14,
+            "preserved_recent_count": 6,
+            "original_chars": 8000,
+            "final_chars": 1800,
+            "saved_chars": 6200,
+            "reason": "session_history_over_budget",
+        },
     ).build()
 
     manifest_path = writer.path / "contexts" / f"{context.context_id}-manifest.json"
@@ -204,12 +332,26 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert {record["key"] for record in compaction["diagnostics"]} == {"session_summary"}
     assert manifest["compact_readiness"]["status"] == "deterministic_sufficient"
     assert manifest["compact_readiness"]["recommendation"] == "keep_deterministic"
+    assert manifest["session_compaction"] == {
+        "decision": "compacted",
+        "original_turn_count": 20,
+        "compacted_turn_count": 14,
+        "preserved_recent_count": 6,
+        "original_chars": 8000,
+        "final_chars": 1800,
+        "saved_chars": 6200,
+        "reason": "session_history_over_budget",
+    }
+    assert manifest["auto_compact_trigger"]["status"] == "triggered"
+    assert manifest["auto_compact_trigger"]["triggered"] is True
+    assert manifest["auto_compact_trigger"]["trigger_kind"] == "session_memory"
+    assert manifest["auto_compact_trigger"]["recommendation"] == "apply_session_memory_compaction"
     assert manifest["source_diagnostics"]["session_summary"] == {
         "present": True,
         "included": True,
         "original_chars": len("summary from previous turns"),
         "model_input_chars": len("summary from previous turns"),
-        "limit": 1000,
+        "limit": 2000,
     }
     assert manifest["source_diagnostics"]["observations"] == {
         "included_in_model_input": False,
@@ -226,6 +368,24 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert "compaction" not in context.model_input
     assert "source_diagnostics" not in context.model_input
     assert "compact_readiness" not in context.model_input
+
+
+def test_context_builder_records_tool_microcompact_count_in_auto_trigger(tmp_path: Path) -> None:
+    writer = _make_writer(tmp_path)
+    context = ContextBuilder(
+        task=_task("summarize project"),
+        workspace_root=tmp_path,
+        provider_name="test-provider",
+        episode_writer=writer,
+        session_summary="\n".join(f"- user_request: turn {index}" for index in range(1, 8)),
+        tool_result_microcompact_count=2,
+    ).build()
+
+    manifest_path = writer.path / "contexts" / f"{context.context_id}-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["auto_compact_trigger"]["tool_result_microcompact_count"] == 2
+    assert "tool_result_microcompact_present" in manifest["auto_compact_trigger"]["reasons"]
 
 
 def test_context_builder_records_observation_compaction_source_diagnostics(tmp_path: Path) -> None:

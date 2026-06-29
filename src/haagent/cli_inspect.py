@@ -141,7 +141,34 @@ def _format_context_compaction(episode_path: Path, context: dict[str, Any]) -> l
         lines.append(f"  skipped_reasons: {', '.join(reason_parts)}")
     lines.extend(_format_source_diagnostics(context_manifest.get("source_diagnostics")))
     lines.extend(_format_compact_readiness(context_manifest.get("compact_readiness")))
+    lines.extend(_format_auto_compact_trigger(context_manifest.get("auto_compact_trigger")))
+    lines.extend(_format_session_compaction(context_manifest.get("session_compaction")))
     return lines
+
+
+def _format_auto_compact_trigger(auto_compact_trigger: Any) -> list[str]:
+    if not isinstance(auto_compact_trigger, dict):
+        return []
+    kind = auto_compact_trigger.get("trigger_kind") or "none"
+    return [
+        "  auto_compact_trigger: "
+        f"status={auto_compact_trigger.get('status', 'unknown')} "
+        f"kind={kind} "
+        f"recommendation={auto_compact_trigger.get('recommendation', 'unknown')}",
+    ]
+
+
+def _format_session_compaction(session_compaction: Any) -> list[str]:
+    if not isinstance(session_compaction, dict):
+        return []
+    return [
+        "  session_compaction: "
+        f"decision={session_compaction.get('decision', 'unknown')} "
+        f"original_turns={session_compaction.get('original_turn_count', 0)} "
+        f"compacted_turns={session_compaction.get('compacted_turn_count', 0)} "
+        f"preserved_recent={session_compaction.get('preserved_recent_count', 0)} "
+        f"saved={session_compaction.get('saved_chars', 0)}",
+    ]
 
 
 def _format_compact_readiness(compact_readiness: Any) -> list[str]:

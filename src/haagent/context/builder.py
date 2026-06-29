@@ -16,6 +16,7 @@ from haagent.context.compaction import (
     ContextCompactionResult,
     ContextSection,
     ContextSelectionRecord,
+    assess_auto_compact_trigger,
     assess_compact_readiness,
     compact_context_sections,
 )
@@ -47,7 +48,7 @@ from haagent.tools.registry import TOOL_REGISTRY
 
 CONTEXT_MANIFEST_VERSION = "2.0"
 PROJECT_INSTRUCTIONS_CHAR_LIMIT = 4000
-SESSION_SUMMARY_CHAR_LIMIT = 1000
+SESSION_SUMMARY_CHAR_LIMIT = 2000
 TOOL_WORKFLOW_HINTS = [
     "Prefer context_find before file_search when the user describes functionality without paths.",
     "After context_find, use file_read on the most relevant candidate before editing.",
@@ -92,6 +93,8 @@ class ContextBuilder:
         observations: list[dict] | None = None,
         final_response_requested: bool = False,
         session_summary: str | None = None,
+        session_compaction: dict | None = None,
+        tool_result_microcompact_count: int = 0,
         working_state: dict | None = None,
         interaction_state: list[dict] | None = None,
         compaction_budget: ContextBudget | None = None,
@@ -102,6 +105,8 @@ class ContextBuilder:
         self._episode_writer = episode_writer
         self._observations = list(observations or [])
         self._session_summary = session_summary
+        self._session_compaction = session_compaction
+        self._tool_result_microcompact_count = max(0, tool_result_microcompact_count)
         self._working_state = working_state
         self._interaction_state = list(interaction_state or [])
         self._compaction_budget = compaction_budget or ContextBudget()
@@ -144,6 +149,15 @@ class ContextBuilder:
             encoding="utf-8",
         )
 
+        compact_readiness = assess_compact_readiness(compaction, self._compaction_budget)
+        auto_compact_trigger = assess_auto_compact_trigger(
+            compact_readiness=compact_readiness,
+            compaction=compaction,
+            budget=self._compaction_budget,
+            tool_result_microcompact_count=self._tool_result_microcompact_count,
+            session_summary_count=_session_trigger_count(self._session_summary, self._session_compaction),
+            session_summary_chars=_session_trigger_chars(self._session_summary, self._session_compaction),
+        )
         manifest = ContextManifest(
             context_id=context_id,
             provider=self._provider_name,
@@ -160,7 +174,9 @@ class ContextBuilder:
                 compaction=compaction,
                 observation_records=_compact_observation_records(self._observations),
             ),
-            compact_readiness=assess_compact_readiness(compaction, self._compaction_budget),
+            compact_readiness=compact_readiness,
+            auto_compact_trigger=auto_compact_trigger,
+            session_compaction=self._session_compaction,
         )
         manifest_path = contexts_dir / f"{context_id}-manifest.json"
         manifest_path.write_text(
@@ -410,6 +426,29 @@ def _source_diagnostics(
         "memory": _memory_source_diagnostics(memory_manifest, compaction),
         "observations": _observation_source_diagnostics(observation_records),
     }
+
+
+def _session_summary_count(session_summary: str | None) -> int:
+    if not session_summary or not session_summary.strip():
+        return 0
+    count = sum(1 for line in session_summary.splitlines() if line.startswith("- user_request:"))
+    return count or 1
+
+
+def _session_trigger_count(session_summary: str | None, session_compaction: dict | None) -> int:
+    if isinstance(session_compaction, dict):
+        original_count = session_compaction.get("original_turn_count")
+        if isinstance(original_count, int):
+            return max(0, original_count)
+    return _session_summary_count(session_summary)
+
+
+def _session_trigger_chars(session_summary: str | None, session_compaction: dict | None) -> int:
+    if isinstance(session_compaction, dict):
+        original_chars = session_compaction.get("original_chars")
+        if isinstance(original_chars, int):
+            return max(0, original_chars)
+    return len(session_summary or "")
 
 
 def _session_summary_source_diagnostics(

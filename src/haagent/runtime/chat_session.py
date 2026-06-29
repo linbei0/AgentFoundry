@@ -28,6 +28,11 @@ from haagent.runtime.human_interaction import (
     interaction_args_summary,
 )
 from haagent.runtime.orchestrator import RunOrchestrator
+from haagent.runtime.session_memory_compaction import (
+    DEFAULT_PRESERVED_RECENT_TURNS,
+    SESSION_MEMORY_CHAR_LIMIT,
+    compact_session_memory,
+)
 from haagent.runtime.working_state import (
     WorkingStateError,
     empty_working_state,
@@ -53,7 +58,6 @@ CHAT_ALLOWED_TOOLS = [
 CHAT_WEB_TOOLS = ["web_search", "web_fetch"]
 CHAT_APPROVED_TOOLS = ["file_write", "code_run", "apply_patch", "apply_patch_set", "shell"]
 CHAT_MAX_TURNS = 20
-SESSION_SUMMARY_CHAR_LIMIT = 1000
 
 
 class ChatSessionError(RuntimeError):
@@ -156,6 +160,7 @@ class AgentSession:
         self.session_id = session_id or _new_session_id()
         self.turn_count = 0
         self._summaries: list[str] = []
+        self._tool_result_microcompact_count = 0
         self._working_state = empty_working_state()
         self._current_cancellation_token: CancellationToken | None = None
         self.session_path = self.runs_root / "sessions" / self.session_id
@@ -192,7 +197,8 @@ class AgentSession:
         instance.enable_web = enable_web
         instance.session_id = str(metadata["session_id"])
         instance.turn_count = int(metadata["turn_count"])
-        instance._summaries = _bounded_summaries([str(turn["summary"]) for turn in turns])
+        instance._summaries = [str(turn["summary"]) for turn in turns]
+        instance._tool_result_microcompact_count = 0
         try:
             instance._working_state = load_working_state(session_path / "working_state.json")
         except WorkingStateError as error:
@@ -252,11 +258,14 @@ class AgentSession:
         with tempfile.TemporaryDirectory(prefix="haagent-chat-") as task_dir:
             task_path = Path(task_dir) / "task.yaml"
             _write_chat_task_yaml(task_path, clean_prompt, self.workspace_root, enable_web=self.enable_web)
+            session_memory = self._session_memory()
             result = RunOrchestrator(
                 runs_root=self.runs_root,
                 model_gateway=self.model_gateway,
                 max_turns=self.max_turns,
-                session_summary=self.summary_text(),
+                session_summary=session_memory.summary_text,
+                session_compaction=session_memory.diagnostics,
+                tool_result_microcompact_count=self._tool_result_microcompact_count,
                 working_state=self._working_state.to_dict() if not self._working_state.is_empty() else None,
                 event_sink=on_runtime_event,
                 interaction_handler=interaction_handler,
@@ -272,9 +281,9 @@ class AgentSession:
             runtime_events=runtime_events,
         )
         self._write_working_state()
+        self._tool_result_microcompact_count += _count_runtime_events(runtime_events, "tool_result_microcompact")
         turn_summary = _turn_summary(clean_prompt, turn_result)
         self._summaries.append(turn_summary)
-        self._summaries = _bounded_summaries(self._summaries)
         self._record_turn(clean_prompt, turn_result, turn_summary)
         extraction_result = None
         if self.memory_extraction_enabled and _memory_update_requested(runtime_events):
@@ -414,9 +423,14 @@ class AgentSession:
         self._write_working_state()
 
     def summary_text(self) -> str | None:
-        if not self._summaries:
-            return None
-        return "\n".join(_bounded_summaries(self._summaries))
+        return self._session_memory().summary_text
+
+    def _session_memory(self):
+        return compact_session_memory(
+            self._summaries,
+            keep_recent=DEFAULT_PRESERVED_RECENT_TURNS,
+            memory_char_limit=SESSION_MEMORY_CHAR_LIMIT,
+        )
 
     def session_started_event(self) -> ChatEvent:
         return ChatEvent(
@@ -584,21 +598,6 @@ def _turn_summary(prompt: str, result: ChatTurnResult) -> str:
             f"  verification: {result.verification_status}",
         ],
     )
-
-
-def _bounded_summaries(summaries: list[str]) -> list[str]:
-    selected: list[str] = []
-    total = 0
-    for summary in reversed(summaries):
-        extra = len(summary) + (1 if selected else 0)
-        if selected and total + extra > SESSION_SUMMARY_CHAR_LIMIT:
-            break
-        if not selected and extra > SESSION_SUMMARY_CHAR_LIMIT:
-            selected.append(summary[:SESSION_SUMMARY_CHAR_LIMIT])
-            break
-        selected.append(summary)
-        total += extra
-    return list(reversed(selected))
 
 
 def _run_final_response(transcript: list[dict[str, Any]]) -> str:
@@ -812,6 +811,10 @@ def _memory_update_requested(runtime_events: list[dict[str, object]]) -> bool:
         if result.get("status") == "success" and result.get("memory_update_requested") is True:
             return True
     return False
+
+
+def _count_runtime_events(runtime_events: list[dict[str, object]], event_type: str) -> int:
+    return sum(1 for event in runtime_events if event.get("event_type") == event_type or event.get("event") == event_type)
 
 
 def _resolve_session_path(session: str | Path, runs_root: Path) -> Path:

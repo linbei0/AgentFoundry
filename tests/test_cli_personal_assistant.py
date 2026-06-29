@@ -27,6 +27,13 @@ class RecordingGateway:
         return ModelResponse(f"done: {' '.join(m.get('content', '') for m in messages if m.get('role') == 'user')}", [])
 
 
+class ConciseRecordingGateway(RecordingGateway):
+    def generate(self, messages, tool_schemas):
+        model_input = " ".join(m.get("content", "") for m in messages if isinstance(m.get("content"), str))
+        self.model_inputs.append(model_input)
+        return ModelResponse("done", [])
+
+
 class FakeProfileGateway:
     provider_name = "openai-chat"
 
@@ -175,6 +182,36 @@ def test_chat_task_includes_web_tools_when_explicitly_enabled(tmp_path: Path) ->
     assert "web_fetch" in task.allowed_tools
     assert "web_search" not in task.policy["approval_allowed_tools"]
     assert "web_fetch" not in task.policy["approval_allowed_tools"]
+
+
+def test_chat_session_auto_compacts_old_turn_summaries_without_model_summary(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    gateway = ConciseRecordingGateway()
+    session = AgentSession(
+        workspace_root=workspace,
+        runs_root=workspace / ".runs",
+        model_gateway=gateway,
+    )
+
+    results = [session.run_prompt(f"turn {index}") for index in range(1, 9)]
+    final_episode = results[-1].episode_path
+    context_manifest = json.loads((final_episode / "contexts" / "0001-manifest.json").read_text(encoding="utf-8"))
+    transcript = [
+        json.loads(line)
+        for line in (final_episode / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert "[session_memory_compacted 1 earlier turns]" in gateway.model_inputs[-1]
+    assert "- user_request: turn 1" not in gateway.model_inputs[-1].splitlines()
+    for index in range(2, 8):
+        assert f"- user_request: turn {index}" in gateway.model_inputs[-1].splitlines()
+    assert context_manifest["auto_compact_trigger"]["status"] == "triggered"
+    assert context_manifest["auto_compact_trigger"]["trigger_kind"] == "session_memory"
+    assert context_manifest["session_compaction"]["decision"] == "compacted"
+    assert context_manifest["session_compaction"]["compacted_turn_count"] == 1
+    assert any(event.get("event") == "session_memory_compaction" for event in transcript)
 
 
 def test_sessions_lists_only_current_workspace_sessions(tmp_path: Path, monkeypatch, capsys) -> None:

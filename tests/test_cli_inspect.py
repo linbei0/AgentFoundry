@@ -587,7 +587,7 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
                         "included": True,
                         "original_chars": 512,
                         "model_input_chars": 512,
-                        "limit": 1000,
+                        "limit": 2000,
                     },
                     "memory": {
                         "used_count": 3,
@@ -613,6 +613,27 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
                     "collapsed_count": 1,
                     "recommendation": "keep_deterministic",
                     "reasons": ["near_budget_limit", "collapsed_context_present"],
+                },
+                "auto_compact_trigger": {
+                    "triggered": True,
+                    "trigger_kind": "session_memory",
+                    "status": "triggered",
+                    "recommendation": "apply_session_memory_compaction",
+                    "reasons": [
+                        "near_budget_limit",
+                        "collapsed_context_present",
+                        "session_history_over_budget",
+                    ],
+                },
+                "session_compaction": {
+                    "decision": "compacted",
+                    "original_turn_count": 20,
+                    "compacted_turn_count": 14,
+                    "preserved_recent_count": 6,
+                    "original_chars": 8000,
+                    "final_chars": 1800,
+                    "saved_chars": 6200,
+                    "reason": "session_history_over_budget",
                 },
             },
         ),
@@ -642,11 +663,19 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
     assert "- 0001: contexts/0001.json | contexts/0001-manifest.json" in output
     assert "compaction: original=1000 final=300 saved=700 selected=2 collapsed=1 skipped=1" in output
     assert "skipped_reasons: over_total_budget=1" in output
-    assert "source_diagnostics: session_summary included=true chars=512/1000" in output
+    assert "source_diagnostics: session_summary included=true chars=512/2000" in output
     assert "source_diagnostics: memory used=3 skipped_over_budget=2 included=true" in output
     assert "source_diagnostics: observations included=false sections=0 compacted=2 truncated=1 saved=3600" in output
     assert "compact_readiness: status=watch pressure=0.84 saved_ratio=0.22 recommendation=keep_deterministic" in output
     assert "readiness_reasons: near_budget_limit, collapsed_context_present" in output
+    assert (
+        "auto_compact_trigger: status=triggered kind=session_memory "
+        "recommendation=apply_session_memory_compaction"
+    ) in output
+    assert (
+        "session_compaction: decision=compacted original_turns=20 compacted_turns=14 "
+        "preserved_recent=6 saved=6200"
+    ) in output
 
 
 def test_cli_inspect_outputs_tool_argument_errors(tmp_path: Path, capsys) -> None:

@@ -42,6 +42,8 @@ class ContextManifest:
     compaction: dict[str, Any] | None = None
     source_diagnostics: dict[str, Any] | None = None
     compact_readiness: dict[str, Any] | None = None
+    auto_compact_trigger: dict[str, Any] | None = None
+    session_compaction: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         manifest: dict[str, Any] = {
@@ -63,4 +65,8 @@ class ContextManifest:
             manifest["source_diagnostics"] = self.source_diagnostics
         if self.compact_readiness is not None:
             manifest["compact_readiness"] = self.compact_readiness
+        if self.auto_compact_trigger is not None:
+            manifest["auto_compact_trigger"] = self.auto_compact_trigger
+        if self.session_compaction is not None:
+            manifest["session_compaction"] = self.session_compaction
         return manifest
