@@ -2,11 +2,11 @@
 
 ## 当前优先级：个人助手启动体验
 
-- `haagent setup` 配置用户级默认 profile。
-- 无子命令 `haagent` 直接进入个人助手聊天模式。
+- 无子命令 `haagent` 直接进入 Textual TUI，作为唯一普通交互入口。
+- TUI 内 `/model` 配置用户级默认 profile，支持目录选择和手动 compatible endpoint。
 - 默认 workspace root 是当前目录。
 - 交互式多轮对话由 `AgentSession` 管理。
-- `haagent sessions` 和 `haagent --continue` 服务目录相关会话恢复。
+- TUI 内 `/sessions` 服务目录相关会话恢复；`haagent --continue` 和 `haagent --resume <session>` 作为启动参数进入 TUI 后恢复。
 
 ## 中期路线
 
@@ -15,11 +15,11 @@
 - 更好的文件整理能力和文档处理能力。
 - 更自然的任务恢复体验，包括跨目录提示和更清晰的 session 摘要。
 - 更丰富的个人助手任务模板，例如 CSV 分析、资料整理、草稿润色和脚本结果解释。
-- 普通聊天的模型输入需要从完整任务脚手架改为按需加载：默认保持薄上下文，仅在出现结构化动作或工具需求时加载项目规则、任务 scaffold、验证要求和相关记忆，不通过猜测用户话术复杂度决定 prompt 厚度。具体工程原则见 `docs/context-engineering-on-demand-injection-guide.md`。
+- 普通 TUI 会话的模型输入需要从完整任务脚手架改为按需加载：默认保持薄上下文，仅在出现结构化动作或工具需求时加载项目规则、任务 scaffold、验证要求和相关记忆，不通过猜测用户话术复杂度决定 prompt 厚度。具体工程原则见 `docs/context-engineering-on-demand-injection-guide.md`。
 
 ## 风险
 
-- 配置体验必须避免把 API key 写入本地 profile、项目配置或 trace；系统凭据库是默认存储，明文用户文件只能显式 opt-in。
+- TUI 配置体验必须避免把 API key 写入本地 profile、项目配置或 trace；系统凭据库是默认存储，明文用户文件只能显式 opt-in。
 - 会话恢复必须继续使用 bounded summary，不能复制完整历史、完整 episode 或完整工具输出进模型输入。
 - 可审计数据和模型输入必须保持分离；episode、task contract、plan 和 tool trace 可以完整落盘，但不能无条件进入下一次模型输入。
 - Harness/eval/dogfood 仍要可用，但不能重新变成普通用户路径的中心。

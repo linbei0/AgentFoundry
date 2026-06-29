@@ -399,7 +399,7 @@ def _write_json(path: Path, value: dict[str, object]) -> None:
 
 
 def _setup_required_message() -> str:
-    return "未找到默认模型配置，请先运行 haagent setup"
+    return "未找到默认模型配置，请运行 haagent 后在 TUI 内输入 /model 完成配置"
 
 
 def _credential_source(record: dict[str, object]) -> str:

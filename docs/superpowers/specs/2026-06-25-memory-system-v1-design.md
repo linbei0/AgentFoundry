@@ -174,7 +174,7 @@ workspace-memory/
 
 - “长期记忆必须先进入候选队列，用户确认后才落库”。
 - “`Memory Index` 不是事实源”。
-- “普通用户路径仍以 `haagent setup` 后直接运行 `haagent` 为主”。
+- “普通用户路径是直接运行 `haagent` 进入 TUI，并通过 `/model` 配置模型”。
 
 不适合写入：
 
@@ -388,10 +388,9 @@ Memory Extraction 从已验证 episode/turn 中提取候选，不直接写长期
 
 ## 与现有 HaAgent 架构的关系
 
-本设计不改变普通用户主路径：
+本设计的历史版本曾以 CLI setup 为普通用户主路径。当前主路径已更新为直接运行 `haagent` 进入 TUI，并在 TUI 内通过 `/model` 配置模型：
 
 ```powershell
-uv run haagent setup
 cd E:\some-folder
 uv run haagent
 ```

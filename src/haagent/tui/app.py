@@ -24,7 +24,13 @@ from haagent.tui.file_ref_modal import FileReferenceOverlay
 from haagent.tui.file_refs import query_after_at, replace_at_query
 from haagent.tui.keys import APP_BINDINGS, footer_text
 from haagent.tui.modals import ConfirmModal, HelpModal, ToolApprovalModal, ToolDetailsModal
-from haagent.tui.models import ModelCatalogLoadingOverlay, ModelCenterOverlay, ModelCenterResult, ModelSetupWizard
+from haagent.tui.models import (
+    ManualModelSetupWizard,
+    ModelCatalogLoadingOverlay,
+    ModelCenterOverlay,
+    ModelCenterResult,
+    ModelSetupWizard,
+)
 from haagent.tui.renderers import (
     failure_body,
     memory_panel_text,
@@ -94,9 +100,29 @@ class HaAgentTuiApp(App[None]):
         self._apply_theme()
         self.query_one("#side-bar", SideBar).can_focus = True
         self._show_initial_configuration_state()
+        self._restore_initial_session()
         self._refresh()
         self._update_responsive_layout()
         self.query_one("#prompt-input", PromptInput).focus()
+
+    def _restore_initial_session(self) -> None:
+        initial_resume = getattr(self.service, "initial_resume", None)
+        if initial_resume is not None:
+            try:
+                status = self.service.resume_session(initial_resume)
+            except Exception as error:
+                self._append_block("Session warning", f"恢复会话失败：{error}")
+            else:
+                self._append_line(f"已恢复 session：{status.session_id}")
+            return
+        if not bool(getattr(self.service, "initial_continue", False)):
+            return
+        try:
+            status = self.service.continue_latest_session()
+        except Exception as error:
+            self._append_block("Session warning", f"继续最新 session 失败：{error}")
+        else:
+            self._append_line(f"已继续最新 session：{status.session_id}")
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive_layout(width=event.size.width, height=event.size.height)
@@ -396,6 +422,9 @@ class HaAgentTuiApp(App[None]):
             elif result.action == "new_profile":
                 self.push_screen(ModelCatalogLoadingOverlay())
                 self._refresh_model_catalog_and_open_setup()
+                return
+            elif result.action == "manual_profile":
+                self.push_screen(ManualModelSetupWizard(), self._handle_model_setup_result)
                 return
             elif result.action == "refresh_catalog":
                 self._refresh_model_catalog_only()
@@ -717,10 +746,10 @@ class HaAgentTuiApp(App[None]):
     def _show_initial_configuration_state(self) -> None:
         status = self.service.get_workspace_status()
         if status.profile_error is not None:
-            self._append_block("Config", "未找到默认模型配置\n请先运行：uv run haagent setup")
+            self._append_block("Config", "未找到默认模型配置\n输入 /model 打开模型中心完成配置。")
         elif status.credential_store_available is False:
             reason = status.credential_store_error or "unknown"
-            self._append_block("Config", f"系统凭据库不可用：{reason}\n请运行：uv run haagent setup 重新选择凭据来源。")
+            self._append_block("Config", f"系统凭据库不可用：{reason}\n输入 /model 重新选择凭据来源。")
         elif status.api_key_env and not status.api_key_available:
             self._append_block(
                 "Config",

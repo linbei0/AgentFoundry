@@ -978,17 +978,17 @@ def test_memory_cli_lists_confirms_and_rejects_candidates(tmp_path: Path, monkey
     confirm_code = cli.main(["memory", "confirm", candidate_id, "--runs-root", str(runs_root)])
     confirm_output = capsys.readouterr().out
 
-    assert list_code == 0
-    assert candidate_id in list_output
-    assert confirm_code == 0
-    assert "memory_id=" in confirm_output
-    assert CandidateQueue(session.session_path).get(candidate_id).status == "confirmed"
+    assert list_code == 1
+    assert confirm_code == 1
+    assert "请运行 haagent 打开 TUI" in list_output
+    assert "请运行 haagent 打开 TUI" in confirm_output
+    assert CandidateQueue(session.session_path).get(candidate_id).status == "pending"
 
     session.run_prompt("记住这个：HaAgent 的长期记忆候选需要人工审核。")
     second_id = CandidateQueue(session.session_path).list(status="pending")[0].candidate_id
     reject_code = cli.main(["memory", "reject", second_id, "--runs-root", str(runs_root), "--reason", "not durable"])
     reject_output = capsys.readouterr().out
 
-    assert reject_code == 0
-    assert "status=rejected" in reject_output
-    assert CandidateQueue(session.session_path).get(second_id).status == "rejected"
+    assert reject_code == 1
+    assert "请运行 haagent 打开 TUI" in reject_output
+    assert CandidateQueue(session.session_path).get(second_id).status == "pending"

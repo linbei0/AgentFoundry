@@ -255,7 +255,7 @@ Footer 常驻只放当前可用动作：
 API key 解析优先级是环境变量 > 系统凭据库 > 明文用户文件。
 HaAgent 不会在 TUI 中输入、保存或显示真实 API key。
 
-请先设置环境变量，或在 `haagent setup` 中重新保存到系统凭据库后重试。
+请先设置环境变量，或在 TUI 内通过 `/model` 重新保存到系统凭据库后重试。
 ```
 
 ### Profile 缺失
@@ -263,10 +263,10 @@ HaAgent 不会在 TUI 中输入、保存或显示真实 API key。
 ```text
 未找到默认模型配置
 
-请先运行：
-  uv run haagent setup
+请在 TUI 内打开：
+  /model
 
-配置完成后，回到当前目录再次运行 haagent。
+配置完成后即可继续当前会话。
 ```
 
 ### 运行失败

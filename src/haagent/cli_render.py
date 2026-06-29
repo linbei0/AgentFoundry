@@ -1,7 +1,7 @@
 """
 haagent/cli_render.py - CLI 用户可见输出渲染
 
-集中渲染 run、chat、smoke、eval 与 check 的短摘要输出。
+集中渲染 run、smoke、eval 与 check 的短摘要输出。
 """
 
 from __future__ import annotations
@@ -9,9 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from haagent.runtime.chat_session import AgentSession, ChatEvent, ChatTurnResult
 from haagent.runtime.episode_validator import EpisodeValidationError, load_inspect_episode_package
-from haagent.runtime.human_interaction import HumanInteractionRequest, HumanInteractionResponse
 
 
 def print_run_summary(result) -> None:
@@ -35,143 +33,6 @@ def print_run_summary(result) -> None:
     print(f"failed_stage={summary_value(str(failure.get('stage', 'unknown')))}")
     print(f"failure_category={summary_value(str(failure.get('category', 'unknown')))}")
     print(f"reason={summary_value(str(failure.get('evidence', '')))}")
-
-
-def run_chat_repl(session: AgentSession) -> int:
-    print_chat_event(session.session_started_event())
-    print_session_status(session)
-    while True:
-        try:
-            raw_prompt = input("haagent> ")
-        except EOFError:
-            print_chat_event(session.session_finished_event())
-            print("bye")
-            return 0
-        prompt = raw_prompt.strip()
-        if not prompt:
-            continue
-        if prompt in {":quit", ":exit"}:
-            print_chat_event(session.session_finished_event())
-            print("bye")
-            return 0
-        if prompt == ":status":
-            print_session_status(session)
-            continue
-        if prompt == ":new":
-            session.new()
-            print("session reset")
-            continue
-
-        result = session.run_prompt_events(
-            prompt,
-            event_sink=print_chat_event,
-            interaction_handler=read_chat_interaction,
-        )
-        print_chat_turn_result(result)
-
-
-def print_session_status(session: AgentSession) -> None:
-    status = session.status()
-    print(f"session_id={status['session_id']}")
-    print(f"session_path={status['session_path']}")
-    print(f"workspace_root={status['workspace_root']}")
-    print(f"provider={status['provider']}")
-    print(f"turn_count={status['turn_count']}")
-    working_state = status.get("working_state") if isinstance(status.get("working_state"), dict) else {}
-    working_state_exists = bool(working_state.get("exists"))
-    print(f"working_state={'present' if working_state_exists else 'empty'}")
-    if working_state_exists:
-        print(f"working_state_goal={summary_value(str(working_state.get('current_goal', '')), 120)}")
-        print(f"working_state_next_steps={working_state.get('next_steps_count', 0)}")
-
-
-def print_chat_turn_result(result: ChatTurnResult) -> None:
-    for line in result.output_lines():
-        print(line)
-
-
-def print_chat_event(event: ChatEvent) -> None:
-    pieces = [f"event={event.event_type}"]
-    if event.event_type in {
-        "tool_started",
-        "tool_finished",
-        "tool_failed",
-        "approval_requested",
-        "approval_granted",
-        "approval_denied",
-    }:
-        tool_name = event.payload.get("tool_name")
-        if tool_name is not None:
-            pieces.append(f"tool={tool_name}")
-    if event.event_type == "tool_started":
-        pieces.append(f"args={format_event_mapping(event.payload.get('args_summary'))}")
-    elif event.event_type == "tool_finished":
-        status = event.payload.get("status")
-        if status is not None:
-            pieces.append(f"status={status}")
-        pieces.append(f"result={format_event_mapping(event.payload.get('result_summary'))}")
-    elif event.event_type == "tool_failed":
-        error_type = event.payload.get("error_type")
-        if error_type is not None:
-            pieces.append(f"error={error_type}")
-        message = event.payload.get("message")
-        if message:
-            pieces.append(f"message={shell_token(str(message))}")
-    elif event.event_type == "approval_requested":
-        question = event.payload.get("question")
-        if question:
-            pieces.append(f"question={shell_token(str(question))}")
-        pieces.append(f"args={format_event_mapping(event.payload.get('args_summary'))}")
-    elif event.event_type in {"approval_granted", "approval_denied"}:
-        approved = event.payload.get("approved")
-        if approved is not None:
-            pieces.append(f"approved={str(approved).lower()}")
-    elif event.event_type == "user_input_requested":
-        question = event.payload.get("question")
-        if question:
-            pieces.append(f"question={shell_token(str(question))}")
-    elif event.event_type == "user_input_received":
-        answer_chars = event.payload.get("answer_chars")
-        if answer_chars is not None:
-            pieces.append(f"answer_chars={answer_chars}")
-    elif event.event_type == "assistant_message":
-        content = event.payload.get("content")
-        if content:
-            pieces.append(f"message={shell_token(summary_value(str(content)))}")
-    elif event.event_type == "memory_candidates_created":
-        count = event.payload.get("count")
-        if count is not None:
-            pieces.append(f"count={count}")
-        message = event.payload.get("message")
-        if message:
-            pieces.append(f"message={shell_token(str(message))}")
-    elif event.event_type == "guardrail_triggered":
-        for key in ["scope", "rule_id", "severity", "message"]:
-            value = event.payload.get(key)
-            if value:
-                pieces.append(f"{key}={shell_token(str(value))}")
-    elif event.event_type == "failure":
-        for key in ["failed_stage", "failure_category", "reason"]:
-            value = event.payload.get(key)
-            if value:
-                pieces.append(f"{key}={shell_token(str(value))}")
-    elif event.event_type in {"turn_started", "turn_finished", "session_started", "session_finished"}:
-        status = event.payload.get("status")
-        if status is not None:
-            pieces.append(f"status={status}")
-    print(" ".join(pieces))
-
-
-def read_chat_interaction(request: HumanInteractionRequest) -> HumanInteractionResponse:
-    try:
-        if request.interaction_type == "approval":
-            raw_answer = input("approve [y/N]> ")
-            approved = raw_answer.strip().lower() in {"y", "yes"}
-            return HumanInteractionResponse(approved=approved, answer=raw_answer)
-        answer = input("answer> ")
-        return HumanInteractionResponse(approved=True, answer=answer)
-    except EOFError:
-        return HumanInteractionResponse(approved=False, answer="")
 
 
 def print_smoke_result(result) -> None:

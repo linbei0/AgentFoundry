@@ -4,7 +4,7 @@
 
 HaAgent 的目标是本地个人 AI 助手：用户配置一次模型后，进入任意目录运行 `haagent`，即可围绕当前目录完成文件阅读、资料整理、文档修改、项目分析、命令执行和多轮任务延续。
 
-当前 CLI 已经具备核心 Agent Runtime，但使用体验仍偏工程化：用户需要理解 profile、workspace、session、失败阶段、工具事件等概念。TUI 的目标不是做 IDE，而是把这些运行状态变成直观、可控、可恢复的个人助手界面。
+当前 CLI 已经具备核心 Agent Runtime，但普通交互入口已统一到 Textual TUI。TUI 的目标不是做 IDE，而是把 profile、workspace、session、失败阶段、工具事件等运行状态变成直观、可控、可恢复的个人助手界面。
 
 TUI 设计目标：
 
@@ -38,7 +38,7 @@ HaAgent 当前已有适合作为 TUI 后端的基础：
 - `list_sessions()` / `find_latest_session()` 已支持当前 workspace 的会话列表。
 - `ProviderProfile` 已支持用户级 profile 配置，真实 API key 解析优先级是环境变量、系统凭据库、显式明文用户文件；默认 setup 写入系统凭据库。
 - `ModelGateway` 和 `ToolRouter` 已形成 runtime 边界。
-- CLI 当前默认入口仍是个人助手聊天模式，`haagent tui` 是显式的 TUI 垂直切片入口。
+- CLI 当前默认入口是 TUI；旧 `setup/chat/sessions/memory/tui` 交互命令只提示迁移到无子命令 `haagent`。
 
 当前已经抽出 **应用服务层**。TUI 不直接调用 CLI handler，也不解析 `print_chat_event()` 输出，而是通过结构化服务接口复用同一套会话和事件流能力。
 
@@ -155,10 +155,10 @@ TUI 只负责交互和展示：
 
 ### 6.1 首次启动
 
-当用户运行 `haagent tui`：
+当用户运行 `haagent`：
 
 - 如果 profile 存在且 API key 可通过环境变量、系统凭据库或显式明文用户文件解析，直接进入 TUI。
-- 如果 profile 缺失，提示运行 setup 或进入 TUI 内配置向导。
+- 如果 profile 缺失，提示进入 TUI 内 `/model` 配置向导。
 - 如果 API key 不可用，只显示环境变量名和非敏感凭据状态，不要求用户在 TUI 输入真实 key。
 
 ### 6.2 配置检查
@@ -213,12 +213,13 @@ TUI 应能显示：
 
 当前入口策略：
 
-- `haagent`：默认进入经典文本聊天。
-- `haagent chat`：保留经典文本聊天。
-- `haagent setup`：保留命令行配置。
-- `haagent tui`：显式进入 TUI 垂直切片，方便测试、试用和后续打磨。
+- `haagent`：默认进入 TUI。
+- `haagent --continue` / `haagent --resume <session>`：启动 TUI 后恢复当前目录会话。
+- `haagent --web`：启动 TUI 时显式启用只读联网工具。
+- `haagent setup`、`haagent chat`、`haagent sessions`、`haagent memory`、`haagent tui`：旧普通交互入口，只提示迁移到 TUI。
+- `haagent run/inspect/eval/export-eval/dogfood/check/smoke`：保留为非交互开发、复现、验证和 CI 能力。
 
-暂不把 `haagent` 默认入口切到 TUI。TUI 已通过 `AssistantService` 避免复用 CLI print 输出；后续是否改默认入口需要单独产品决策和 CLI 回归覆盖。
+TUI 已通过 `AssistantService` 避免复用 CLI print 输出；普通用户流程不再经过旧文本 REPL。
 
 ## 8. 技术选型
 
@@ -260,10 +261,10 @@ TUI 必须可自动化测试，不只靠人工试用。
   - modal 可批准/拒绝。
   - session 列表可选择。
 - CLI 回归：
-  - `haagent` 仍进入经典文本聊天。
-  - `haagent tui` 进入 TUI。
-  - `haagent chat` 仍进入经典文本模式。
-  - `haagent setup` 不受影响。
+  - `haagent` 进入 TUI。
+  - `--workspace-root`、`--runs-root`、`--resume`、`--continue`、`--web` 正确传给 TUI service。
+  - 旧普通交互命令提示迁移。
+  - 非交互开发命令保持可用。
 - 安全测试：
   - API key 不出现在 UI snapshot、transcript、session summary、tool-calls。
 
@@ -284,10 +285,10 @@ TUI 必须可自动化测试，不只靠人工试用。
 
 ## 11. 结论
 
-HaAgent 已进入 TUI 垂直切片阶段，但 TUI 不应该直接长在 CLI 输出层上。当前路线是：
+HaAgent 已把 TUI 提升为唯一普通交互入口，但 TUI 不直接长在 CLI 输出层上。当前路线是：
 
 1. 保持 runtime 不动。
 2. 通过已抽出的 `AssistantService` 复用 profile、session 和事件流能力。
-3. 用 Textual 构建并测试显式 `haagent tui`。
-4. 保持 `haagent` 默认进入经典文本聊天。
-5. 后续再单独评估是否把默认入口切到 TUI。
+3. 用 Textual 构建并测试无子命令 `haagent` 的 TUI。
+4. 保持 harness/eval/dogfood 等开发能力在后台可用。
+5. 后续继续打磨 TUI 输入、恢复、工具摘要和可访问性。

@@ -483,7 +483,7 @@ def test_active_profile_status_reports_missing_profile(tmp_path: Path, monkeypat
     assert status.profile_name is None
     assert status.api_key_available is False
     assert status.profile_error is not None
-    assert "haagent setup" in status.profile_error
+    assert "/model" in status.profile_error
 
 
 def test_create_new_session_sets_current_session(tmp_path: Path, monkeypatch) -> None:

@@ -23,6 +23,7 @@ ModelCenterAction = Literal[
     "set_default",
     "delete_profile",
     "new_profile",
+    "manual_profile",
     "test_profile",
     "refresh_catalog",
 ]
@@ -82,7 +83,7 @@ class ModelCenterState:
             capability = getattr(profile.capability, "status", "-")
             model = safe_summary(profile.model, 36)
             lines.append(f"{selected}{active} {profile.name:<16} {profile.provider:<12} {model} {credential} {capability}")
-        lines.extend(["", "输入过滤  ↑/↓ 移动  Enter 切当前会话  p 默认  d 删除  n 新建  r 刷新  t 测试  Esc 关闭"])
+        lines.extend(["", "输入过滤  ↑/↓ 移动  Enter 切当前会话  p 默认  d 删除  n 目录新建  m 手动  r 刷新  t 测试  Esc 关闭"])
         return "\n".join(lines)
 
 
@@ -134,6 +135,10 @@ class ModelCenterOverlay(ModalScreen[ModelCenterResult | None]):
             event.stop()
             self.dismiss(ModelCenterResult(action="new_profile"))
             return
+        if key == "m":
+            event.stop()
+            self.dismiss(ModelCenterResult(action="manual_profile"))
+            return
         if key == "r":
             event.stop()
             self.dismiss(ModelCenterResult(action="refresh_catalog"))
@@ -160,6 +165,128 @@ class ModelCatalogLoadingOverlay(ModalScreen[None]):
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape":
             event.stop()
+
+
+class ManualModelSetupWizard(ModalScreen[ModelProfileConfigureRequest | None]):
+    fields = [
+        ("name", "profile name", "例如 deepseek"),
+        ("provider", "provider", "openai 或 openai-chat"),
+        ("base_url", "base_url", "兼容 endpoint 基础地址"),
+        ("model", "model", "模型名称"),
+        ("api_key_env", "api_key_env", "例如 OPENAI_API_KEY"),
+        ("credential_source", "credential_source", "keyring/env/insecure_file"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.values: dict[str, str] = {}
+        self.field_index = 0
+        self.awaiting_insecure_confirmation = False
+        self.awaiting_api_key = False
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._body_text(), id="manual-model-setup-dialog")
+        yield Input(
+            password=False,
+            id="manual-model-input",
+            placeholder=self._placeholder(),
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#manual-model-input", Input).focus()
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        text = event.value.strip()
+        field_name = self._current_field_name()
+        if self.awaiting_insecure_confirmation:
+            if text == "YES":
+                self.awaiting_insecure_confirmation = False
+                self.awaiting_api_key = True
+            self._reset_input()
+            return
+        if self.awaiting_api_key:
+            request = self._request(api_key=text)
+            if request is not None:
+                self.dismiss(request)
+            return
+        if field_name is None:
+            return
+        self.values[field_name] = text
+        self.field_index += 1
+        if self.field_index < len(self.fields):
+            self._reset_input()
+            return
+        credential_source = self.values["credential_source"]
+        if credential_source == "env":
+            request = self._request(api_key=None)
+            if request is not None:
+                self.dismiss(request)
+            return
+        if credential_source == "insecure_file":
+            self.awaiting_insecure_confirmation = True
+            self._reset_input()
+            return
+        self.awaiting_api_key = True
+        self._reset_input()
+
+    def _current_field_name(self) -> str | None:
+        if self.field_index >= len(self.fields):
+            return None
+        return self.fields[self.field_index][0]
+
+    def _placeholder(self) -> str:
+        if self.awaiting_insecure_confirmation:
+            return "输入 YES 继续"
+        if self.awaiting_api_key:
+            return "API key"
+        _, label, placeholder = self.fields[self.field_index]
+        return f"{label}: {placeholder}"
+
+    def _reset_input(self) -> None:
+        self.query_one("#manual-model-setup-dialog", Static).update(self._body_text())
+        input_widget = self.query_one("#manual-model-input", Input)
+        input_widget.password = self.awaiting_api_key
+        input_widget.placeholder = self._placeholder()
+        input_widget.value = ""
+        input_widget.focus()
+
+    def _body_text(self) -> str:
+        lines = ["手动模型配置", ""]
+        for name, label, _placeholder in self.fields:
+            value = self.values.get(name, "-")
+            lines.append(f"{label}: {value}")
+        lines.append("")
+        if self.awaiting_insecure_confirmation:
+            lines.append("insecure_file 会把 API key 写入明文用户文件；必须输入 YES 才会继续。")
+        elif self.awaiting_api_key:
+            lines.append("输入 API key；内容会被遮蔽，不会显示在界面文本中。")
+        else:
+            _name, label, _placeholder = self.fields[self.field_index]
+            lines.append(f"请输入 {label} 后按 Enter；Esc 关闭。")
+        return "\n".join(lines)
+
+    def _request(self, api_key: str | None) -> ModelProfileConfigureRequest | None:
+        provider = self.values.get("provider", "")
+        credential_source = self.values.get("credential_source", "")
+        if provider not in {"openai", "openai-chat"}:
+            return None
+        if credential_source not in {"keyring", "env", "insecure_file"}:
+            return None
+        return ModelProfileConfigureRequest(
+            name=self.values.get("name", ""),
+            provider=provider,
+            base_url=self.values.get("base_url", ""),
+            model=self.values.get("model", ""),
+            api_key_env=self.values.get("api_key_env", ""),
+            credential_source=credential_source,
+            api_key=api_key or None,
+        )
 
 
 class ModelSetupWizard(ModalScreen[ModelProfileConfigureRequest | None]):

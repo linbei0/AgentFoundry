@@ -166,6 +166,8 @@ class AssistantService:
         session_cls: type[AgentSession] = AgentSession,
         max_turns: int = CHAT_MAX_TURNS,
         enable_web: bool = False,
+        initial_resume: str | Path | None = None,
+        initial_continue: bool = False,
     ) -> None:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
         self.runs_root = runs_root
@@ -176,6 +178,8 @@ class AssistantService:
         self.enable_web = enable_web
         self._session: AgentSession | None = None
         self._pending_model_profile_name: str | None = None
+        self.initial_resume = initial_resume
+        self.initial_continue = initial_continue
 
     def get_workspace_status(self) -> AssistantWorkspaceStatus:
         profile_name: str | None = None

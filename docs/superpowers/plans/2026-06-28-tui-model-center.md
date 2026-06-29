@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 历史说明：本文是 2026-06-28 的模型中心实施计划。当前产品决策已更新为无子命令 `haagent` 默认进入 TUI，旧 `haagent tui` 只保留迁移提示；本文中“保持 `haagent tui` 显式入口”的约束不再适用。
+
 **Goal:** Build a TUI model center that can discover models from Models.dev, configure provider profiles with safe credential handling, switch the current TUI session model, set the default profile, and run explicit connection tests through `ModelGateway`.
 
 **Architecture:** Add a catalog layer for Models.dev, a gateway registry for runnable capability, service-layer APIs for profile/session/default/test operations, and Textual modal screens for model selection and setup. Runtime switching stays behind `AssistantService` and `AgentSession`; secrets stay inside credential stores and in-memory gateway construction.
@@ -10,7 +12,7 @@
 
 ## Global Constraints
 
-- Do not make TUI the default HaAgent entry point; keep `haagent tui` explicit.
+- Current rule: TUI is the default ordinary HaAgent entry point via plain `haagent`; do not reintroduce alternate interactive CLI flows.
 - Model calls must go through `ModelGateway`.
 - TUI must not bypass `AssistantService`, `AgentSession`, or provider profile services.
 - Real API keys must not be written to profile/settings/session/episode/transcript/tool trace/TUI text.

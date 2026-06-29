@@ -6,7 +6,6 @@ haagent/cli_commands.py - CLI 子命令处理器
 
 from __future__ import annotations
 
-import getpass
 import json
 import tempfile
 from dataclasses import dataclass
@@ -19,37 +18,22 @@ import yaml
 from haagent.cli_inspect import EpisodeInspectError, render_episode_summary
 from haagent.cli_render import (
     print_check_summary,
-    print_chat_event,
-    print_chat_turn_result,
     print_eval_summary,
     print_run_summary,
     print_smoke_result,
-    read_chat_interaction,
-    run_chat_repl,
 )
-from haagent.memory import CandidateQueue, CandidateQueueError, MemoryStore, MemoryStoreError
-from haagent.memory.governance import MemoryGovernanceError
+from haagent.app.assistant_service import AssistantService
 from haagent.cli_runtime import CliRuntime, SmokeDefinition
-from haagent.models import provider_profile
-from haagent.models.credentials import CredentialError, save_insecure_api_key, save_keyring_api_key
 from haagent.models.provider_profile import (
     ProviderProfileError,
-    ProviderProfileRecord,
     load_provider_profile,
-    save_active_profile,
-    save_provider_profile,
-)
-from haagent.runtime.chat_session import (
-    CHAT_MAX_TURNS,
-    ChatSessionError,
-    find_latest_session,
-    list_sessions,
 )
 from haagent.runtime.checks import run_quality_checks
 from haagent.runtime.dogfood import render_dogfood_report, run_dogfood_tasks, skipped_dogfood_report
 from haagent.runtime.episode_validator import EpisodeValidationError, load_inspect_episode_package
 from haagent.runtime.eval_export import export_eval_case
 from haagent.runtime.eval_runner import EvalRunnerError, run_eval_path
+from haagent.tui.app import run_tui
 
 
 AUTHORING_ALLOWED_TOOLS = ["file_list", "file_read", "file_search", "apply_patch", "shell"]
@@ -96,186 +80,24 @@ def handle_run(args, runtime: CliRuntime) -> int:
             generated_task_dir.cleanup()
 
 
-def handle_chat(args, runtime: CliRuntime) -> int:
-    try:
-        model_gateway = runtime.build_run_model_gateway(args)
-    except ProviderProfileError as error:
-        print(f"error: {error}")
+def handle_tui_entry(args) -> int:
+    if getattr(args, "resume", None) is not None and bool(getattr(args, "continue_session", False)):
+        print("error: --resume cannot be combined with --continue")
         return 1
-    try:
-        runs_root = getattr(args, "runs_root", Path(".runs"))
-        workspace_root = args.workspace_root if args.workspace_root is not None else Path.cwd()
-        if args.resume is not None and getattr(args, "continue_session", False):
-            print("error: --resume cannot be combined with --continue")
-            return 1
-        if getattr(args, "continue_session", False):
-            latest = find_latest_session(runs_root, workspace_root)
-            if latest is None:
-                print("error: 当前目录没有可恢复会话")
-                return 1
-            session = runtime.session_cls.resume(
-                latest.session_path,
-                runs_root=runs_root,
-                model_gateway=model_gateway,
-                max_turns=CHAT_MAX_TURNS,
-                enable_web=bool(getattr(args, "enable_web", False)),
-            )
-        elif args.resume is None:
-            session = runtime.session_cls(
-                workspace_root=workspace_root,
-                runs_root=runs_root,
-                model_gateway=model_gateway,
-                max_turns=CHAT_MAX_TURNS,
-                enable_web=bool(getattr(args, "enable_web", False)),
-            )
-        else:
-            session = runtime.session_cls.resume(
-                args.resume,
-                runs_root=runs_root,
-                model_gateway=model_gateway,
-                max_turns=CHAT_MAX_TURNS,
-                enable_web=bool(getattr(args, "enable_web", False)),
-            )
-    except ChatSessionError as error:
-        print(f"error: {error}")
-        return 1
-    if args.request is None:
-        return run_chat_repl(session)
-    result = session.run_prompt_events(
-        str(args.request),
-        event_sink=print_chat_event,
-        include_session_events=True,
-        interaction_handler=read_chat_interaction,
-    )
-    print_chat_turn_result(result)
-    return 0 if result.status == "completed" else 1
-
-
-def handle_setup(args) -> int:
-    try:
-        record = ProviderProfileRecord(
-            name=_prompt_value("profile name", default="local"),
-            provider=_prompt_provider(),
-            base_url=_prompt_value("base_url"),
-            model=_prompt_value("model"),
-            api_key_env=_prompt_value("api_key_env", default="OPENAI_API_KEY"),
-            credential_source=_prompt_credential_source(),
-        )
-        _save_setup_credential(record)
-        providers_path = save_provider_profile(record)
-        settings_path = save_active_profile(record.name)
-    except (EOFError, CredentialError, ProviderProfileError) as error:
-        print(f"error: {error}")
-        return 1
-    print(f"providers={providers_path}")
-    print(f"settings={settings_path}")
-    print(f"active_profile={record.name}")
-    print(f"api_key_env={record.api_key_env}")
-    print(f"credential_source={record.credential_source}")
-    if record.credential_source == "env":
-        print(f"高级模式：请在环境变量 {record.api_key_env} 中设置真实 API key。")
-    elif record.credential_source == "keyring":
-        print("API key 已保存到系统凭据库，跨终端可用。")
-    else:
-        print("警告：API key 已保存到明文用户文件 insecure_credentials.json。")
-    return 0
-
-
-def handle_sessions(args) -> int:
-    workspace_root = args.workspace_root if args.workspace_root is not None else Path.cwd()
-    try:
-        summaries = list_sessions(args.runs_root, workspace_root)
-    except ChatSessionError as error:
-        print(f"error: {error}")
-        return 1
-    if not summaries:
-        print("no sessions")
-        return 0
-    for summary in summaries:
-        print(f"session_id={summary.session_id}")
-        print(f"created_at={summary.created_at}")
-        print(f"updated_at={summary.updated_at}")
-        print(f"workspace={summary.workspace_root}")
-        print(f"turn_count={summary.turn_count}")
-        print(f"first_request={summary.first_request}")
-        print(f"session_path={summary.session_path}")
-    return 0
-
-
-def handle_memory(args) -> int:
-    workspace_root = args.workspace_root if args.workspace_root is not None else Path.cwd()
-    try:
-        session_path = _memory_session_path(args.session, args.runs_root, workspace_root)
-        queue = CandidateQueue(session_path)
-        store = MemoryStore(workspace_root=workspace_root)
-        if args.memory_action == "list":
-            candidates = queue.list(status=None if args.all else "pending")
-            if not candidates:
-                print("no memory candidates")
-                return 0
-            for candidate in candidates:
-                print(f"candidate_id={candidate.candidate_id}")
-                print(f"status={candidate.status}")
-                print(f"scope={candidate.scope}")
-                print(f"category={candidate.category}")
-                print(f"title={candidate.title}")
-                if candidate.risk_flags:
-                    print(f"risk_flags={','.join(candidate.risk_flags)}")
-            return 0
-        if args.memory_action == "confirm":
-            record = store.confirm_candidate(
-                queue,
-                args.candidate_id,
-                edited_title=args.title,
-                edited_body=args.body,
-                edited_tags=args.tag,
-                actor="user",
-            )
-            print(f"memory_id={record.memory_id}")
-            print(f"scope={record.scope}")
-            print(f"category={record.category}")
-            print(f"title={record.title}")
-            return 0
-        if args.memory_action == "reject":
-            rejected = store.reject_candidate(
-                queue,
-                args.candidate_id,
-                reason=args.reason,
-                actor="user",
-            )
-            print(f"candidate_id={rejected.candidate_id}")
-            print(f"status={rejected.status}")
-            return 0
-    except (CandidateQueueError, MemoryStoreError, MemoryGovernanceError, ChatSessionError) as error:
-        print(f"error: {error}")
-        return 1
-    print(f"error: unsupported memory action: {args.memory_action}")
-    return 1
-
-
-def _memory_session_path(session: str | None, runs_root: Path, workspace_root: Path) -> Path:
-    if session is not None:
-        raw = Path(session)
-        if raw.is_absolute() or raw.exists() or raw.name != session:
-            return raw.resolve()
-        return (runs_root / "sessions" / session).resolve()
-    latest = find_latest_session(runs_root, workspace_root)
-    if latest is None:
-        raise ChatSessionError("当前目录没有可审查的 memory candidate session")
-    return latest.session_path
-
-
-def handle_tui(args) -> int:
-    from haagent.app.assistant_service import AssistantService
-    from haagent.tui.app import run_tui
-
     workspace_root = args.workspace_root if args.workspace_root is not None else Path.cwd()
     service = AssistantService(
         workspace_root=workspace_root,
         runs_root=args.runs_root,
         enable_web=bool(getattr(args, "enable_web", False)),
+        initial_resume=getattr(args, "resume", None),
+        initial_continue=bool(getattr(args, "continue_session", False)),
     )
     return run_tui(service)
+
+
+def handle_tui_migration(args) -> int:
+    print("此交互入口已迁移到 TUI；请运行 haagent 打开 TUI 后完成该操作。")
+    return 1
 
 
 def handle_smoke(args, runtime: CliRuntime) -> int:
@@ -551,47 +373,6 @@ def export_single_eval_case(
         return 0
     print(output)
     return 0
-
-
-def _prompt_value(label: str, *, default: str | None = None) -> str:
-    suffix = f" [{default}]" if default is not None else ""
-    value = input(f"{label}{suffix}: ").strip()
-    if not value and default is not None:
-        value = default
-    if not value:
-        raise ProviderProfileError(f"{label} is required")
-    return value
-
-
-def _prompt_provider() -> str:
-    provider = _prompt_value("provider (openai/openai-chat)", default="openai-chat")
-    if provider not in {"openai", "openai-chat"}:
-        raise ProviderProfileError(f"unsupported provider: {provider}")
-    return provider
-
-
-def _prompt_credential_source() -> str:
-    print("凭据保存方式：推荐 keyring（系统凭据库，跨终端可用）。")
-    print("高级 env：只使用环境变量，适合 CI 或临时覆盖。")
-    print("不推荐 insecure_file：写入明文用户文件，必须显式选择。")
-    source = _prompt_value("credential_source (keyring/env/insecure_file)", default="keyring")
-    if source not in {"keyring", "env", "insecure_file"}:
-        raise ProviderProfileError(f"unsupported credential_source: {source}")
-    return source
-
-
-def _save_setup_credential(record: ProviderProfileRecord) -> None:
-    if record.credential_source == "env":
-        return
-    api_key = getpass.getpass("API key: ").strip()
-    if record.credential_source == "keyring":
-        save_keyring_api_key(
-            record.name,
-            api_key,
-            credential_store=provider_profile.DEFAULT_CREDENTIAL_STORE,
-        )
-        return
-    save_insecure_api_key(record.name, api_key, config_dir=provider_profile.user_config_dir())
 
 
 def write_eval_case_file(episode_path: Path, output_path: Path) -> None:

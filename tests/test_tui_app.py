@@ -812,6 +812,117 @@ def test_tui_model_setup_wizard_masks_key_and_saves_keyring_profile(tmp_path: Pa
     asyncio.run(run())
 
 
+def test_tui_manual_model_setup_can_save_keyring_profile(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("m")
+            await pilot.pause(0.1)
+            assert "手动模型配置" in _all_text(app)
+
+            for value in [
+                "deepseek",
+                "openai-chat",
+                "https://api.deepseek.com",
+                "deepseek-chat",
+                "DEEPSEEK_API_KEY",
+                "keyring",
+                "sk-manual-secret",
+            ]:
+                await pilot.press(*list(value), "enter")
+                await pilot.pause(0.05)
+
+            request = service.configured_model_profile
+            assert request.name == "deepseek"
+            assert request.provider == "openai-chat"
+            assert request.base_url == "https://api.deepseek.com"
+            assert request.model == "deepseek-chat"
+            assert request.api_key_env == "DEEPSEEK_API_KEY"
+            assert request.credential_source == "keyring"
+            assert service.configured_api_key == "sk-manual-secret"
+            assert "sk-manual-secret" not in _all_text(app)
+
+    asyncio.run(run())
+
+
+def test_tui_manual_model_setup_env_source_does_not_require_api_key(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("m")
+            await pilot.pause(0.1)
+
+            for value in [
+                "local-env",
+                "openai",
+                "https://api.openai.com/v1",
+                "gpt-5.2",
+                "OPENAI_API_KEY",
+                "env",
+            ]:
+                await pilot.press(*list(value), "enter")
+                await pilot.pause(0.05)
+
+            request = service.configured_model_profile
+            assert request.name == "local-env"
+            assert request.provider == "openai"
+            assert request.credential_source == "env"
+            assert service.configured_api_key is None
+
+    asyncio.run(run())
+
+
+def test_tui_manual_model_setup_insecure_file_requires_explicit_confirmation(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("/")
+            await pilot.press("m", "o", "d", "e", "l", "enter")
+            await pilot.pause(0.1)
+            await pilot.press("m")
+            await pilot.pause(0.1)
+
+            for value in [
+                "plain",
+                "openai-chat",
+                "https://api.example/v1",
+                "plain-model",
+                "PLAIN_API_KEY",
+                "insecure_file",
+            ]:
+                await pilot.press(*list(value), "enter")
+                await pilot.pause(0.05)
+
+            assert "必须输入 YES 才会继续" in _all_text(app)
+            await pilot.press("n", "o", "enter")
+            await pilot.pause(0.05)
+            assert service.configured_model_profile is None
+
+            await pilot.press("Y", "E", "S", "enter")
+            await pilot.pause(0.05)
+            await pilot.press("s", "k", "-", "p", "l", "a", "i", "n", "enter")
+            await pilot.pause(0.1)
+
+            request = service.configured_model_profile
+            assert request.name == "plain"
+            assert request.credential_source == "insecure_file"
+            assert service.configured_api_key == "sk-plain"
+
+    asyncio.run(run())
+
+
 def test_tui_model_new_profile_keeps_model_center_visible_while_catalog_loads(tmp_path: Path) -> None:
     service = FakeAssistantService(workspace_root=tmp_path)
     service.catalog_refresh_release = threading.Event()
@@ -1831,13 +1942,14 @@ def test_tui_profile_missing_shows_setup_message(tmp_path: Path) -> None:
             model=None,
             api_key_env=None,
             api_key_available=False,
-            profile_error="未找到默认模型配置，请先运行 haagent setup",
+            profile_error="未找到默认模型配置，请运行 haagent 后在 TUI 内输入 /model 完成配置",
         )
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)):
             conversation = _text(app, "#conversation")
             assert "未找到默认模型配置" in conversation
-            assert "uv run haagent setup" in conversation
+            assert "/model" in conversation
+            assert "uv run haagent setup" not in conversation
 
     asyncio.run(run())
 
@@ -1892,7 +2004,8 @@ def test_tui_keyring_unavailable_shows_reason(tmp_path: Path) -> None:
             conversation = _text(app, "#conversation")
             side = _text(app, "#side-bar")
             assert "系统凭据库不可用：backend unavailable" in conversation
-            assert "uv run haagent setup" in conversation
+            assert "/model" in conversation
+            assert "uv run haagent setup" not in conversation
             assert "keyring unavailable: backend unavailable" in side
 
     asyncio.run(run())
@@ -2168,6 +2281,36 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
 
     asyncio.run(run_resume())
     asyncio.run(run_continue_new_escape())
+
+
+def test_tui_restores_initial_resume_session_on_mount(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        service.initial_resume = "session-from-cli"
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.1)
+            assert service.resumed_sessions == ["session-from-cli"]
+            assert service.current_session_id == "session-from-cli"
+            assert "sid:session-f" in _text(app, "#status-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_continues_initial_latest_session_on_mount(tmp_path: Path) -> None:
+    sessions = [_session_summary(tmp_path, "session-alpha", "整理会议纪要", 3)]
+
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, sessions=sessions)
+        service.initial_continue = True
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.1)
+            assert service.continued_latest_count == 1
+            assert service.current_session_id == "session-alpha"
+            assert "sid:session-a" in _text(app, "#status-bar")
+
+    asyncio.run(run())
 
 
 def test_tui_search_overlay_finds_conversation_and_does_not_pollute_conversation(tmp_path: Path) -> None:

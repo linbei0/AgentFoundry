@@ -20,20 +20,21 @@ Before making non-trivial changes, consult the relevant project documents:
 
 Use these documents as decision inputs, not as permission to expand scope. For small mechanical edits, read only the directly relevant document. For feature, contract, runtime, context, episode, tool, provider, or CLI behavior changes, read the relevant sections before editing.
 
-The current priority is the personal assistant startup experience:
+The current priority is the TUI-first personal assistant startup experience:
 
-- Prefer `haagent setup` followed by plain `haagent` as the primary user path:
+- Prefer plain `haagent` as the primary user path:
 
   ```powershell
-  uv run haagent setup
   cd E:\some-folder
   uv run haagent
   ```
 
-- Keep `haagent chat` as an explicit/advanced natural-language entry point, not the only ordinary path.
+- Plain `haagent` opens the Textual TUI and is the only ordinary interactive entry point.
+- Configure model profiles inside TUI via `/model`; the old `haagent setup` command only reports the migration.
+- Keep `haagent chat`, `haagent sessions`, `haagent memory`, and `haagent tui` as migration stubs, not real alternate interaction paths.
 - Keep `task.yaml` for advanced reproducibility, batch tasks, smoke cases, and eval construction; do not treat it as the ordinary user entry point.
 - Do not block real task execution on harness completeness. Build the direct Agent experience first, keep harness constraints and traces intact, and fill in missing harness engineering after the experience proves useful.
-- Plain `haagent` and chat should default to the current working directory as workspace root, allow explicit `--workspace-root`, and keep file/shell tools bounded by that root.
+- Plain `haagent` should default to the current working directory as workspace root, allow explicit `--workspace-root`, and keep file/shell tools bounded by that root.
 - The real task tool pack includes `file_read`, `file_write`, `apply_patch`, `shell`, and `code_run`; keep these tools atomic and workspace-bound.
 - Tasks may be file organization, document summarization, CSV inspection, draft editing, project analysis, code-changing, or verification-oriented. Do not assume every task must modify code or have a verification command.
 
@@ -60,8 +61,8 @@ If documents disagree, prefer the narrower and more current rule. Do not silentl
 - Keep tests in `tests`.
 - Prefer `apply_patch` for file edits to avoid PowerShell encoding issues.
 - Do not add UI, browser automation, multi-agent behavior, or long-term memory unless explicitly requested.
-- For CLI work, prioritize the direct personal assistant experience: `haagent setup`, then interactive `haagent` from any directory. Keep `haagent chat "<request>"` and interactive `haagent chat` as explicit entries.
-- Interactive `haagent` / `haagent chat` is backed by `AgentSession`; keep session state and bounded summaries in runtime code, not in `cli.py`.
+- For CLI work, prioritize the direct personal assistant experience: interactive TUI from any directory via plain `haagent`.
+- Interactive `haagent` is backed by `AgentSession`; keep session state and bounded summaries in runtime code, not in `cli.py`.
 - Keep `run`, `inspect`, and `export-eval` functional, but do not optimize them ahead of the chat experience unless the task explicitly asks.
 
 ## Compatibility Policy
@@ -119,8 +120,8 @@ If documents disagree, prefer the narrower and more current rule. Do not silentl
 - Model calls and responses must append records to `transcript.jsonl`.
 - Failures must be explicit and structured; do not add silent fallbacks or simulated success paths.
 - Path-mutating and execution tools must stay inside the configured workspace root and must not bypass ToolRouter policy or approval decisions.
-- Chat/natural-language entry points must not bypass the runtime contracts. If they generate temporary task contracts internally, those contracts must be recorded in the episode for later inspection.
-- REPL chat may carry only bounded session summaries into the next model input; it must not copy full history, full episode traces, or full tool outputs.
+- TUI natural-language turns must not bypass the runtime contracts. If they generate temporary task contracts internally, those contracts must be recorded in the episode for later inspection.
+- Interactive TUI sessions may carry only bounded session summaries into the next model input; they must not copy full history, full episode traces, or full tool outputs.
 - Harness audit data should not be copied wholesale into model input. Use compact observations and bounded source budgets.
 
 ## Context and Prompt Engineering

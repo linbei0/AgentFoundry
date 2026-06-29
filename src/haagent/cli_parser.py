@@ -11,77 +11,91 @@ from pathlib import Path
 
 from haagent.cli_commands import (
     handle_check,
-    handle_chat,
     handle_dogfood,
     handle_eval,
     handle_export_eval,
     handle_inspect,
-    handle_memory,
     handle_run,
-    handle_sessions,
-    handle_setup,
     handle_smoke,
-    handle_tui,
+    handle_tui_entry,
+    handle_tui_migration,
 )
 from haagent.cli_runtime import CliRuntime
 
 
+class _RootHelpParser(argparse.ArgumentParser):
+    def format_help(self) -> str:
+        return (
+            "usage: haagent [--workspace-root PATH] [--runs-root PATH] "
+            "[--resume SESSION | --continue] [--web]\n\n"
+            "HaAgent local personal assistant\n\n"
+            "ordinary interactive entry:\n"
+            "  haagent              open the Textual TUI in the current directory\n\n"
+            "options:\n"
+            "  -h, --help           show this help message and exit\n"
+            "  --workspace-root PATH\n"
+            "                       workspace root for the assistant session\n"
+            "  --runs-root PATH     directory for assistant session packages (default: .runs)\n"
+            "  --resume SESSION     resume a session by id or session package path\n"
+            "  --continue           resume the latest session for the current workspace\n"
+            "  --web                enable read-only web tools for the TUI session\n\n"
+            "inside the TUI:\n"
+            "  use /model, /sessions, /memory, /web, /new, /resume, /cancel, /tools, /help\n"
+        )
+
+
 def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="haagent", description="HaAgent local personal assistant")
+    parser = _RootHelpParser(prog="haagent", description="HaAgent local personal assistant")
     parser.add_argument(
         "--workspace-root",
         type=Path,
         help="workspace root for the assistant session (default: current directory)",
     )
-    parser.add_argument("--resume", help="resume a chat session by session id or session package path")
+    parser.add_argument("--resume", help="resume a session by session id or session package path")
     parser.add_argument(
         "--continue",
         action="store_true",
         dest="continue_session",
-        help="resume the latest chat session for the current workspace",
+        help="resume the latest session for the current workspace",
     )
     _add_runs_root(parser, help_text="directory for assistant session packages (default: .runs)")
-    _add_model_provider(
-        parser,
-        default=None,
-        provider_help="model provider override; omit to use the active profile from haagent setup",
-    )
     _add_web_flag(parser)
-    parser.set_defaults(command="chat", request=None, handler=lambda args: handle_chat(args, runtime))
-    subparsers = parser.add_subparsers(dest="command", required=False)
+    parser.set_defaults(command="tui", request=None, handler=handle_tui_entry)
+    subparsers = parser.add_subparsers(dest="command", required=False, parser_class=argparse.ArgumentParser)
 
-    setup_parser = subparsers.add_parser("setup", help="configure the default model profile")
-    setup_parser.set_defaults(handler=handle_setup)
+    setup_parser = subparsers.add_parser("setup", help=argparse.SUPPRESS)
+    setup_parser.set_defaults(handler=handle_tui_migration)
 
-    sessions_parser = subparsers.add_parser("sessions", help="list recent sessions for this workspace")
+    sessions_parser = subparsers.add_parser("sessions", help=argparse.SUPPRESS)
     sessions_parser.add_argument(
         "--workspace-root",
         type=Path,
         help="workspace root to list sessions for (default: current directory)",
     )
     _add_runs_root(sessions_parser, help_text="directory for assistant session packages (default: .runs)")
-    sessions_parser.set_defaults(handler=handle_sessions)
+    sessions_parser.set_defaults(handler=handle_tui_migration)
 
-    memory_parser = subparsers.add_parser("memory", help="review long-term memory candidates")
-    memory_subparsers = memory_parser.add_subparsers(dest="memory_action", required=True)
+    memory_parser = subparsers.add_parser("memory", help=argparse.SUPPRESS)
+    memory_parser.set_defaults(handler=handle_tui_migration)
+    memory_subparsers = memory_parser.add_subparsers(dest="memory_action", required=False)
     memory_list = memory_subparsers.add_parser("list", help="list pending memory candidates")
     _add_memory_common_args(memory_list)
     memory_list.add_argument("--all", action="store_true", help="include confirmed and rejected candidates")
-    memory_list.set_defaults(handler=handle_memory)
+    memory_list.set_defaults(handler=handle_tui_migration)
     memory_confirm = memory_subparsers.add_parser("confirm", help="confirm a pending memory candidate")
     memory_confirm.add_argument("candidate_id", help="candidate id to confirm")
     _add_memory_common_args(memory_confirm)
     memory_confirm.add_argument("--title", help="edited title to commit")
     memory_confirm.add_argument("--body", help="edited body to commit")
     memory_confirm.add_argument("--tag", action="append", help="edited tag; repeat for multiple tags")
-    memory_confirm.set_defaults(handler=handle_memory)
+    memory_confirm.set_defaults(handler=handle_tui_migration)
     memory_reject = memory_subparsers.add_parser("reject", help="reject a pending memory candidate")
     memory_reject.add_argument("candidate_id", help="candidate id to reject")
     _add_memory_common_args(memory_reject)
     memory_reject.add_argument("--reason", default="rejected by user", help="rejection reason")
-    memory_reject.set_defaults(handler=handle_memory)
+    memory_reject.set_defaults(handler=handle_tui_migration)
 
-    tui_parser = subparsers.add_parser("tui", help="open the HaAgent terminal UI")
+    tui_parser = subparsers.add_parser("tui", help=argparse.SUPPRESS)
     tui_parser.add_argument(
         "--workspace-root",
         type=Path,
@@ -89,7 +103,7 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
     )
     _add_runs_root(tui_parser, help_text="directory for assistant session packages (default: .runs)")
     _add_web_flag(tui_parser)
-    tui_parser.set_defaults(handler=handle_tui)
+    tui_parser.set_defaults(handler=handle_tui_migration)
 
     run_parser = subparsers.add_parser("run", help="run a task.yaml file")
     run_parser.add_argument("task_yaml", nargs="?", type=Path, help="path to task.yaml")
@@ -109,11 +123,11 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
     )
     run_parser.set_defaults(handler=lambda args: handle_run(args, runtime))
 
-    chat_parser = subparsers.add_parser("chat", help="run a natural language request")
+    chat_parser = subparsers.add_parser("chat", help=argparse.SUPPRESS)
     chat_parser.add_argument(
         "request",
         nargs="?",
-        help="natural language request to run in the workspace; omit to enter REPL",
+        help="legacy natural language request; use plain haagent and the TUI instead",
     )
     chat_parser.add_argument(
         "--workspace-root",
@@ -128,13 +142,9 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         help="resume the latest chat session for the current workspace",
     )
     _add_runs_root(chat_parser, help_text="directory for assistant session packages (default: .runs)")
-    _add_model_provider(
-        chat_parser,
-        default=None,
-        provider_help="model provider override; omit to use the active profile from haagent setup",
-    )
+    _add_model_provider(chat_parser, default=None)
     _add_web_flag(chat_parser)
-    chat_parser.set_defaults(handler=lambda args: handle_chat(args, runtime))
+    chat_parser.set_defaults(handler=handle_tui_migration)
 
     smoke_parser = subparsers.add_parser("smoke", help="run the minimal HaAgent smoke suite")
     _add_runs_root(smoke_parser, help_text="directory for episode packages (default: .runs)")
@@ -279,7 +289,7 @@ def _add_web_flag(parser: argparse.ArgumentParser) -> None:
         "--web",
         action="store_true",
         dest="enable_web",
-        help="explicitly enable read-only web_search and web_fetch tools for chat",
+        help="explicitly enable read-only web_search and web_fetch tools for the TUI session",
     )
 
 
