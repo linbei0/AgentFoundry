@@ -40,6 +40,7 @@ class ContextManifest:
     next_action: dict[str, Any] | None = None
     memory: dict[str, Any] | None = None
     compaction: dict[str, Any] | None = None
+    source_diagnostics: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         manifest: dict[str, Any] = {
@@ -57,4 +58,6 @@ class ContextManifest:
             manifest["memory"] = self.memory
         if self.compaction is not None:
             manifest["compaction"] = self.compaction
+        if self.source_diagnostics is not None:
+            manifest["source_diagnostics"] = self.source_diagnostics
         return manifest

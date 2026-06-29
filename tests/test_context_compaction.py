@@ -140,8 +140,21 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert compaction["skipped_reasons"] == {}
     assert compaction["diagnostics"][0]["decision"] == "selected"
     assert {record["key"] for record in compaction["diagnostics"]} == {"session_summary"}
+    assert manifest["source_diagnostics"]["session_summary"] == {
+        "present": True,
+        "included": True,
+        "original_chars": len("summary from previous turns"),
+        "model_input_chars": len("summary from previous turns"),
+        "limit": 1000,
+    }
+    assert manifest["source_diagnostics"]["observations"] == {
+        "included_in_model_input": False,
+        "observation_section_count": 0,
+        "reason": "context_builder_does_not_include_observation_sections",
+    }
     assert "diagnostics" not in context.model_input
     assert "compaction" not in context.model_input
+    assert "source_diagnostics" not in context.model_input
 
 
 def test_context_builder_diagnostics_match_real_model_input(tmp_path: Path) -> None:
@@ -184,6 +197,61 @@ def test_context_builder_diagnostics_match_real_model_input(tmp_path: Path) -> N
     assert "...[collapsed " in context.model_input
     assert "SESSION-KEPT" in context.model_input
     assert "task_envelope" not in {record.key for record in context.diagnostics}
+
+
+def test_context_builder_records_memory_source_diagnostics_when_memory_is_skipped(tmp_path: Path, monkeypatch) -> None:
+    writer = _make_writer(tmp_path)
+    memory_block = "\n".join(["Relevant Memory:", "- memory-id: skipped by context budget"])
+    fake_result = _FakeMemoryResult(memory_block)
+    monkeypatch.setattr(ContextBuilder, "_memory_result", lambda self: fake_result)
+
+    compact_budget = ContextBudget(
+        max_total_chars=10,
+        max_section_chars=200,
+        max_tool_observation_chars=1200,
+        keep_recent_observations=4,
+        collapse_head_chars=20,
+        collapse_tail_chars=20,
+    )
+    context = ContextBuilder(
+        task=_task("summarize project"),
+        workspace_root=tmp_path,
+        provider_name="test-provider",
+        episode_writer=writer,
+        compaction_budget=compact_budget,
+    ).build()
+
+    manifest_path = writer.path / "contexts" / f"{context.context_id}-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert "Relevant Memory:" not in context.model_input
+    assert any(record.key == "memory" and record.decision == "skipped" for record in context.diagnostics)
+    assert "memory" in manifest
+    assert manifest["source_diagnostics"]["memory"]["included_in_model_input"] is False
+
+
+class _FakeMemoryResult:
+    def __init__(self, model_block: str) -> None:
+        self.memories = [object()]
+        self._model_block = model_block
+
+    def to_model_block(self) -> str:
+        return self._model_block
+
+    def to_manifest_dict(self) -> dict:
+        return {
+            "used_memories": [{"id": "memory-id"}],
+            "budget": {"max_workspace_items": 6},
+            "diagnostics": {
+                "workspace_index_missing": 0,
+                "user_index_missing": 0,
+                "skipped_inactive": 0,
+                "skipped_deleted": 0,
+                "skipped_missing": 0,
+                "skipped_invalid": 0,
+                "skipped_over_budget": 2,
+            },
+        }
 
 
 def _make_writer(tmp_path: Path) -> EpisodeWriter:

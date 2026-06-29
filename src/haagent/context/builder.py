@@ -148,6 +148,11 @@ class ContextBuilder:
             task_chars=task_chars,
             memory=self._memory_manifest(),
             compaction=_compaction_manifest(compaction),
+            source_diagnostics=_source_diagnostics(
+                session_summary=self._session_summary,
+                memory_manifest=self._memory_manifest(),
+                compaction=compaction,
+            ),
         )
         manifest_path = contexts_dir / f"{context_id}-manifest.json"
         manifest_path.write_text(
@@ -383,6 +388,62 @@ def _context_index_budget(context_id: str, compaction: ContextCompactionResult, 
         "included_source_count": included_count,
         "status": "within_limit" if compaction.final_chars <= budget.max_total_chars else "over_limit",
     }
+
+
+def _source_diagnostics(
+    *,
+    session_summary: str | None,
+    memory_manifest: dict | None,
+    compaction: ContextCompactionResult,
+) -> dict:
+    return {
+        "session_summary": _session_summary_source_diagnostics(session_summary, compaction),
+        "memory": _memory_source_diagnostics(memory_manifest, compaction),
+        "observations": {
+            "included_in_model_input": False,
+            "observation_section_count": 0,
+            "reason": "context_builder_does_not_include_observation_sections",
+        },
+    }
+
+
+def _session_summary_source_diagnostics(
+    session_summary: str | None,
+    compaction: ContextCompactionResult,
+) -> dict:
+    original = (session_summary or "").strip()
+    record = _diagnostic_record(compaction, "session_summary")
+    return {
+        "present": bool(original),
+        "included": record is not None and record.decision != "skipped",
+        "original_chars": len(original),
+        "model_input_chars": record.final_chars if record is not None and record.decision != "skipped" else 0,
+        "limit": SESSION_SUMMARY_CHAR_LIMIT,
+    }
+
+
+def _memory_source_diagnostics(memory_manifest: dict | None, compaction: ContextCompactionResult) -> dict:
+    diagnostics = memory_manifest.get("diagnostics", {}) if isinstance(memory_manifest, dict) else {}
+    used_memories = memory_manifest.get("used_memories", []) if isinstance(memory_manifest, dict) else []
+    budget = memory_manifest.get("budget", {}) if isinstance(memory_manifest, dict) else {}
+    record = _diagnostic_record(compaction, "memory")
+    return {
+        "used_count": len(used_memories) if isinstance(used_memories, list) else 0,
+        "skipped_over_budget": int(diagnostics.get("skipped_over_budget", 0)) if isinstance(diagnostics, dict) else 0,
+        "diagnostics": dict(diagnostics) if isinstance(diagnostics, dict) else {},
+        "budget": dict(budget) if isinstance(budget, dict) else {},
+        "included_in_model_input": record is not None and record.decision != "skipped",
+    }
+
+
+def _diagnostic_record(
+    compaction: ContextCompactionResult,
+    key: str,
+) -> ContextSelectionRecord | None:
+    for record in compaction.diagnostics:
+        if record.key == key:
+            return record
+    return None
 
 
 def _reason_counts(records: list[ContextSelectionRecord]) -> dict[str, int]:

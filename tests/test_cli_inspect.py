@@ -581,6 +581,24 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
                     "skipped_reasons": {"over_total_budget": 1},
                     "diagnostics": [],
                 },
+                "source_diagnostics": {
+                    "session_summary": {
+                        "present": True,
+                        "included": True,
+                        "original_chars": 512,
+                        "model_input_chars": 512,
+                        "limit": 1000,
+                    },
+                    "memory": {
+                        "used_count": 3,
+                        "skipped_over_budget": 2,
+                        "included_in_model_input": True,
+                    },
+                    "observations": {
+                        "included_in_model_input": False,
+                        "observation_section_count": 0,
+                    },
+                },
             },
         ),
         encoding="utf-8",
@@ -609,6 +627,9 @@ def test_cli_inspect_outputs_context_compaction_summary(tmp_path: Path) -> None:
     assert "- 0001: contexts/0001.json | contexts/0001-manifest.json" in output
     assert "compaction: original=1000 final=300 saved=700 selected=2 collapsed=1 skipped=1" in output
     assert "skipped_reasons: over_total_budget=1" in output
+    assert "source_diagnostics: session_summary included=true chars=512/1000" in output
+    assert "source_diagnostics: memory used=3 skipped_over_budget=2 included=true" in output
+    assert "source_diagnostics: observations included=false sections=0" in output
 
 
 def test_cli_inspect_outputs_tool_argument_errors(tmp_path: Path, capsys) -> None:

@@ -332,6 +332,11 @@ def test_context_builder_injects_compact_memory_and_manifest_audit(tmp_path: Pat
     assert manifest["memory"]["used_memories"][0]["id"] == memory_id
     assert manifest["memory"]["budget"]["max_workspace_items"] == 6
     assert "diagnostics" in manifest["memory"]
+    memory_source = manifest["source_diagnostics"]["memory"]
+    assert memory_source["used_count"] == 1
+    assert memory_source["skipped_over_budget"] == manifest["memory"]["diagnostics"]["skipped_over_budget"]
+    assert memory_source["budget"] == manifest["memory"]["budget"]
+    assert memory_source["included_in_model_input"] is True
 
 
 def _make_writer(tmp_path: Path) -> EpisodeWriter:

@@ -139,6 +139,36 @@ def _format_context_compaction(episode_path: Path, context: dict[str, Any]) -> l
     if isinstance(skipped_reasons, dict) and skipped_reasons:
         reason_parts = [f"{reason}={count}" for reason, count in sorted(skipped_reasons.items())]
         lines.append(f"  skipped_reasons: {', '.join(reason_parts)}")
+    lines.extend(_format_source_diagnostics(context_manifest.get("source_diagnostics")))
+    return lines
+
+
+def _format_source_diagnostics(source_diagnostics: Any) -> list[str]:
+    if not isinstance(source_diagnostics, dict):
+        return []
+    lines: list[str] = []
+    session = source_diagnostics.get("session_summary")
+    if isinstance(session, dict):
+        lines.append(
+            "  source_diagnostics: session_summary "
+            f"included={_format_bool(session.get('included'))} "
+            f"chars={session.get('model_input_chars', 0)}/{session.get('limit', 0)}",
+        )
+    memory = source_diagnostics.get("memory")
+    if isinstance(memory, dict):
+        lines.append(
+            "  source_diagnostics: memory "
+            f"used={memory.get('used_count', 0)} "
+            f"skipped_over_budget={memory.get('skipped_over_budget', 0)} "
+            f"included={_format_bool(memory.get('included_in_model_input'))}",
+        )
+    observations = source_diagnostics.get("observations")
+    if isinstance(observations, dict):
+        lines.append(
+            "  source_diagnostics: observations "
+            f"included={_format_bool(observations.get('included_in_model_input'))} "
+            f"sections={observations.get('observation_section_count', 0)}",
+        )
     return lines
 
 
