@@ -6,7 +6,10 @@ from pathlib import Path
 from haagent.context.builder import ContextBuilder
 from haagent.context.compaction import (
     ContextBudget,
+    ContextCompactionResult,
     ContextSection,
+    ContextSelectionRecord,
+    assess_compact_readiness,
     compact_context_sections,
 )
 from haagent.runtime.episode import EpisodeWriter
@@ -115,6 +118,65 @@ def test_no_compaction_when_under_budget() -> None:
     assert result.final_chars == len("alphabeta")
 
 
+def test_compact_readiness_is_sufficient_under_budget() -> None:
+    result = ContextCompactionResult(
+        sections=[],
+        diagnostics=[
+            ContextSelectionRecord("a", "test", "task", "selected", "within_budget", 40, 40, 10),
+        ],
+        original_chars=50,
+        final_chars=40,
+    )
+
+    readiness = assess_compact_readiness(result, ContextBudget(max_total_chars=100))
+
+    assert readiness["status"] == "deterministic_sufficient"
+    assert readiness["budget_pressure"] == 0.4
+    assert readiness["saved_ratio"] == 0.2
+    assert readiness["recommendation"] == "keep_deterministic"
+    assert readiness["reasons"] == ["within_budget_after_compaction"]
+
+
+def test_compact_readiness_watches_near_budget_limit() -> None:
+    result = ContextCompactionResult(
+        sections=[],
+        diagnostics=[
+            ContextSelectionRecord("a", "test", "task", "selected", "within_budget", 84, 84, 10),
+        ],
+        original_chars=100,
+        final_chars=84,
+    )
+
+    readiness = assess_compact_readiness(result, ContextBudget(max_total_chars=100))
+
+    assert readiness["status"] == "watch"
+    assert readiness["recommendation"] == "keep_deterministic"
+    assert "near_budget_limit" in readiness["reasons"]
+
+
+def test_compact_readiness_marks_full_compact_candidate_for_severe_pressure() -> None:
+    result = ContextCompactionResult(
+        sections=[],
+        diagnostics=[
+            ContextSelectionRecord("kept", "test", "task", "selected", "within_budget", 60, 60, 10),
+            ContextSelectionRecord("collapsed", "test", "memory", "collapsed", "section_over_budget", 100, 35, 9),
+            ContextSelectionRecord("skipped", "test", "memory", "skipped", "over_total_budget", 80, 0, 1),
+        ],
+        original_chars=240,
+        final_chars=95,
+    )
+
+    readiness = assess_compact_readiness(result, ContextBudget(max_total_chars=100))
+
+    assert readiness["status"] == "full_compact_candidate"
+    assert readiness["recommendation"] == "evaluate_full_compact"
+    assert readiness["skipped_count"] == 1
+    assert readiness["collapsed_count"] == 1
+    assert "near_budget_limit" in readiness["reasons"]
+    assert "skipped_context_present" in readiness["reasons"]
+    assert "collapsed_context_present" in readiness["reasons"]
+
+
 def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: Path) -> None:
     writer = _make_writer(tmp_path)
     context = ContextBuilder(
@@ -140,6 +202,8 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert compaction["skipped_reasons"] == {}
     assert compaction["diagnostics"][0]["decision"] == "selected"
     assert {record["key"] for record in compaction["diagnostics"]} == {"session_summary"}
+    assert manifest["compact_readiness"]["status"] == "deterministic_sufficient"
+    assert manifest["compact_readiness"]["recommendation"] == "keep_deterministic"
     assert manifest["source_diagnostics"]["session_summary"] == {
         "present": True,
         "included": True,
@@ -155,6 +219,7 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert "diagnostics" not in context.model_input
     assert "compaction" not in context.model_input
     assert "source_diagnostics" not in context.model_input
+    assert "compact_readiness" not in context.model_input
 
 
 def test_context_builder_diagnostics_match_real_model_input(tmp_path: Path) -> None:

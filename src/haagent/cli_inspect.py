@@ -140,6 +140,24 @@ def _format_context_compaction(episode_path: Path, context: dict[str, Any]) -> l
         reason_parts = [f"{reason}={count}" for reason, count in sorted(skipped_reasons.items())]
         lines.append(f"  skipped_reasons: {', '.join(reason_parts)}")
     lines.extend(_format_source_diagnostics(context_manifest.get("source_diagnostics")))
+    lines.extend(_format_compact_readiness(context_manifest.get("compact_readiness")))
+    return lines
+
+
+def _format_compact_readiness(compact_readiness: Any) -> list[str]:
+    if not isinstance(compact_readiness, dict):
+        return []
+    lines = [
+        "  compact_readiness: "
+        f"status={compact_readiness.get('status', 'unknown')} "
+        f"pressure={compact_readiness.get('budget_pressure', 0)} "
+        f"saved_ratio={compact_readiness.get('saved_ratio', 0)} "
+        f"recommendation={compact_readiness.get('recommendation', 'unknown')}",
+    ]
+    reasons = compact_readiness.get("reasons")
+    if isinstance(reasons, list) and reasons:
+        reason_text = ", ".join(str(reason) for reason in reasons)
+        lines.append(f"  readiness_reasons: {reason_text}")
     return lines
 
 

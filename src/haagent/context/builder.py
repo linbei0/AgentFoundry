@@ -16,6 +16,7 @@ from haagent.context.compaction import (
     ContextCompactionResult,
     ContextSection,
     ContextSelectionRecord,
+    assess_compact_readiness,
     compact_context_sections,
 )
 from haagent.context.manifest import (
@@ -153,6 +154,7 @@ class ContextBuilder:
                 memory_manifest=self._memory_manifest(),
                 compaction=compaction,
             ),
+            compact_readiness=assess_compact_readiness(compaction, self._compaction_budget),
         )
         manifest_path = contexts_dir / f"{context_id}-manifest.json"
         manifest_path.write_text(

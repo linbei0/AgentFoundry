@@ -54,6 +54,46 @@ class ContextCompactionResult:
     final_chars: int
 
 
+def assess_compact_readiness(
+    compaction: ContextCompactionResult,
+    budget: ContextBudget = ContextBudget(),
+) -> dict:
+    """基于确定性压缩结果评估是否需要关注 full compact 候选。"""
+    skipped_count = sum(1 for record in compaction.diagnostics if record.decision == "skipped")
+    collapsed_count = sum(1 for record in compaction.diagnostics if record.decision == "collapsed")
+    budget_pressure = _ratio(compaction.final_chars, budget.max_total_chars)
+    saved_ratio = _ratio(compaction.original_chars - compaction.final_chars, compaction.original_chars)
+
+    reasons: list[str] = []
+    if budget_pressure >= 0.8:
+        reasons.append("near_budget_limit")
+    if skipped_count:
+        reasons.append("skipped_context_present")
+    if collapsed_count:
+        reasons.append("collapsed_context_present")
+
+    if budget_pressure >= 0.9 and (skipped_count or collapsed_count):
+        status = "full_compact_candidate"
+        recommendation = "evaluate_full_compact"
+    elif reasons:
+        status = "watch"
+        recommendation = "keep_deterministic"
+    else:
+        status = "deterministic_sufficient"
+        recommendation = "keep_deterministic"
+        reasons = ["within_budget_after_compaction"]
+
+    return {
+        "status": status,
+        "budget_pressure": budget_pressure,
+        "saved_ratio": saved_ratio,
+        "skipped_count": skipped_count,
+        "collapsed_count": collapsed_count,
+        "recommendation": recommendation,
+        "reasons": reasons,
+    }
+
+
 def compact_context_sections(
     sections: list[ContextSection],
     budget: ContextBudget = ContextBudget(),
@@ -178,3 +218,9 @@ def _selection_key(candidate: tuple[int, ContextSection, str, ContextDecision, s
     index, section, _content, _decision, _reason = candidate
     recent_rank = section.recent_rank if section.recent_rank is not None else 1_000_000
     return (-section.priority, recent_rank, index)
+
+
+def _ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator, 4)
