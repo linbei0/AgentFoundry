@@ -50,6 +50,7 @@ CHAT_ALLOWED_TOOLS = [
     "apply_patch_set",
     "shell",
 ]
+CHAT_WEB_TOOLS = ["web_search", "web_fetch"]
 CHAT_APPROVED_TOOLS = ["file_write", "code_run", "apply_patch", "apply_patch_set", "shell"]
 CHAT_MAX_TURNS = 20
 SESSION_SUMMARY_CHAR_LIMIT = 1000
@@ -141,6 +142,7 @@ class AgentSession:
         max_turns: int = CHAT_MAX_TURNS,
         session_id: str | None = None,
         memory_extraction_enabled: bool = True,
+        enable_web: bool = False,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.runs_root = runs_root
@@ -150,6 +152,7 @@ class AgentSession:
         self.model_base_url = model_base_url
         self.max_turns = max_turns
         self.memory_extraction_enabled = memory_extraction_enabled
+        self.enable_web = enable_web
         self.session_id = session_id or _new_session_id()
         self.turn_count = 0
         self._summaries: list[str] = []
@@ -171,6 +174,7 @@ class AgentSession:
         model_name: str | None = None,
         model_base_url: str | None = None,
         max_turns: int = CHAT_MAX_TURNS,
+        enable_web: bool = False,
     ) -> "AgentSession":
         session_path = _resolve_session_path(session, runs_root or Path(".runs"))
         metadata = _read_session_metadata(session_path)
@@ -185,6 +189,7 @@ class AgentSession:
         instance.model_base_url = model_base_url or _optional_string(metadata.get("base_url"))
         instance.max_turns = max_turns
         instance.memory_extraction_enabled = True
+        instance.enable_web = enable_web
         instance.session_id = str(metadata["session_id"])
         instance.turn_count = int(metadata["turn_count"])
         instance._summaries = _bounded_summaries([str(turn["summary"]) for turn in turns])
@@ -246,7 +251,7 @@ class AgentSession:
 
         with tempfile.TemporaryDirectory(prefix="haagent-chat-") as task_dir:
             task_path = Path(task_dir) / "task.yaml"
-            _write_chat_task_yaml(task_path, clean_prompt, self.workspace_root)
+            _write_chat_task_yaml(task_path, clean_prompt, self.workspace_root, enable_web=self.enable_web)
             result = RunOrchestrator(
                 runs_root=self.runs_root,
                 model_gateway=self.model_gateway,
@@ -539,6 +544,7 @@ class AgentSession:
             "model_profile_name": self.model_profile_name,
             "model": self.model_name,
             "base_url": self.model_base_url,
+            "enable_web": self.enable_web,
             "created_at": created_at,
             "updated_at": datetime.now(UTC).isoformat(),
             "turn_count": self.turn_count,
@@ -549,12 +555,15 @@ class AgentSession:
         )
 
 
-def _write_chat_task_yaml(path: Path, request: str, workspace_root: Path) -> None:
+def _write_chat_task_yaml(path: Path, request: str, workspace_root: Path, *, enable_web: bool = False) -> None:
+    allowed_tools = list(CHAT_ALLOWED_TOOLS)
+    if enable_web:
+        allowed_tools.extend(CHAT_WEB_TOOLS)
     task = {
         "goal": request,
         "workspace_root": str(workspace_root.resolve()),
         "constraints": [],
-        "allowed_tools": list(CHAT_ALLOWED_TOOLS),
+        "allowed_tools": allowed_tools,
         "acceptance_criteria": ["Complete the requested chat task."],
         "verification_commands": [],
         "policy": {

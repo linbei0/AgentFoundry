@@ -38,6 +38,39 @@ uv run haagent --continue
 uv run haagent chat --resume <session-id>
 ```
 
+## 联网搜索
+
+普通聊天默认不会联网。需要联网搜索或读取公网网页时，显式加 `--web`：
+
+```powershell
+$env:TAVILY_API_KEY = "tvly-..."
+uv run haagent --web
+uv run haagent tui --web
+uv run haagent chat --web "查找最近的 Python packaging 变更并总结来源"
+```
+
+TUI 内也可以随时显式切换联网能力：
+
+```text
+/web
+```
+
+第一版联网能力是 HaAgent 原生只读工具：
+
+- `web_search`: 默认使用 Tavily，返回标题、URL 和摘要；可用 `HAAGENT_WEB_SEARCH_PROVIDER=brave` 切换 Brave。
+- `web_fetch`: 读取单个公网 HTTP(S) URL，返回清洗后的紧凑文本。
+
+可选环境变量：
+
+- `TAVILY_API_KEY`: Tavily 搜索 API key，默认搜索后端需要。
+- `BRAVE_SEARCH_API_KEY`: Brave Search API key，`HAAGENT_WEB_SEARCH_PROVIDER=brave` 时需要。
+- `HAAGENT_WEB_SEARCH_PROVIDER`: `tavily` 或 `brave`，未设置时为 `tavily`。
+- `HAAGENT_WEB_PROXY`: 联网工具使用的 HTTP(S) 代理；不允许在代理 URL 中嵌入用户名或密码。
+
+联网工具只读、可审计，并且所有调用仍经过 `ToolRouter` 写入 episode trace。`web_fetch` 会拒绝 localhost、私网、metadata、单标签 hostname 和带凭据的 URL，并把网页内容标记为外部不可信数据。
+
+第一版不包含 OpenAI Hosted Web Search、DuckDuckGo HTML 解析或真实浏览器自动化；这些能力后续只会作为显式高级方案考虑。
+
 ## 高级入口
 
 `task.yaml`、`haagent run`、`inspect`、`export-eval`、`eval`、`dogfood` 和 episode package 是开发、复现、验证和评估能力。它们保留可用，但不是普通用户入门路径。

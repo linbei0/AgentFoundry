@@ -24,7 +24,7 @@ from haagent.tui.file_refs import fuzzy_file_matches, path_reference_token
 from haagent.tui.keys import footer_text, help_body, key_help_lines
 from haagent.tui.models import ModelCatalogLoadingOverlay
 from haagent.tui.copy import MODAL_TITLES, PANEL_TITLES
-from haagent.tui.renderers import memory_panel_text, status_line
+from haagent.tui.renderers import memory_panel_text, side_bar, status_line
 from haagent.tui.search import ConversationSearchState
 from haagent.tui.sessions import SessionOverlayState
 from haagent.tui.state import ResponsiveLayout, layout_for_size
@@ -65,6 +65,7 @@ class FakeAssistantService:
         memory_error: Exception | None = None,
         current_session_id: str = "session-test",
         sessions: list[AssistantSessionSummary] | None = None,
+        enable_web: bool = False,
     ) -> None:
         self.workspace_root = workspace_root
         self.profile_name = profile_name
@@ -86,6 +87,7 @@ class FakeAssistantService:
         self.memory_error = memory_error
         self.current_session_id = current_session_id
         self.sessions = list(sessions or [])
+        self.enable_web = enable_web
         self.started = threading.Event()
         self.release = threading.Event()
         self.prompts: list[str] = []
@@ -133,6 +135,7 @@ class FakeAssistantService:
             profile_error=self.profile_error,
             current_session_id=self.current_session_id,
             current_turn_count=len(self.prompts),
+            web_enabled=self.enable_web,
         )
 
     def run_prompt_events(self, prompt: str, *, event_sink=None, interaction_handler=None):
@@ -263,6 +266,10 @@ class FakeAssistantService:
                 **{**profile.__dict__, "active": profile.name == profile_name},
             )
 
+    def set_web_enabled(self, enabled: bool) -> AssistantWorkspaceStatus:
+        self.enable_web = enabled
+        return self.get_workspace_status()
+
     def delete_model_profile(self, profile_name: str) -> None:
         self.deleted_model_profile = profile_name
         self.model_profiles = [profile for profile in self.model_profiles if profile.name != profile_name]
@@ -275,6 +282,7 @@ class FakeAssistantService:
             session_path=self.workspace_root / ".runs" / "sessions" / session_id,
             turn_count=len(self.prompts),
             provider=self.provider or "-",
+            web_enabled=self.enable_web,
         )
 
     def list_memory_candidates(self, status: str | None = "pending") -> list[MemoryCandidate]:
@@ -464,6 +472,15 @@ def test_tui_status_line_renderer_truncates_to_terminal_width(tmp_path: Path) ->
     assert "state: running" in line_120
 
 
+def test_tui_status_renderers_show_explicit_web_state(tmp_path: Path) -> None:
+    offline = FakeAssistantService(workspace_root=tmp_path / "offline").get_workspace_status()
+    online = FakeAssistantService(workspace_root=tmp_path / "online", enable_web=True).get_workspace_status()
+
+    assert "web:off" in status_line(offline, ui_state="idle", width=120)
+    assert "web:on" in status_line(online, ui_state="idle", width=120)
+    assert "web: on" in side_bar(online, ui_state="idle", last_failure=None)
+
+
 def test_tui_keymap_help_and_footer_share_context_definitions() -> None:
     for context in ("chat", "memory_list", "memory_detail", "pending_input", "approval", "too_small"):
         footer = footer_text(context)
@@ -600,8 +617,44 @@ def test_tui_slash_command_registry_parses_known_and_unknown_commands() -> None:
         "new",
         "resume",
         "model",
+        "web",
     }
     assert "models" not in {command.name for command in registry.commands()}
+
+
+def test_tui_web_command_toggles_networking_inside_app(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path)
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert "web:off" in _text(app, "#status-bar")
+
+            prompt_input = app.query_one("#prompt-input")
+            prompt_input.value = "/web on"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.enable_web is False
+            assert "用法：/web" in _text(app, "#conversation")
+
+            prompt_input.value = "/web"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.enable_web is True
+            assert "web:on" in _text(app, "#status-bar")
+            assert "联网已开启" in _text(app, "#conversation")
+
+            prompt_input.value = "/web"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert service.enable_web is False
+            assert "web:off" in _text(app, "#status-bar")
+            assert "联网已关闭" in _text(app, "#conversation")
+
+    asyncio.run(run())
 
 
 def test_tui_conversation_search_state_tracks_matches_and_navigation() -> None:

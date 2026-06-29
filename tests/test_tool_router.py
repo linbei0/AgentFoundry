@@ -86,6 +86,47 @@ def test_start_memory_update_sets_runtime_flag_and_writes_trace(tmp_path: Path) 
     assert record["result"]["memory_update_requested"] is True
 
 
+def test_medium_risk_web_fetch_runs_without_high_risk_approval(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["web_fetch"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+    )
+    calls = []
+
+    def handler(args):
+        calls.append(args)
+        return {
+            "status": "success",
+            "final_url": args["url"],
+            "status_code": 200,
+            "content_type": "text/plain",
+            "content": "ok",
+            "truncated": False,
+        }
+
+    router._handlers["web_fetch"] = handler
+
+    result = router.dispatch("web_fetch", {"url": "https://example.com/"})
+
+    assert result["status"] == "success"
+    assert calls == [{"url": "https://example.com/"}]
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "web_fetch"
+    assert record["policy"] == {
+        "tool_name": "web_fetch",
+        "risk_level": "medium",
+        "action": "allow",
+        "reason": "policy allows medium risk tool web_fetch",
+        "approval": {
+            "required": False,
+            "status": "not_required",
+            "reason": "approval not required for medium risk tool web_fetch",
+        },
+    }
+
+
 def test_tool_router_rejects_disallowed_tool(tmp_path: Path) -> None:
     writer = make_writer(tmp_path)
     router = ToolRouter(allowed_tools=[], episode_writer=writer, workspace_root=tmp_path)

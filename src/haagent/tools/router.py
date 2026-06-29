@@ -28,6 +28,7 @@ from haagent.tools.code_run import code_run
 from haagent.tools.file_tools import apply_patch, apply_patch_set, context_find, file_list, file_read, file_search, file_write
 from haagent.tools.registry import TOOL_REGISTRY, validate_tool_registry
 from haagent.tools.shell import shell
+from haagent.tools.web import web_fetch, web_search
 
 
 class ToolRouter:
@@ -52,6 +53,8 @@ class ToolRouter:
             "file_read": lambda args: file_read(args, self._workspace_root),
             "request_user_input": self._request_user_input_without_handler,
             "start_memory_update": self._start_memory_update,
+            "web_search": web_search,
+            "web_fetch": web_fetch,
             "file_write": lambda args: file_write(args, self._workspace_root),
             "code_run": lambda args: code_run(args, self._workspace_root),
             "apply_patch": lambda args: apply_patch(args, self._workspace_root),

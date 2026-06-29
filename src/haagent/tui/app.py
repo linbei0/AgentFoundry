@@ -329,12 +329,27 @@ class HaAgentTuiApp(App[None]):
             self.action_focus_tools()
             if self.query_one("#side-bar", SideBar).has_class("hidden"):
                 self.action_open_tool_details()
+        elif command.action == "web":
+            self._handle_web_command(result.argument)
         elif command.action == "cancel_task":
             self.action_cancel_current_task()
         elif command.action == "new_session":
             self.action_new_session()
         elif command.action == "resume_latest":
             self.action_resume_latest()
+
+    def _handle_web_command(self, argument: str) -> None:
+        value = argument.strip().lower()
+        if value:
+            self._append_block("Command", "用法：/web")
+            self._refresh()
+            return
+        status = self.service.get_workspace_status()
+        enabled = not status.web_enabled
+        self.service.set_web_enabled(enabled)
+        state = "开启" if enabled else "关闭"
+        self._append_block("Command", f"联网已{state}；后续任务可使用 web_search / web_fetch。")
+        self._refresh()
 
     def _handle_session_overlay_result(self, result: SessionOverlayResult | None) -> None:
         if result is None:

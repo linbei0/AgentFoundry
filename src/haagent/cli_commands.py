@@ -118,6 +118,7 @@ def handle_chat(args, runtime: CliRuntime) -> int:
                 runs_root=runs_root,
                 model_gateway=model_gateway,
                 max_turns=CHAT_MAX_TURNS,
+                enable_web=bool(getattr(args, "enable_web", False)),
             )
         elif args.resume is None:
             session = runtime.session_cls(
@@ -125,6 +126,7 @@ def handle_chat(args, runtime: CliRuntime) -> int:
                 runs_root=runs_root,
                 model_gateway=model_gateway,
                 max_turns=CHAT_MAX_TURNS,
+                enable_web=bool(getattr(args, "enable_web", False)),
             )
         else:
             session = runtime.session_cls.resume(
@@ -132,6 +134,7 @@ def handle_chat(args, runtime: CliRuntime) -> int:
                 runs_root=runs_root,
                 model_gateway=model_gateway,
                 max_turns=CHAT_MAX_TURNS,
+                enable_web=bool(getattr(args, "enable_web", False)),
             )
     except ChatSessionError as error:
         print(f"error: {error}")
@@ -267,7 +270,11 @@ def handle_tui(args) -> int:
     from haagent.tui.app import run_tui
 
     workspace_root = args.workspace_root if args.workspace_root is not None else Path.cwd()
-    service = AssistantService(workspace_root=workspace_root, runs_root=args.runs_root)
+    service = AssistantService(
+        workspace_root=workspace_root,
+        runs_root=args.runs_root,
+        enable_web=bool(getattr(args, "enable_web", False)),
+    )
     return run_tui(service)
 
 

@@ -46,6 +46,7 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         default=None,
         provider_help="model provider override; omit to use the active profile from haagent setup",
     )
+    _add_web_flag(parser)
     parser.set_defaults(command="chat", request=None, handler=lambda args: handle_chat(args, runtime))
     subparsers = parser.add_subparsers(dest="command", required=False)
 
@@ -87,6 +88,7 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         help="workspace root for the TUI session (default: current directory)",
     )
     _add_runs_root(tui_parser, help_text="directory for assistant session packages (default: .runs)")
+    _add_web_flag(tui_parser)
     tui_parser.set_defaults(handler=handle_tui)
 
     run_parser = subparsers.add_parser("run", help="run a task.yaml file")
@@ -131,6 +133,7 @@ def build_cli_parser(runtime: CliRuntime) -> argparse.ArgumentParser:
         default=None,
         provider_help="model provider override; omit to use the active profile from haagent setup",
     )
+    _add_web_flag(chat_parser)
     chat_parser.set_defaults(handler=lambda args: handle_chat(args, runtime))
 
     smoke_parser = subparsers.add_parser("smoke", help="run the minimal HaAgent smoke suite")
@@ -269,6 +272,15 @@ def _add_model_provider(
         parser.add_argument("--profile", help="provider profile name from .haagent/providers.json")
     parser.add_argument("--model", help=model_help)
     parser.add_argument("--base-url", help=base_url_help)
+
+
+def _add_web_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        dest="enable_web",
+        help="explicitly enable read-only web_search and web_fetch tools for chat",
+    )
 
 
 def _add_max_turns(parser: argparse.ArgumentParser, *, default: int, help_text: str) -> None:

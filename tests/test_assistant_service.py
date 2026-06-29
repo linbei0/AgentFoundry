@@ -62,6 +62,7 @@ class RecordingSession:
         model_name: str | None = None,
         model_base_url: str | None = None,
         max_turns: int,
+        enable_web: bool = False,
     ) -> None:
         self.session_id = "session-from-default-registry"
         self.workspace_root = workspace_root
@@ -71,6 +72,7 @@ class RecordingSession:
         self.model_name = model_name
         self.model_base_url = model_base_url
         self.max_turns = max_turns
+        self.enable_web = enable_web
         self.session_path = runs_root / self.session_id
 
     def switch_model_gateway(
@@ -513,6 +515,51 @@ def test_create_new_session_uses_registry_as_default_gateway_factory(tmp_path: P
 
     assert service.gateway_factory is gateway_from_profile
     assert isinstance(service._session.model_gateway, OpenAIChatCompletionsGateway)
+
+
+def test_service_web_flag_is_reported_and_passed_to_new_session(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    _write_user_profile(Path.home())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = AssistantService(
+        workspace_root=workspace,
+        runs_root=tmp_path / ".runs",
+        environ={"DEEPSEEK_API_KEY": "secret"},
+        gateway_factory=lambda profile: RecordingGateway(profile.name),
+        session_cls=RecordingSession,
+        enable_web=True,
+    )
+
+    status = service.get_workspace_status()
+    session = service.create_session()
+
+    assert status.web_enabled is True
+    assert session.web_enabled is True
+    assert service._session.enable_web is True
+
+
+def test_service_can_toggle_web_for_current_and_future_sessions(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    _write_user_profile(Path.home())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = AssistantService(
+        workspace_root=workspace,
+        runs_root=tmp_path / ".runs",
+        environ={"DEEPSEEK_API_KEY": "secret"},
+        gateway_factory=lambda profile: RecordingGateway(profile.name),
+        session_cls=RecordingSession,
+    )
+
+    service.set_web_enabled(True)
+    session = service.create_session()
+    service.set_web_enabled(False)
+
+    assert session.web_enabled is True
+    assert service.get_workspace_status().web_enabled is False
+    assert service.current_session().web_enabled is False
+    assert service._session.enable_web is False
 
 
 def test_service_switches_current_session_model_without_changing_default(

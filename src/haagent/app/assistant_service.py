@@ -87,6 +87,7 @@ class AssistantWorkspaceStatus:
     profile_error: str | None = None
     current_session_id: str | None = None
     current_turn_count: int | None = None
+    web_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class AssistantSessionStatus:
     model_profile_name: str | None = None
     model: str | None = None
     base_url: str | None = None
+    web_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,7 @@ class AssistantService:
         gateway_factory: GatewayFactory | None = None,
         session_cls: type[AgentSession] = AgentSession,
         max_turns: int = CHAT_MAX_TURNS,
+        enable_web: bool = False,
     ) -> None:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
         self.runs_root = runs_root
@@ -170,6 +173,7 @@ class AssistantService:
         self.gateway_factory = gateway_factory or gateway_from_profile
         self.session_cls = session_cls
         self.max_turns = max_turns
+        self.enable_web = enable_web
         self._session: AgentSession | None = None
         self._pending_model_profile_name: str | None = None
 
@@ -217,12 +221,19 @@ class AssistantService:
             profile_error=profile_error,
             current_session_id=session_status.session_id if session_status is not None else None,
             current_turn_count=session_status.turn_count if session_status is not None else None,
+            web_enabled=self.enable_web,
         )
 
     def current_session(self) -> AssistantSessionStatus | None:
         if self._session is None:
             return None
         return _session_status(self._session)
+
+    def set_web_enabled(self, enabled: bool) -> AssistantWorkspaceStatus:
+        self.enable_web = enabled
+        if self._session is not None:
+            self._session.enable_web = enabled
+        return self.get_workspace_status()
 
     def create_session(self) -> AssistantSessionStatus:
         try:
@@ -235,6 +246,7 @@ class AssistantService:
                 model_name=profile.model,
                 model_base_url=profile.base_url,
                 max_turns=self.max_turns,
+                enable_web=self.enable_web,
             )
         except ProviderProfileError as error:
             raise AssistantServiceError(str(error)) from error
@@ -251,6 +263,7 @@ class AssistantService:
                 model_name=profile.model,
                 model_base_url=profile.base_url,
                 max_turns=self.max_turns,
+                enable_web=self.enable_web,
             )
         except (ChatSessionError, ProviderProfileError) as error:
             raise AssistantServiceError(str(error)) from error
@@ -392,6 +405,7 @@ class AssistantService:
                     model_profile_name=profile.name,
                     model=profile.model,
                     base_url=profile.base_url,
+                    web_enabled=self.enable_web,
                 )
             gateway = self.gateway_factory(profile)
             self._session.switch_model_gateway(
@@ -501,6 +515,7 @@ def _session_status(session: AgentSession) -> AssistantSessionStatus:
         model_profile_name=getattr(session, "model_profile_name", None),
         model=getattr(session, "model_name", None),
         base_url=getattr(session, "model_base_url", None),
+        web_enabled=getattr(session, "enable_web", False),
     )
 
 

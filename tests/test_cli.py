@@ -31,3 +31,31 @@ def test_cli_run_parser_accepts_goal_authoring_arguments() -> None:
     assert args.workspace_root == Path("examples/workspaces/hello")
     assert args.verify == "uv run pytest"
     assert args.provider == "fake"
+
+
+def test_cli_chat_parser_accepts_explicit_web_flag() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["chat", "--web", "Search current docs", "--provider", "fake"])
+
+    assert args.command == "chat"
+    assert args.request == "Search current docs"
+    assert args.enable_web is True
+
+
+def test_default_chat_parser_accepts_explicit_web_flag() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["--web", "--provider", "fake"])
+
+    assert args.request is None
+    assert args.enable_web is True
+
+
+def test_cli_tui_parser_accepts_explicit_web_flag() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(["tui", "--web"])
+
+    assert args.command == "tui"
+    assert args.enable_web is True

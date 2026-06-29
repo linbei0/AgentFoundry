@@ -21,7 +21,7 @@ from haagent.tui.utils import safe_summary, short_session, truncate_end, truncat
 
 def status_line(status: AssistantWorkspaceStatus, *, ui_state: str, width: int) -> str:
     width = max(1, width or 120)
-    workspace_limit = 5 if width <= 80 else 16
+    workspace_limit = 5 if width <= 80 else 4 if width <= 120 else 16
     model_limit = 4 if width <= 80 else 14
     session_limit = 4 if width <= 80 else 12
     turn_count = status.current_turn_count if status.current_turn_count is not None else 0
@@ -30,10 +30,12 @@ def status_line(status: AssistantWorkspaceStatus, *, ui_state: str, width: int) 
         if width <= 80
         else f"{truncate_end(status.provider or '-', 14)}/{truncate_end(status.model or '-', model_limit)}"
     )
+    web_label = "web:on " if status.web_enabled else "web:off " if width > 80 else ""
     prefix = (
         f"ws:{workspace_label(status.workspace_root, workspace_limit)} "
         f"profile: {truncate_end(status.profile_name or 'missing', 12)} "
         f"{provider_model} "
+        f"{web_label}"
         f"key: {compact_key_state(status)} "
         f"turn:{turn_count} "
         f"sid:{short_session(status.current_session_id or '-', session_limit)}"
@@ -72,7 +74,8 @@ def side_bar(
         f"{format_last_failure(last_failure)}\n\n"
         f"{PANEL_TITLES['workspace']}\n"
         f"  root: {status.workspace_root}\n"
-        f"  runs: {status.runs_root}\n\n"
+        f"  runs: {status.runs_root}\n"
+        f"  web: {web_state(status)}\n\n"
         f"{PANEL_TITLES['profile']}\n"
         f"  name: {status.profile_name or 'missing'}\n"
         f"  provider: {status.provider or '-'}\n"
@@ -207,6 +210,10 @@ def key_state(status: AssistantWorkspaceStatus) -> str:
 
 def compact_key_state(status: AssistantWorkspaceStatus) -> str:
     return "ok" if status.api_key_available else "missing"
+
+
+def web_state(status: AssistantWorkspaceStatus) -> str:
+    return "on" if status.web_enabled else "off"
 
 
 def keyring_status(status: AssistantWorkspaceStatus) -> str:

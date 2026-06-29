@@ -25,6 +25,8 @@ def test_tool_registry_contains_mvp_tools() -> None:
         "file_read",
         "request_user_input",
         "start_memory_update",
+        "web_search",
+        "web_fetch",
         "file_write",
         "code_run",
         "apply_patch",
@@ -126,6 +128,29 @@ def test_start_memory_update_schema_is_low_risk_internal_signal() -> None:
     assert schema["parameters"]["required"] == []
     assert schema["parameters"]["properties"]["reason"]["type"] == "string"
     assert TOOL_REGISTRY["start_memory_update"].risk_level == "low"
+
+
+def test_web_tool_schemas_describe_explicit_read_only_network_access() -> None:
+    schemas = export_tool_schemas(["web_search", "web_fetch"])
+    search_schema = schemas[0]
+    fetch_schema = schemas[1]
+
+    assert search_schema["name"] == "web_search"
+    assert search_schema["parameters"]["required"] == ["query"]
+    assert set(search_schema["parameters"]["properties"]) == {
+        "query",
+        "max_results",
+        "provider",
+        "topic",
+        "freshness",
+    }
+    assert search_schema["parameters"]["properties"]["provider"]["enum"] == ["tavily", "brave"]
+    assert TOOL_REGISTRY["web_search"].risk_level == "low"
+
+    assert fetch_schema["name"] == "web_fetch"
+    assert fetch_schema["parameters"]["required"] == ["url"]
+    assert set(fetch_schema["parameters"]["properties"]) == {"url", "max_chars"}
+    assert TOOL_REGISTRY["web_fetch"].risk_level == "medium"
 
 
 def test_file_write_schema_describes_modes() -> None:

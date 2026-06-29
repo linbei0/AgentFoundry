@@ -240,6 +240,41 @@ def test_haagent_default_workspace_is_current_directory(tmp_path: Path, monkeypa
     assert task.workspace_root == str(workspace.resolve())
 
 
+def test_chat_task_does_not_include_web_tools_by_default(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = AgentSession(
+        workspace_root=workspace,
+        runs_root=workspace / ".runs",
+        model_gateway=RecordingGateway(),
+    )
+
+    result = session.run_prompt("Do local work")
+    task = load_task(result.episode_path / "task.yaml")
+
+    assert "web_search" not in task.allowed_tools
+    assert "web_fetch" not in task.allowed_tools
+
+
+def test_chat_task_includes_web_tools_when_explicitly_enabled(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = AgentSession(
+        workspace_root=workspace,
+        runs_root=workspace / ".runs",
+        model_gateway=RecordingGateway(),
+        enable_web=True,
+    )
+
+    result = session.run_prompt("Search the web")
+    task = load_task(result.episode_path / "task.yaml")
+
+    assert "web_search" in task.allowed_tools
+    assert "web_fetch" in task.allowed_tools
+    assert "web_search" not in task.policy["approval_allowed_tools"]
+    assert "web_fetch" not in task.policy["approval_allowed_tools"]
+
+
 def test_sessions_lists_only_current_workspace_sessions(tmp_path: Path, monkeypatch, capsys) -> None:
     workspace = tmp_path / "workspace"
     other_workspace = tmp_path / "other"
