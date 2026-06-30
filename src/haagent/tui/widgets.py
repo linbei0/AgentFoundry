@@ -50,10 +50,6 @@ class PromptInput(TextArea):
             event.stop()
             app.action_help()
             return
-        if event.key != "m" or getattr(app, "_pending_interaction", None) is not None:
-            return
-        event.stop()
-        app.action_toggle_memory()
 
     def action_open_search_from_input(self) -> None:
         self.app.action_open_search()

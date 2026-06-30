@@ -21,7 +21,7 @@ from haagent.tui.commands import SlashCommandResult, command_registry, parse_sla
 from haagent.tui.changes import changed_files_from_tool_event, path_stays_in_workspace
 from haagent.tui.failures import failure_next_steps
 from haagent.tui.file_refs import fuzzy_file_matches, path_reference_token
-from haagent.tui.keys import footer_text, help_body, key_help_lines
+from haagent.tui.keys import APP_BINDINGS, footer_text, help_body, key_help_lines
 from haagent.tui.models import ModelCatalogLoadingOverlay
 from haagent.tui.copy import MODAL_TITLES, PANEL_TITLES
 from haagent.tui.renderers import memory_panel_text, side_bar, status_line
@@ -391,6 +391,13 @@ def _all_text(app: HaAgentTuiApp) -> str:
     return "\n".join(pieces)
 
 
+async def _open_memory_panel(app: HaAgentTuiApp, pilot) -> None:
+    prompt_input = app.query_one("#prompt-input")
+    prompt_input.value = "/memory"
+    await pilot.press("enter")
+    await pilot.pause(0.1)
+
+
 def _interaction_requested_event(request: HumanInteractionRequest, turn_index: int) -> ChatEvent:
     event_type = "approval_requested" if request.interaction_type == "approval" else "user_input_requested"
     return ChatEvent(
@@ -534,6 +541,18 @@ def test_tui_keymap_help_and_footer_share_context_definitions() -> None:
             assert key in footer
     assert "Ctrl+T" in footer_text("chat")
     assert "切换主题" in help_body("chat")
+
+
+def test_tui_chat_memory_entry_is_only_slash_command() -> None:
+    chat_footer = footer_text("chat")
+    chat_help = help_body("chat")
+    binding_keys = {binding.key if hasattr(binding, "key") else binding[0] for binding in APP_BINDINGS}
+    input_binding_keys = {binding.key for binding in PromptInput.BINDINGS}
+
+    assert "/memory" in chat_help
+    assert "[m]记忆" not in chat_footer
+    assert "m" not in binding_keys
+    assert "m" not in input_binding_keys
 
 
 def test_tui_semantic_tokens_cover_required_statuses() -> None:
@@ -2113,7 +2132,9 @@ def test_tui_no_color_mode_keeps_symbols_text_and_selection(tmp_path: Path, monk
             assert app.screen.has_class("theme-monochrome")
             assert "状态: - 空闲" in _text(app, "#status-bar")
 
-            await pilot.press("m")
+            prompt_input = app.query_one("#prompt-input")
+            prompt_input.value = "/memory"
+            await pilot.press("enter")
             await pilot.pause(0.1)
             await pilot.press("down")
             await pilot.pause(0.1)
@@ -2123,6 +2144,29 @@ def test_tui_no_color_mode_keeps_symbols_text_and_selection(tmp_path: Path, monk
             assert "记忆候选" in side
             assert "> cand_second" in side
             assert "确认" in _text(app, "#footer-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_m_key_no_longer_opens_memory_mode(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("m")
+            await pilot.pause(0.1)
+
+            side = _text(app, "#side-bar")
+            assert "记忆候选" not in side
+            assert not app.query_one("#side-bar").has_class("panel-focused")
+
+            prompt_input = app.query_one("#prompt-input")
+            prompt_input.value = "/memory"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert "记忆候选" in _text(app, "#side-bar")
+            assert app.query_one("#side-bar").has_class("panel-focused")
 
     asyncio.run(run())
 
@@ -2375,7 +2419,9 @@ def test_tui_help_modal_is_contextual_for_memory_modes(tmp_path: Path) -> None:
         service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
+            prompt_input = app.query_one("#prompt-input")
+            prompt_input.value = "/memory"
+            await pilot.press("enter")
             await pilot.pause(0.1)
             await pilot.press("?")
             await pilot.pause(0.1)
@@ -2385,7 +2431,7 @@ def test_tui_help_modal_is_contextual_for_memory_modes(tmp_path: Path) -> None:
             await pilot.press("escape")
             await pilot.pause(0.1)
 
-            await pilot.press("enter")
+            app.action_memory_enter()
             await pilot.pause(0.1)
             await pilot.press("?")
             await pilot.pause(0.1)
@@ -3196,8 +3242,7 @@ def test_tui_memory_panel_lists_and_shows_candidate_details(tmp_path: Path) -> N
         service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             side = _text(app, "#side-bar")
             footer = _text(app, "#footer-bar")
             assert "记忆候选" in side
@@ -3226,8 +3271,7 @@ def test_tui_memory_navigation_selects_second_candidate_for_confirm_and_reject(t
         )
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             await pilot.press("down")
             await pilot.pause(0.1)
             side = _text(app, "#side-bar")
@@ -3247,8 +3291,7 @@ def test_tui_memory_navigation_selects_second_candidate_for_confirm_and_reject(t
         )
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             await pilot.press("down")
             await pilot.pause(0.1)
             assert "> cand_second" in _text(app, "#side-bar")
@@ -3272,8 +3315,7 @@ def test_tui_memory_navigation_supports_home_end_and_keeps_selection_after_detai
         )
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             await pilot.press("G")
             await pilot.pause(0.1)
             assert "> cand_last" in _text(app, "#side-bar")
@@ -3309,8 +3351,7 @@ def test_tui_memory_navigation_moves_one_candidate_per_keypress(tmp_path: Path) 
         )
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             await pilot.press("down")
             await pilot.pause(0.1)
             assert "> cand_second" in _text(app, "#side-bar")
@@ -3341,8 +3382,7 @@ def test_tui_j_k_do_not_move_memory_selection(tmp_path: Path) -> None:
         )
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             await pilot.press("j")
             await pilot.pause(0.1)
             assert "> cand_first" in _text(app, "#side-bar")
@@ -3361,8 +3401,7 @@ def test_tui_memory_mode_is_readable_without_sidebar(tmp_path: Path) -> None:
         service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(90, 30)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             conversation = _text(app, "#conversation")
             assert "记忆候选" in conversation
             assert "cand_abc123" in conversation
@@ -3381,8 +3420,7 @@ def test_tui_memory_confirm_uses_service_and_removes_pending_candidate(tmp_path:
         service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             await pilot.press("a")
             await pilot.pause(0.1)
             assert service.confirmed_candidate_ids == ["cand_abc123"]
@@ -3397,8 +3435,7 @@ def test_tui_memory_reject_uses_service_and_removes_pending_candidate(tmp_path: 
         service = FakeAssistantService(workspace_root=tmp_path, memory_candidates=[_memory_candidate()])
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             await pilot.press("r")
             await pilot.pause(0.1)
             assert service.rejected_candidate_ids == [("cand_abc123", "rejected from TUI")]
@@ -3413,16 +3450,14 @@ def test_tui_memory_panel_shows_empty_and_load_errors(tmp_path: Path) -> None:
         service = FakeAssistantService(workspace_root=tmp_path)
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             assert "暂无待确认候选" in _text(app, "#side-bar")
 
     async def error_run() -> None:
         service = FakeAssistantService(workspace_root=tmp_path, memory_error=RuntimeError("queue broken"))
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("m")
-            await pilot.pause(0.1)
+            await _open_memory_panel(app, pilot)
             assert "记忆候选不可用：queue broken" in _text(app, "#conversation")
 
     asyncio.run(empty_run())
@@ -3560,3 +3595,4 @@ def test_tui_running_state_does_not_block_ui(tmp_path: Path) -> None:
             assert "state: idle" in _text(app, "#status-bar")
 
     asyncio.run(run())
+

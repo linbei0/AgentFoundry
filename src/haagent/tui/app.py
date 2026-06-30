@@ -194,10 +194,7 @@ class HaAgentTuiApp(App[None]):
             event.stop()
             self.action_open_command_suggestions()
             return
-        if event.key == "m":
-            event.stop()
-            self.action_toggle_memory()
-        elif event.key == "enter" and self._memory_mode:
+        if event.key == "enter" and self._memory_mode:
             event.stop()
             self.action_memory_enter()
         elif event.key in {"a", "y"} and self._memory_mode:
@@ -333,6 +330,7 @@ class HaAgentTuiApp(App[None]):
             self._load_memory_candidates()
             self._set_prompt_value(self.query_one("#prompt-input", PromptInput), "")
             self.query_one("#side-bar", SideBar).focus()
+            self.set_timer(0.01, self._focus_side_bar)
         else:
             self.query_one("#prompt-input", PromptInput).focus()
         self._refresh()
@@ -798,6 +796,9 @@ class HaAgentTuiApp(App[None]):
 
     def _restore_prompt_focus(self, _result: object | None = None) -> None:
         self.query_one("#prompt-input", PromptInput).focus()
+
+    def _focus_side_bar(self) -> None:
+        self.query_one("#side-bar", SideBar).focus()
 
     def _defer_prompt_focus(self, _result: object | None = None) -> None:
         self.set_timer(0.01, self._restore_prompt_focus)

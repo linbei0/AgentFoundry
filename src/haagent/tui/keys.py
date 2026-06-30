@@ -19,11 +19,6 @@ APP_BINDINGS = [
     Binding("ctrl+p", "open_permissions", "权限", priority=True),
     ("?", "help", "帮助"),
     Binding("tab", "focus_tools", "工具", priority=True),
-    ("m", "toggle_memory", "记忆"),
-    ("enter", "memory_enter", "详情"),
-    ("a", "confirm_memory", "确认记忆"),
-    ("y", "confirm_memory", "确认记忆"),
-    ("r", "reject_memory", "拒绝记忆"),
     ("escape", "cancel_interaction", "取消"),
     ("ctrl+x", "cancel_current_task", "取消任务"),
     ("pageup", "conversation_page_up", "上翻"),
@@ -51,7 +46,7 @@ _HELP_LINES: dict[KeyContext, list[tuple[str, str]]] = {
         ("Ctrl+T", "切换主题"),
         ("Ctrl+P", "打开权限设置"),
         ("/sessions", "打开 session 列表"),
-        ("m", "打开记忆候选审查"),
+        ("/memory", "打开记忆候选审查"),
         ("Tab", "切换焦点"),
         ("?", "打开此帮助"),
         ("Ctrl+Q", "退出 TUI"),
@@ -101,7 +96,7 @@ _HELP_TITLES: dict[KeyContext, str] = {
 }
 
 _FOOTER_KEYS: dict[KeyContext, list[str]] = {
-    "chat": ["Enter", "Shift+Enter", "/", "/tools", "Ctrl+F", "Ctrl+P", "Ctrl+T", "m", "Tab", "?", "Ctrl+Q"],
+    "chat": ["Enter", "Shift+Enter", "/", "/tools", "Ctrl+F", "Ctrl+P", "Ctrl+T", "/memory", "Tab", "?", "Ctrl+Q"],
     "memory_list": ["↑/↓", "g/G", "Enter", "a/y", "r", "Esc", "?", "Ctrl+Q"],
     "memory_detail": ["Esc", "a/y", "r", "?", "Ctrl+Q"],
     "pending_input": ["Enter", "Shift+Enter", "Esc", "?", "Ctrl+Q"],
