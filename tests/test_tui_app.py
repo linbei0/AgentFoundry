@@ -373,6 +373,8 @@ class FakeAssistantService:
 
 def _text(app: HaAgentTuiApp, selector: str) -> str:
     widget = app.query_one(selector)
+    if isinstance(widget, TextArea):
+        return widget.text
     if isinstance(widget, RichLog):
         return "\n".join("".join(segment.text for segment in line) for line in widget.lines)
     return str(widget.content)
@@ -384,7 +386,9 @@ def _all_text(app: HaAgentTuiApp) -> str:
         widgets.extend(app.screen.query("*"))
     pieces = []
     for widget in widgets:
-        if isinstance(widget, RichLog):
+        if isinstance(widget, TextArea):
+            pieces.append(widget.text)
+        elif isinstance(widget, RichLog):
             pieces.append("\n".join("".join(segment.text for segment in line) for line in widget.lines))
         else:
             pieces.append(str(widget.render()))
@@ -3514,7 +3518,8 @@ def test_tui_conversation_wraps_long_messages_for_scroll_height(tmp_path: Path) 
             app._append_block("Assistant", long_reply)
             app._refresh_conversation()
             await pilot.pause()
-            longest_line = max(len(line) for line in _text(app, "#conversation").splitlines())
+            wrapped_lines = [section for line in conversation.wrapped_document.lines for section in line]
+            longest_line = max(len(line) for line in wrapped_lines)
             assert longest_line <= conversation.content_size.width
             assert conversation.virtual_size.height > len(app._conversation_lines)
             assert conversation.scroll_y == conversation.max_scroll_y
@@ -3536,6 +3541,22 @@ def test_tui_renders_full_long_assistant_message_from_event_sink(tmp_path: Path)
             assert "[truncated]" not in conversation
             assert "完整结尾" in conversation
             assert app.query_one("#conversation").scroll_y == app.query_one("#conversation").max_scroll_y
+
+    asyncio.run(run())
+
+
+def test_tui_conversation_text_is_read_only_and_selectable(tmp_path: Path) -> None:
+    async def run() -> None:
+        service = FakeAssistantService(workspace_root=tmp_path)
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)):
+            conversation = app.query_one("#conversation")
+            assert isinstance(conversation, TextArea)
+            assert conversation.read_only is True
+            app._append_block("Assistant", "这段回复应该可以被选中复制")
+            app._refresh_conversation()
+            conversation.select_all()
+            assert "这段回复应该可以被选中复制" in conversation.selected_text
 
     asyncio.run(run())
 

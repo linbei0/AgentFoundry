@@ -10,7 +10,7 @@ from rich.text import Text
 from textual import events
 from textual.binding import Binding
 from textual.message import Message
-from textual.widgets import RichLog, Static, TextArea
+from textual.widgets import Static, TextArea
 
 
 class PromptInput(TextArea):
@@ -75,18 +75,32 @@ class StatusBar(Static):
         self.update(text)
 
 
-class ConversationView(RichLog):
+class ConversationView(TextArea):
+    def __init__(self, *args, **kwargs) -> None:
+        wrap = kwargs.pop("wrap", None)
+        kwargs.pop("auto_scroll", None)
+        if wrap is not None:
+            kwargs.setdefault("soft_wrap", wrap)
+        kwargs.setdefault("read_only", True)
+        kwargs.setdefault("show_cursor", False)
+        kwargs.setdefault("show_line_numbers", False)
+        kwargs.setdefault("highlight_cursor_line", False)
+        super().__init__(*args, **kwargs)
+
     def show_placeholder(self) -> None:
-        self.clear()
-        self.write(Text("Ready. 输入消息后按 Enter 发送；Shift+Enter 换行；Ctrl+Q 退出。"), scroll_end=True, animate=False)
+        self.load_text("Ready. 输入消息后按 Enter 发送；Shift+Enter 换行；Ctrl+Q 退出。")
 
     def show_memory(self, text: str) -> None:
-        self.clear()
-        self.write(Text(text), scroll_end=True, animate=False)
+        self.load_text(text)
 
     def append_lines(self, lines: list[str], *, start: int) -> None:
-        for line in lines[start:]:
-            self.write(Text(line), scroll_end=True, animate=False)
+        new_text = "\n".join(lines[start:])
+        if not new_text:
+            return
+        prefix = self.text
+        if prefix:
+            new_text = f"{prefix}\n{new_text}"
+        self.load_text(new_text)
 
 
 class SideBar(Static):
