@@ -28,6 +28,7 @@ class TaskSpec:
     verification_commands: list[str]
     workspace_root: str | None = None
     path_policy: dict[str, Any] | None = None
+    target_paths: list[str] = field(default_factory=list)
     policy: dict[str, list[str]] = field(
         default_factory=lambda: {"approval_allowed_tools": [], "approved_tools": []},
     )
@@ -48,6 +49,7 @@ def load_task(path: Path) -> TaskSpec:
         verification_commands=_required_str_list(raw, "verification_commands"),
         workspace_root=_optional_str(raw, "workspace_root"),
         path_policy=_optional_path_policy(raw),
+        target_paths=_optional_str_list(raw, "target_paths"),
         policy=_optional_policy(raw),
     )
 
@@ -81,6 +83,15 @@ def _optional_str(raw: dict[str, Any], field: str) -> str | None:
     value = raw[field]
     if not isinstance(value, str):
         raise TaskLoadError(f"{field} must be a string")
+    return value
+
+
+def _optional_str_list(raw: dict[str, Any], field: str) -> list[str]:
+    value = raw.get(field, [])
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TaskLoadError(f"{field} must be a list of strings")
     return value
 
 

@@ -157,6 +157,25 @@ def test_file_read_directory_error_suggests_file_list() -> None:
     assert "src" in suggestion.message
 
 
+def test_file_list_missing_directory_suggests_parent_listing() -> None:
+    suggestion = suggestion_for_observation(
+        _obs(
+            "file_list",
+            {"path": "tools"},
+            {
+                "status": "error",
+                "error": {"type": "tool_argument_invalid", "message": "path does not exist: tools"},
+                "suggested_tool": {"name": "file_list", "args": {"path": ".", "max_depth": 2}},
+            },
+        )
+    )
+
+    assert suggestion is not None
+    assert suggestion.trigger == "tool_error"
+    assert "nearest existing parent" in suggestion.message
+    assert "file_list" in suggestion.message
+
+
 def test_apply_patch_miss_suggests_read_before_retry() -> None:
     suggestion = suggestion_for_observation(
         _obs(

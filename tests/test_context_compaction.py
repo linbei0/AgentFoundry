@@ -501,6 +501,32 @@ def test_context_builder_records_memory_source_diagnostics_when_memory_is_skippe
     assert manifest["source_diagnostics"]["memory"]["included_in_model_input"] is False
 
 
+def test_context_builder_exposes_target_paths_as_task_facts(tmp_path: Path) -> None:
+    target = tmp_path / "external-project"
+    target.mkdir()
+    writer = _make_writer(tmp_path)
+    context = ContextBuilder(
+        task=TaskSpec(
+            goal=f'介绍 "{target}"',
+            workspace_root=".",
+            allowed_tools=["file_list", "file_read"],
+            acceptance_criteria=[],
+            verification_commands=[],
+            constraints=[],
+            target_paths=[str(target)],
+            policy={"approval_allowed_tools": [], "approved_tools": []},
+        ),
+        workspace_root=tmp_path,
+        provider_name="test-provider",
+        episode_writer=writer,
+    ).build()
+
+    model_input = context.model_input
+    assert "Target Paths:" in model_input
+    assert str(target) in model_input
+    assert "Start by listing the target path" in model_input
+
+
 class _FakeMemoryResult:
     def __init__(self, model_block: str) -> None:
         self.memories = [object()]

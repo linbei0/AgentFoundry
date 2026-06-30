@@ -146,6 +146,9 @@ Screen.theme-monochrome #prompt-input.panel-focused {
 HelpModal,
 ToolApprovalModal,
 ToolDetailsModal,
+PermissionsModal,
+ConfirmModal,
+ExternalDirectoryDecisionModal,
 SessionOverlay,
 SearchOverlay,
 CommandSuggestionOverlay,
@@ -156,6 +159,9 @@ FileReferenceOverlay {
 #help-dialog,
 #approval-dialog,
 #tool-details-dialog,
+#permissions-dialog,
+#confirm-dialog,
+#external-directory-dialog,
 #sessions-dialog,
 #search-dialog,
 #command-suggestions-dialog,
@@ -168,6 +174,8 @@ FileReferenceOverlay {
 
 #help-dialog,
 #tool-details-dialog,
+#permissions-dialog,
+#external-directory-dialog,
 #sessions-dialog,
 #search-dialog,
 #command-suggestions-dialog,
@@ -175,20 +183,27 @@ FileReferenceOverlay {
     border: solid $primary;
 }
 
-#approval-dialog {
+#approval-dialog,
+#confirm-dialog {
     border: solid $warning;
 }
 
 #help-title,
 #approval-title,
-#tool-details-title {
+#tool-details-title,
+#permissions-title,
+#confirm-title,
+#external-directory-title {
     text-style: bold;
     margin-bottom: 1;
 }
 
 #help-body,
 #approval-body,
-#tool-details-body {
+#tool-details-body,
+#permissions-body,
+#confirm-body,
+#external-directory-body {
     margin-bottom: 1;
 }
 

@@ -16,6 +16,7 @@ APP_BINDINGS = [
     ("ctrl+q", "quit", "退出"),
     ("ctrl+f", "open_search", "搜索"),
     Binding("ctrl+t", "toggle_theme", "主题", priority=True),
+    Binding("ctrl+p", "open_permissions", "权限", priority=True),
     ("?", "help", "帮助"),
     Binding("tab", "focus_tools", "工具", priority=True),
     ("m", "toggle_memory", "记忆"),
@@ -48,6 +49,7 @@ _HELP_LINES: dict[KeyContext, list[tuple[str, str]]] = {
         ("/cancel", "取消当前任务"),
         ("Ctrl+F", "搜索当前对话"),
         ("Ctrl+T", "切换主题"),
+        ("Ctrl+P", "打开权限设置"),
         ("/sessions", "打开 session 列表"),
         ("m", "打开记忆候选审查"),
         ("Tab", "切换焦点"),
@@ -99,7 +101,7 @@ _HELP_TITLES: dict[KeyContext, str] = {
 }
 
 _FOOTER_KEYS: dict[KeyContext, list[str]] = {
-    "chat": ["Enter", "Shift+Enter", "/", "/tools", "Ctrl+F", "Ctrl+T", "m", "Tab", "?", "Ctrl+Q"],
+    "chat": ["Enter", "Shift+Enter", "/", "/tools", "Ctrl+F", "Ctrl+P", "Ctrl+T", "m", "Tab", "?", "Ctrl+Q"],
     "memory_list": ["↑/↓", "g/G", "Enter", "a/y", "r", "Esc", "?", "Ctrl+Q"],
     "memory_detail": ["Esc", "a/y", "r", "?", "Ctrl+Q"],
     "pending_input": ["Enter", "Shift+Enter", "Esc", "?", "Ctrl+Q"],
@@ -173,6 +175,8 @@ def _footer_label(description: str) -> str:
         return "搜索"
     if description.startswith("切换主题"):
         return "主题"
+    if description.startswith("打开权限"):
+        return "权限"
     if description.startswith("打开 session"):
         return "会话"
     if description.startswith("切换"):

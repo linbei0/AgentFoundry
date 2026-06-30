@@ -496,6 +496,7 @@ def test_create_new_session_sets_current_session(tmp_path: Path, monkeypatch) ->
     assert session.session_id
     assert session.turn_count == 0
     assert session.workspace_root == (tmp_path / "workspace").resolve()
+    assert session.permission_mode == "request_approval"
     assert service.current_session().session_id == session.session_id
 
 
@@ -777,6 +778,36 @@ def test_external_root_authorization_is_saved_and_restored_with_session(tmp_path
         },
     ]
     assert service.get_workspace_status().external_roots == restored.external_roots
+
+
+def test_permission_mode_is_saved_and_restored_with_session(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    _write_user_profile(Path.home())
+    service = _service(tmp_path, environ={"DEEPSEEK_API_KEY": "secret"})
+    created = service.create_session()
+
+    changed = service.set_permission_mode("full_access")
+    restored = service.resume_session(created.session_path)
+
+    assert changed.permission_mode == "full_access"
+    assert restored.permission_mode == "full_access"
+    assert service.get_workspace_status().permission_mode == "full_access"
+
+
+def test_switch_project_root_preserves_permission_mode(tmp_path: Path, monkeypatch) -> None:
+    _set_home(monkeypatch, tmp_path / "home")
+    _write_user_profile(Path.home())
+    service = _service(tmp_path, environ={"DEEPSEEK_API_KEY": "secret"})
+    new_project = tmp_path / "new-project"
+    new_project.mkdir()
+    service.create_session()
+    service.set_permission_mode("full_access")
+
+    status = service.switch_project_root(new_project)
+
+    assert status.workspace_root == new_project.resolve()
+    assert status.external_roots == []
+    assert status.permission_mode == "full_access"
 
 
 def test_switch_project_root_clears_external_authorizations(tmp_path: Path, monkeypatch) -> None:

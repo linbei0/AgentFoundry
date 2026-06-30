@@ -26,7 +26,7 @@ from haagent.tui.failures import FailureView, failure_from_payload
 from haagent.tui.file_ref_modal import FileReferenceOverlay
 from haagent.tui.file_refs import query_after_at, replace_at_query
 from haagent.tui.keys import APP_BINDINGS, footer_text
-from haagent.tui.modals import ConfirmModal, ExternalDirectoryDecisionModal, HelpModal, ToolApprovalModal, ToolDetailsModal
+from haagent.tui.modals import ConfirmModal, ExternalDirectoryDecisionModal, HelpModal, PermissionsModal, ToolApprovalModal, ToolDetailsModal
 from haagent.tui.models import (
     ManualModelSetupWizard,
     ModelCatalogLoadingOverlay,
@@ -94,6 +94,17 @@ def _absolute_path_candidates(text: str) -> list[Path]:
     return paths
 
 
+def is_wide_external_root(path: Path) -> bool:
+    resolved = path.resolve()
+    home = Path.home().resolve()
+    risky_roots = {home, home / "Desktop", home / "Downloads", home / "Documents"}
+    if resolved.parent == resolved:
+        return True
+    if resolved.anchor and str(resolved) == resolved.anchor:
+        return True
+    return resolved in {root.resolve() for root in risky_roots}
+
+
 class HaAgentTuiApp(App[None]):
     MIN_WIDTH = MIN_WIDTH
     MIN_HEIGHT = MIN_HEIGHT
@@ -122,6 +133,8 @@ class HaAgentTuiApp(App[None]):
         self._memory_notice: str | None = None
         self._pending_external_prompt: str | None = None
         self._pending_external_path: Path | None = None
+        self._pending_full_trust_prompt: str | None = None
+        self._pending_full_trust_path: Path | None = None
         self._model_catalog_providers: list[object] | None = None
         self._commands = command_registry()
         self._theme_choice = select_theme()
@@ -220,6 +233,11 @@ class HaAgentTuiApp(App[None]):
             external_roots=status.external_roots or [],
         )
         if untrusted_paths:
+            if getattr(status, "permission_mode", "request_approval") == "full_access":
+                self._set_next_turn_target_path(untrusted_paths[0])
+                self._append_block("Permissions", "完全访问权限已启用；本轮不会限制工作区外路径。")
+                self._start_prompt(prompt)
+                return
             self._pending_external_prompt = prompt
             self._pending_external_path = untrusted_paths[0]
             self.push_screen(ExternalDirectoryDecisionModal(untrusted_paths[0]), self._handle_external_directory_decision)
@@ -255,6 +273,12 @@ class HaAgentTuiApp(App[None]):
         if prompt_input.has_focus and self._prompt_value(prompt_input):
             return
         self.push_screen(SearchOverlay(list(self._conversation_lines)), self._defer_prompt_focus)
+
+    def action_open_permissions(self) -> None:
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        if prompt_input.has_focus and self._prompt_value(prompt_input):
+            return
+        self._show_permissions()
 
     def action_open_command_suggestions(self) -> None:
         prompt_input = self.query_one("#prompt-input", PromptInput)
@@ -435,18 +459,99 @@ class HaAgentTuiApp(App[None]):
 
     def _show_permissions(self) -> None:
         status = self.service.get_workspace_status()
-        roots = status.external_roots or []
-        if not roots:
-            body = "项目根：\n  " + str(status.workspace_root) + "\n\n外部目录：无"
-        else:
-            lines = ["项目根：", f"  {status.workspace_root}", "", "外部目录："]
-            for root in roots:
-                access = root.get("access", "")
-                label = "只读参考" if access == "read" else "完全信任" if access == "full" else access or "-"
-                lines.append(f"  {root.get('path', '-')}  {label}")
-            body = "\n".join(lines)
-        self._append_block("Permissions", body)
+        self.push_screen(
+            PermissionsModal(
+                status.workspace_root,
+                status.external_roots or [],
+                getattr(status, "permission_mode", "request_approval"),
+            ),
+            self._handle_permissions_result,
+        )
+
+    def _handle_permissions_result(self, result: dict[str, object] | None) -> None:
+        if result is None:
+            self._restore_prompt_focus()
+            return
+        action = result.get("action")
+        try:
+            if action == "clear":
+                self.push_screen(
+                    ConfirmModal("清空外部目录授权", "清空后本会话将只保留当前项目根权限。确认？"),
+                    self._handle_clear_external_roots_confirmed,
+                )
+                return
+            if action == "set_mode":
+                mode = str(result.get("mode", "request_approval"))
+                if mode == "full_access":
+                    self.push_screen(
+                        ConfirmModal(
+                            "启用完全访问权限",
+                            "启用后，本会话不再限制工作区外文件读写和执行目录。\n你将承担该模式下的本地文件和命令风险。确认？",
+                        ),
+                        lambda confirmed, mode=mode: self._handle_permission_mode_confirmed(mode, confirmed),
+                    )
+                    return
+                self._set_permission_mode(mode)
+                return
+            path = Path(str(result.get("path", "")))
+            if action == "remove":
+                self.service.remove_external_root(path)
+                self._append_block("Permissions", f"已移除外部目录：{path}")
+            elif action == "set_access":
+                access = str(result.get("access"))
+                if access == "full" and is_wide_external_root(path):
+                    self.push_screen(
+                        ConfirmModal("完全信任高风险目录", f"将允许读取、修改并在该目录执行命令：\n{path}\n确认？"),
+                        lambda confirmed, path=path: self._handle_set_full_access_confirmed(path, confirmed),
+                    )
+                    return
+                self.service.set_external_root_access(path, access)
+                label = "只读参考" if access == "read" else "完全信任"
+                self._append_block("Permissions", f"已设为{label}：{path}")
+        except Exception as error:
+            self._append_block("Permissions warning", f"权限操作失败：{error}")
         self._refresh()
+        self._restore_prompt_focus()
+
+    def _set_permission_mode(self, mode: str) -> None:
+        try:
+            self.service.set_permission_mode(mode)
+        except Exception as error:
+            self._append_block("Permissions warning", f"权限模式切换失败：{error}")
+        else:
+            self._append_block("Permissions", f"权限模式已切换为：{_permission_mode_label(mode)}")
+        self._refresh()
+        self._restore_prompt_focus()
+
+    def _handle_permission_mode_confirmed(self, mode: str, confirmed: bool) -> None:
+        if confirmed:
+            self._set_permission_mode(mode)
+            return
+        self._append_block("Permissions", "已取消启用完全访问权限。")
+        self._refresh()
+        self._restore_prompt_focus()
+
+    def _handle_clear_external_roots_confirmed(self, confirmed: bool) -> None:
+        if confirmed:
+            try:
+                self.service.clear_external_roots()
+            except Exception as error:
+                self._append_block("Permissions warning", f"清空外部目录授权失败：{error}")
+            else:
+                self._append_block("Permissions", "已清空本会话外部目录授权。")
+        self._refresh()
+        self._restore_prompt_focus()
+
+    def _handle_set_full_access_confirmed(self, path: Path, confirmed: bool) -> None:
+        if confirmed:
+            try:
+                self.service.set_external_root_access(path, "full")
+            except Exception as error:
+                self._append_block("Permissions warning", f"权限操作失败：{error}")
+            else:
+                self._append_block("Permissions", f"已完全信任：{path}")
+        self._refresh()
+        self._restore_prompt_focus()
 
     def _handle_external_directory_decision(self, decision: str | None) -> None:
         prompt = self._pending_external_prompt
@@ -459,9 +564,19 @@ class HaAgentTuiApp(App[None]):
         try:
             if decision == "read":
                 self.service.add_external_root(path, "read")
+                self._set_next_turn_target_path(path)
                 self._append_block("Permissions", f"已作为只读参考加入：{path}")
             elif decision == "full":
+                if is_wide_external_root(path):
+                    self._pending_full_trust_prompt = prompt
+                    self._pending_full_trust_path = path
+                    self.push_screen(
+                        ConfirmModal("完全信任高风险目录", f"将允许读取、修改并在该目录执行命令：\n{path}\n确认？"),
+                        self._handle_external_full_trust_confirmed,
+                    )
+                    return
                 self.service.add_external_root(path, "full")
+                self._set_next_turn_target_path(path)
                 self._append_block("Permissions", f"已完全信任：{path}")
             elif decision == "switch":
                 self.service.switch_project_root(path)
@@ -478,6 +593,37 @@ class HaAgentTuiApp(App[None]):
             return
         self._refresh()
         self._start_prompt(prompt)
+
+    def _handle_external_full_trust_confirmed(self, confirmed: bool) -> None:
+        prompt = self._pending_full_trust_prompt
+        path = self._pending_full_trust_path
+        self._pending_full_trust_prompt = None
+        self._pending_full_trust_path = None
+        if prompt is None or path is None:
+            self._restore_prompt_focus()
+            return
+        if not confirmed:
+            self._append_block("Permissions", f"已取消完全信任：{path}")
+            self._refresh()
+            self._restore_prompt_focus()
+            return
+        try:
+            self.service.add_external_root(path, "full")
+            self._set_next_turn_target_path(path)
+        except Exception as error:
+            self._append_block("Permissions warning", f"外部目录授权失败：{error}")
+            self._refresh()
+            self._restore_prompt_focus()
+            return
+        self._append_block("Permissions", f"已完全信任：{path}")
+        self._refresh()
+        self._start_prompt(prompt)
+
+    def _set_next_turn_target_path(self, path: Path) -> None:
+        setter = getattr(self.service, "set_next_turn_target_paths", None)
+        if setter is None:
+            return
+        setter([path])
 
     def _handle_session_overlay_result(self, result: SessionOverlayResult | None) -> None:
         if result is None:
@@ -1048,3 +1194,11 @@ def _configurable_model_catalog_providers(providers: list[object]) -> list[objec
         if getattr(catalog_provider_capability(provider), "status", None) == "runnable"
         and list(getattr(provider, "models", []) or [])
     ]
+
+
+def _permission_mode_label(mode: str) -> str:
+    if mode == "auto_approve":
+        return "自动批准"
+    if mode == "full_access":
+        return "完全访问权限"
+    return "请求批准"

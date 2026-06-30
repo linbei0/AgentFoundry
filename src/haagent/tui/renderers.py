@@ -21,6 +21,8 @@ from haagent.tui.utils import safe_summary, short_session, truncate_end, truncat
 
 def status_line(status: AssistantWorkspaceStatus, *, ui_state: str, width: int) -> str:
     width = max(1, width or 120)
+    if width <= 80:
+        return _compact_status_line(status, ui_state=ui_state, width=width)
     workspace_limit = 5 if width <= 80 else 4 if width <= 120 else 16
     model_limit = 4 if width <= 80 else 14
     session_limit = 4 if width <= 80 else 12
@@ -31,16 +33,37 @@ def status_line(status: AssistantWorkspaceStatus, *, ui_state: str, width: int) 
         else f"{truncate_end(status.provider or '-', 14)}/{truncate_end(status.model or '-', model_limit)}"
     )
     web_label = "web:on " if status.web_enabled else "web:off " if width > 80 else ""
+    perm_label = f"perm:{permission_mode_short(status)} "
     prefix = (
         f"ws:{workspace_label(status.workspace_root, workspace_limit)} "
         f"profile: {truncate_end(status.profile_name or 'missing', 12)} "
         f"{provider_model} "
         f"{web_label}"
+        f"{perm_label}"
         f"key: {compact_key_state(status)} "
         f"turn:{turn_count} "
         f"sid:{short_session(status.current_session_id or '-', session_limit)}"
     )
     state = f" 状态: {status_badge(ui_state)} state: {ui_state}"
+    prefix_width = max(0, width - len(state))
+    return f"{truncate_status_line(prefix, prefix_width)}{state}"
+
+
+def _compact_status_line(status: AssistantWorkspaceStatus, *, ui_state: str, width: int) -> str:
+    turn_count = status.current_turn_count if status.current_turn_count is not None else 0
+    state = f" 状态: {status_badge(ui_state)} state: {ui_state}"
+    prefix = (
+        f"ws:{workspace_label(status.workspace_root, 5)} "
+        f"profile: {truncate_end(status.profile_name or 'missing', 8)} "
+        f"{truncate_end(status.provider or '-', 12)}/ "
+        f"perm:{permission_mode_short(status)} "
+        f"key: {compact_key_state(status)} "
+        f"turn:{turn_count} "
+        f"sid:{short_session(status.current_session_id or '-', 4)}"
+    )
+    overflow = len(prefix) + len(state) - width
+    if overflow > 0:
+        state = f" state: {ui_state}"
     prefix_width = max(0, width - len(state))
     return f"{truncate_status_line(prefix, prefix_width)}{state}"
 
@@ -76,6 +99,7 @@ def side_bar(
         f"  root: {status.workspace_root}\n"
         f"  runs: {status.runs_root}\n"
         f"  web: {web_state(status)}\n"
+        f"  权限模式: {permission_mode_label(status)}\n"
         f"{external_roots_text(status)}\n\n"
         f"{PANEL_TITLES['profile']}\n"
         f"  name: {status.profile_name or 'missing'}\n"
@@ -215,6 +239,24 @@ def compact_key_state(status: AssistantWorkspaceStatus) -> str:
 
 def web_state(status: AssistantWorkspaceStatus) -> str:
     return "on" if status.web_enabled else "off"
+
+
+def permission_mode_short(status: AssistantWorkspaceStatus) -> str:
+    mode = getattr(status, "permission_mode", "request_approval")
+    if mode == "auto_approve":
+        return "auto"
+    if mode == "full_access":
+        return "full"
+    return "ask"
+
+
+def permission_mode_label(status: AssistantWorkspaceStatus) -> str:
+    mode = getattr(status, "permission_mode", "request_approval")
+    if mode == "auto_approve":
+        return "自动批准"
+    if mode == "full_access":
+        return "完全访问权限"
+    return "请求批准"
 
 
 def external_roots_text(status: AssistantWorkspaceStatus) -> str:

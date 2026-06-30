@@ -423,6 +423,33 @@ def test_external_read_root_allows_file_read_but_denies_file_write(tmp_path: Pat
     assert target.read_text(encoding="utf-8") == "hello\n"
 
 
+def test_full_access_mode_allows_file_write_outside_workspace_and_traces_mode(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    target = external / "notes.txt"
+    writer = make_writer(project)
+    router = ToolRouter(
+        allowed_tools=["file_write"],
+        episode_writer=writer,
+        workspace_root=project,
+        path_policy=PathPolicy(project_root=project, permission_mode="full_access"),
+        approval_allowed_tools=["file_write"],
+        approved_tools=["file_write"],
+    )
+
+    result = router.dispatch(
+        "file_write",
+        {"path": str(target), "content": "hello\n", "mode": "create"},
+    )
+
+    assert result["status"] == "success"
+    assert target.read_text(encoding="utf-8") == "hello\n"
+    record = _read_single_tool_call(writer)
+    assert record["path_policy"]["permission_mode"] == "full_access"
+
+
 def test_file_list_truncates_many_files(tmp_path: Path) -> None:
     for index in range(10):
         (tmp_path / f"file_{index:02d}.txt").write_text("x\n", encoding="utf-8")

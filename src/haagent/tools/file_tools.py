@@ -74,7 +74,10 @@ def file_list(args: dict[str, Any], workspace_root: Path, path_policy: PathPolic
     if isinstance(root, str):
         return tool_error("path_policy_denied", root)
     if not root.exists():
-        return tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
+        result = tool_error("tool_argument_invalid", f"path does not exist: {path_arg}; {PATH_GUIDANCE}")
+        if suggested_tool := _suggest_file_list_parent(root, workspace_root):
+            result["suggested_tool"] = suggested_tool
+        return result
     if not root.is_dir():
         return tool_error("tool_argument_invalid", f"path must be a directory: {path_arg}; {PATH_GUIDANCE}")
 
@@ -667,6 +670,21 @@ def _similar_workspace_paths(path_arg: str, workspace_root: Path) -> list[str]:
         if score >= 0.45:
             candidates.append((score, relative))
     return [relative for _, relative in sorted(candidates, key=lambda item: (-item[0], item[1]))[:5]]
+
+
+def _suggest_file_list_parent(path: Path, workspace_root: Path) -> dict[str, object] | None:
+    parent = path.parent
+    while parent != parent.parent and not parent.exists():
+        parent = parent.parent
+    if not parent.exists() or not parent.is_dir():
+        return None
+    return {
+        "name": "file_list",
+        "args": {
+            "path": _display_path(parent, workspace_root),
+            "max_depth": 2,
+        },
+    }
 
 
 def _parse_rg_json(output: str, workspace_root: Path) -> list[dict[str, Any]]:

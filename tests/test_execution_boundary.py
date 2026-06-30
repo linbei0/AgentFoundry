@@ -243,6 +243,37 @@ def test_external_full_root_can_be_execution_cwd(tmp_path: Path) -> None:
     assert result["stdout_excerpt"].strip() == str(external.resolve())
 
 
+def test_auto_approve_path_policy_does_not_allow_external_execution_cwd(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    result = shell(
+        {"command": f"{sys.executable} -c \"print('should not run')\"", "cwd": str(external), "timeout_seconds": 5},
+        project,
+        path_policy=PathPolicy(project_root=project, permission_mode="auto_approve"),
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "path_policy_denied"
+    assert "目录未授权" in result["error"]["message"]
+
+
+def test_full_access_path_policy_allows_external_execution_cwd(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    result = shell(
+        {"command": f"{sys.executable} -c \"from pathlib import Path; print(Path.cwd().resolve())\"", "cwd": str(external), "timeout_seconds": 5},
+        project,
+        path_policy=PathPolicy(project_root=project, permission_mode="full_access"),
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout_excerpt"].strip() == str(external.resolve())
+
+
 def _task() -> TaskSpec:
     return TaskSpec(
         goal="Test execution boundary",

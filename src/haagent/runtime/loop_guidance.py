@@ -114,13 +114,15 @@ def _error_suggestion(tool_name: str, args: dict[str, Any], result: dict[str, An
         return f"File path failed; try the suggested path with file_read: {suggestions[0]}."
 
     suggested_tool = result.get("suggested_tool")
-    if tool_name == "file_read" and isinstance(suggested_tool, dict):
+    if tool_name in {"file_read", "file_list"} and isinstance(suggested_tool, dict):
         name = suggested_tool.get("name")
         args = suggested_tool.get("args")
         if name == "file_list" and isinstance(args, dict):
             path = args.get("path", ".")
             max_depth = args.get("max_depth", 1)
-            return f"file_read received a directory. Use file_list with path={path!r} and max_depth={max_depth}."
+            if tool_name == "file_read":
+                return f"file_read received a directory. Use file_list with path={path!r} and max_depth={max_depth}."
+            return f"file_list path was unavailable. List the nearest existing parent with path={path!r} and max_depth={max_depth}, then choose a real child path."
 
     error = _dict_or_empty(result.get("error"))
     error_type = str(error.get("type", ""))

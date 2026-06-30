@@ -60,6 +60,12 @@ def build_task_message(
     lines.append("Task:")
     lines.append(f"goal: {task.goal}")
 
+    if task.target_paths:
+        lines.append("Target Paths:")
+        for path in task.target_paths:
+            lines.append(f"- {path}")
+        lines.append("Start by listing the target path with file_list before inferring project structure.")
+
     if task.constraints:
         lines.append("constraints:")
         for c in task.constraints:

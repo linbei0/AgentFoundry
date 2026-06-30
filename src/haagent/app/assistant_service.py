@@ -51,7 +51,7 @@ from haagent.runtime.chat_session import (
     list_sessions,
 )
 from haagent.runtime.human_interaction import HumanInteractionHandler
-from haagent.runtime.path_policy import PathAccess
+from haagent.runtime.path_policy import PathAccess, PermissionMode
 from haagent.memory import (
     CandidateQueue,
     CandidateQueueError,
@@ -90,6 +90,7 @@ class AssistantWorkspaceStatus:
     current_turn_count: int | None = None
     web_enabled: bool = False
     external_roots: list[dict[str, str]] | None = None
+    permission_mode: PermissionMode = "request_approval"
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class AssistantSessionStatus:
     base_url: str | None = None
     web_enabled: bool = False
     external_roots: list[dict[str, str]] | None = None
+    permission_mode: PermissionMode = "request_approval"
 
 
 @dataclass(frozen=True)
@@ -230,6 +232,7 @@ class AssistantService:
             current_turn_count=session_status.turn_count if session_status is not None else None,
             web_enabled=self.enable_web,
             external_roots=session_status.external_roots if session_status is not None else [],
+            permission_mode=session_status.permission_mode if session_status is not None else "request_approval",
         )
 
     def current_session(self) -> AssistantSessionStatus | None:
@@ -414,6 +417,7 @@ class AssistantService:
                     model=profile.model,
                     base_url=profile.base_url,
                     web_enabled=self.enable_web,
+                    permission_mode="request_approval",
                 )
             gateway = self.gateway_factory(profile)
             self._session.switch_model_gateway(
@@ -425,6 +429,22 @@ class AssistantService:
             )
         except (ProviderProfileError, ChatSessionError) as error:
             raise AssistantServiceError(str(error)) from error
+        return _session_status(self._session)
+
+    def set_permission_mode(self, mode: PermissionMode) -> AssistantSessionStatus:
+        if mode not in {"request_approval", "auto_approve", "full_access"}:
+            raise AssistantServiceError("permission mode must be request_approval, auto_approve, or full_access")
+        if self._session is None:
+            self.create_session()
+        assert self._session is not None
+        self._session.set_permission_mode(mode)
+        return _session_status(self._session)
+
+    def set_next_turn_target_paths(self, paths: list[str | Path]) -> AssistantSessionStatus:
+        if self._session is None:
+            self.create_session()
+        assert self._session is not None
+        self._session.set_next_turn_target_paths([Path(path) for path in paths])
         return _session_status(self._session)
 
     def add_external_root(self, path: str | Path, access: PathAccess) -> AssistantSessionStatus:
@@ -575,6 +595,7 @@ def _session_status(session: AgentSession) -> AssistantSessionStatus:
         base_url=getattr(session, "model_base_url", None),
         web_enabled=getattr(session, "enable_web", False),
         external_roots=_external_root_summaries(session),
+        permission_mode=_session_permission_mode(session),
     )
 
 
@@ -602,6 +623,14 @@ def _external_root_summaries(session: AgentSession) -> list[dict[str, str]]:
         }
         for root in policy.external_roots
     ]
+
+
+def _session_permission_mode(session: AgentSession) -> PermissionMode:
+    policy = getattr(session, "path_policy", None)
+    mode = getattr(policy, "permission_mode", "request_approval")
+    if mode in {"request_approval", "auto_approve", "full_access"}:
+        return mode
+    return "request_approval"
 
 
 def _session_model_profile_name(session: str | Path, runs_root: Path) -> str | None:

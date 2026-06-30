@@ -355,6 +355,27 @@ def test_real_task_smoke_recovers_from_file_read_directory_with_file_list_sugges
     assert "loop_suggestion_added" in _transcript_events(result.episode_path)
 
 
+def test_real_task_smoke_recovers_from_missing_directory_list(tmp_path: Path) -> None:
+    workspace = _make_project_workspace(tmp_path)
+    gateway = ScriptedGateway(
+        [
+            ModelResponse("guess missing directory", [ToolCall("file_list", {"path": "tools", "max_depth": 1})]),
+            ModelResponse("list project root", [ToolCall("file_list", {"path": ".", "max_depth": 2})]),
+            ModelResponse("Project has src, tests, README, and pyproject.", []),
+        ],
+    )
+
+    result = _run_chat(workspace, gateway, "理解这个项目")
+
+    assert result.status == "completed"
+    calls = _tool_calls(result.episode_path)
+    assert [call["tool_name"] for call in calls] == ["file_list", "file_list"]
+    assert calls[0]["error"]["type"] == "tool_argument_invalid"
+    assert calls[0]["result"] is None
+    assert calls[1]["result"]["path"] == "."
+    assert "loop_suggestion_added" in _transcript_events(result.episode_path)
+
+
 def test_real_task_smoke_keeps_multi_tool_messages_contiguous_before_suggestion(tmp_path: Path) -> None:
     workspace = _make_project_workspace(tmp_path)
     gateway = ScriptedGateway(

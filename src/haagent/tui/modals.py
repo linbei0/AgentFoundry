@@ -16,6 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from haagent.runtime.human_interaction import HumanInteractionRequest
+from haagent.runtime.path_policy import PermissionMode
 from haagent.tui.copy import MODAL_TITLES
 from haagent.tui.keys import APPROVAL_BINDINGS, HELP_DISMISS_BINDINGS, help_body
 from haagent.tui.renderers import approval_body
@@ -148,3 +149,120 @@ class ExternalDirectoryDecisionModal(ModalScreen[str | None]):
             "external-cancel": None,
         }
         self.dismiss(mapping.get(event.button.id))
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape" or event.character == "c":
+            event.stop()
+            self.dismiss(None)
+        elif event.character in {"r", "o"}:
+            event.stop()
+            self.dismiss("read")
+        elif event.character == "s":
+            event.stop()
+            self.dismiss("switch")
+        elif event.character == "f":
+            event.stop()
+            self.dismiss("full")
+
+
+PERMISSION_MODE_ORDER: list[PermissionMode] = ["request_approval", "auto_approve", "full_access"]
+PERMISSION_MODE_LABELS: dict[PermissionMode, str] = {
+    "request_approval": "请求批准",
+    "auto_approve": "自动批准",
+    "full_access": "完全访问权限",
+}
+
+
+class PermissionsModal(ModalScreen[dict[str, object] | None]):
+    def __init__(
+        self,
+        project_root: Path,
+        external_roots: list[dict[str, str]],
+        permission_mode: PermissionMode = "request_approval",
+    ) -> None:
+        super().__init__()
+        self.project_root = project_root
+        self.external_roots = list(external_roots)
+        self.selected = 0
+        self.mode_index = PERMISSION_MODE_ORDER.index(permission_mode) if permission_mode in PERMISSION_MODE_ORDER else 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="permissions-dialog"):
+            yield Static("权限设置", id="permissions-title")
+            yield Static(self._body(), id="permissions-body")
+            yield Static("←/→ 模式  Enter 应用  ↑/↓ 目录  o 只读  f 完全信任  r 移除  c 清空  Esc 关闭")
+
+    def on_mount(self) -> None:
+        self.can_focus = True
+        self.focus()
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+            return
+        if event.key == "down":
+            event.stop()
+            self._move(1)
+            return
+        if event.key == "up":
+            event.stop()
+            self._move(-1)
+            return
+        if event.key in {"right", "left"}:
+            event.stop()
+            self._move_mode(1 if event.key == "right" else -1)
+            return
+        if event.key == "enter":
+            event.stop()
+            self.dismiss({"action": "set_mode", "mode": PERMISSION_MODE_ORDER[self.mode_index]})
+            return
+        if event.character == "c":
+            event.stop()
+            self.dismiss({"action": "clear"})
+            return
+        if not self.external_roots:
+            return
+        selected = self.external_roots[self.selected]
+        if event.character == "o":
+            event.stop()
+            self.dismiss({"action": "set_access", "path": selected["path"], "access": "read"})
+        elif event.character == "f":
+            event.stop()
+            self.dismiss({"action": "set_access", "path": selected["path"], "access": "full"})
+        elif event.character == "r":
+            event.stop()
+            self.dismiss({"action": "remove", "path": selected["path"]})
+
+    def _move(self, delta: int) -> None:
+        if not self.external_roots:
+            return
+        self.selected = min(max(self.selected + delta, 0), len(self.external_roots) - 1)
+        self.query_one("#permissions-body", Static).update(self._body())
+
+    def _move_mode(self, delta: int) -> None:
+        self.mode_index = (self.mode_index + delta) % len(PERMISSION_MODE_ORDER)
+        self.query_one("#permissions-body", Static).update(self._body())
+
+    def _body(self) -> str:
+        mode_parts = []
+        for index, mode in enumerate(PERMISSION_MODE_ORDER):
+            label = PERMISSION_MODE_LABELS[mode]
+            mode_parts.append(f"[{label}]" if index == self.mode_index else f" {label} ")
+        lines = [
+            "权限模式：",
+            "  " + "  ".join(mode_parts),
+            "",
+            "项目根：",
+            f"  {self.project_root}",
+            "",
+            "外部目录：",
+        ]
+        if not self.external_roots:
+            lines.append("  无")
+        for index, root in enumerate(self.external_roots):
+            marker = ">" if index == self.selected else " "
+            access = root.get("access", "")
+            label = "只读参考" if access == "read" else "完全信任" if access == "full" else access or "-"
+            lines.append(f"{marker} {root.get('path', '-')}  {label}")
+        return "\n".join(lines)

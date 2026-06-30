@@ -240,6 +240,11 @@ class ToolRouter:
                 "result": result if result["status"] == "success" else None,
                 "error": result.get("error"),
                 "policy": policy_decision.to_dict() if policy_decision else None,
+                "path_policy": {
+                    "permission_mode": self._path_policy.permission_mode,
+                    "project_root": str(self._path_policy.project_root),
+                    "external_root_count": len(self._path_policy.external_roots),
+                },
                 "guardrail": guardrail_result.to_dict() if guardrail_result else None,
                 "duration_seconds": time.perf_counter() - started,
             },

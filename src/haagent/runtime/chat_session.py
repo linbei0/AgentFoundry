@@ -32,6 +32,7 @@ from haagent.runtime.path_policy import (
     ExternalRoot,
     PathAccess,
     PathPolicy,
+    PermissionMode,
     default_path_policy,
     load_path_policy,
     serialize_path_policy,
@@ -169,6 +170,7 @@ class AgentSession:
         self.session_id = session_id or _new_session_id()
         self.turn_count = 0
         self._summaries: list[str] = []
+        self._next_turn_target_paths: list[str] = []
         self._tool_result_microcompact_count = 0
         self._working_state = empty_working_state()
         self._current_cancellation_token: CancellationToken | None = None
@@ -213,6 +215,7 @@ class AgentSession:
         instance.session_id = str(metadata["session_id"])
         instance.turn_count = int(metadata["turn_count"])
         instance._summaries = [str(turn["summary"]) for turn in turns]
+        instance._next_turn_target_paths = []
         instance._tool_result_microcompact_count = 0
         try:
             instance._working_state = load_working_state(session_path / "working_state.json")
@@ -278,7 +281,9 @@ class AgentSession:
                 self.workspace_root,
                 path_policy=self.path_policy,
                 enable_web=self.enable_web,
+                target_paths=self._next_turn_target_paths,
             )
+            self._next_turn_target_paths = []
             session_memory = self._session_memory()
             result = RunOrchestrator(
                 runs_root=self.runs_root,
@@ -411,13 +416,21 @@ class AgentSession:
                 created_at=datetime.now(UTC).isoformat(),
             ),
         )
-        self.path_policy = PathPolicy(project_root=self.workspace_root, external_roots=roots).resolved()
+        self.path_policy = PathPolicy(
+            project_root=self.workspace_root,
+            external_roots=roots,
+            permission_mode=self.path_policy.permission_mode,
+        ).resolved()
         self._write_session_metadata()
 
     def remove_external_root(self, path: Path) -> None:
         resolved_path = path.resolve()
         roots = [root for root in self.path_policy.external_roots if root.path.resolve() != resolved_path]
-        self.path_policy = PathPolicy(project_root=self.workspace_root, external_roots=roots).resolved()
+        self.path_policy = PathPolicy(
+            project_root=self.workspace_root,
+            external_roots=roots,
+            permission_mode=self.path_policy.permission_mode,
+        ).resolved()
         self._write_session_metadata()
 
     def set_external_root_access(self, path: Path, access: PathAccess) -> None:
@@ -439,17 +452,41 @@ class AgentSession:
                     created_at=datetime.now(UTC).isoformat(),
                 ),
             )
-        self.path_policy = PathPolicy(project_root=self.workspace_root, external_roots=roots).resolved()
+        self.path_policy = PathPolicy(
+            project_root=self.workspace_root,
+            external_roots=roots,
+            permission_mode=self.path_policy.permission_mode,
+        ).resolved()
         self._write_session_metadata()
 
     def clear_external_roots(self) -> None:
-        self.path_policy = default_path_policy(self.workspace_root)
+        self.path_policy = PathPolicy(
+            project_root=self.workspace_root,
+            permission_mode=self.path_policy.permission_mode,
+        ).resolved()
         self._write_session_metadata()
 
     def switch_project_root(self, path: Path) -> None:
+        permission_mode = self.path_policy.permission_mode
         self.workspace_root = path.resolve()
-        self.path_policy = default_path_policy(self.workspace_root)
+        self.path_policy = PathPolicy(
+            project_root=self.workspace_root,
+            permission_mode=permission_mode,
+        ).resolved()
         self._write_session_metadata()
+
+    def set_permission_mode(self, mode: PermissionMode) -> None:
+        if mode not in {"request_approval", "auto_approve", "full_access"}:
+            raise ChatSessionError("permission mode must be request_approval, auto_approve, or full_access")
+        self.path_policy = PathPolicy(
+            project_root=self.workspace_root,
+            external_roots=self.path_policy.external_roots,
+            permission_mode=mode,
+        ).resolved()
+        self._write_session_metadata()
+
+    def set_next_turn_target_paths(self, paths: list[Path]) -> None:
+        self._next_turn_target_paths = [str(path.resolve()) for path in paths]
 
     def _run_memory_extraction(
         self,
@@ -651,6 +688,7 @@ def _write_chat_task_yaml(
     *,
     path_policy: PathPolicy | None = None,
     enable_web: bool = False,
+    target_paths: list[str] | None = None,
 ) -> None:
     allowed_tools = list(CHAT_ALLOWED_TOOLS)
     if enable_web:
@@ -659,13 +697,18 @@ def _write_chat_task_yaml(
         "goal": request,
         "workspace_root": str(workspace_root.resolve()),
         "path_policy": serialize_path_policy(path_policy or default_path_policy(workspace_root)),
+        "target_paths": list(target_paths or []),
         "constraints": [],
         "allowed_tools": allowed_tools,
         "acceptance_criteria": ["Complete the requested chat task."],
         "verification_commands": [],
         "policy": {
             "approval_allowed_tools": list(CHAT_APPROVED_TOOLS),
-            "approved_tools": [],
+            "approved_tools": (
+                list(CHAT_APPROVED_TOOLS)
+                if (path_policy or default_path_policy(workspace_root)).permission_mode in {"auto_approve", "full_access"}
+                else []
+            ),
         },
     }
     path.write_text(yaml.safe_dump(task, sort_keys=False, allow_unicode=True), encoding="utf-8")
