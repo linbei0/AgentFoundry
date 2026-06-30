@@ -17,8 +17,6 @@ class PromptInput(TextArea):
     BINDINGS = [
         Binding("enter", "submit_from_input", "发送", priority=True),
         Binding("shift+enter", "insert_newline_from_input", "换行", priority=True),
-        Binding("/", "open_command_suggestions_from_input", "命令", priority=True),
-        Binding("slash", "open_command_suggestions_from_input", "命令", priority=True),
         Binding("ctrl+f", "open_search_from_input", "搜索", priority=True),
         Binding("ctrl+x", "cancel_current_task_from_input", "取消任务", priority=True),
     ]
@@ -40,6 +38,10 @@ class PromptInput(TextArea):
 
     def on_key(self, event: events.Key) -> None:
         app = self.app
+        if getattr(app, "command_suggestions_is_open", lambda: False)() and event.key in {"escape", "up", "down", "enter"}:
+            event.prevent_default()
+            app.action_handle_command_suggestion_key(event)
+            return
         if getattr(app, "file_reference_is_open", lambda: False)() and event.key in {"escape", "up", "down", "enter"}:
             event.prevent_default()
             app.action_handle_file_ref_key(event)
@@ -49,6 +51,13 @@ class PromptInput(TextArea):
             event.prevent_default()
             self.insert("@")
             app.action_open_file_refs()
+            return
+        if event.key in {"/", "slash"} or event.character == "/":
+            event.stop()
+            event.prevent_default()
+            self.insert("/")
+            if self.value == "/":
+                app.action_open_command_suggestions()
             return
         if self.value:
             return
@@ -64,6 +73,9 @@ class PromptInput(TextArea):
         self.app.action_cancel_current_task()
 
     def action_submit_from_input(self) -> None:
+        if getattr(self.app, "command_suggestions_is_open", lambda: False)():
+            self.app.action_accept_command_suggestion()
+            return
         if getattr(self.app, "file_reference_is_open", lambda: False)():
             self.app.action_accept_file_ref()
             return
@@ -71,12 +83,6 @@ class PromptInput(TextArea):
 
     def action_insert_newline_from_input(self) -> None:
         self.insert("\n")
-
-    def action_open_command_suggestions_from_input(self) -> None:
-        if self.value:
-            self.insert("/")
-            return
-        self.app.action_open_command_suggestions()
 
 
 class StatusBar(Static):

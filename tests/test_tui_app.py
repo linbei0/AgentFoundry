@@ -779,15 +779,26 @@ def test_tui_skills_command_lists_skills_and_trusts_project_roots(tmp_path: Path
 
     async def run_test() -> None:
         app = HaAgentTuiApp(service)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(120, 40)) as pilot:
             input_widget = app.query_one("#prompt-input", PromptInput)
+            before = _text(app, "#conversation")
+
             input_widget.value = "/skills"
             await pilot.press("enter")
-            assert "review [user]" in _text(app, "#conversation")
-            assert "项目 skills 未信任" in _text(app, "#conversation")
+            await pilot.pause(0.1)
+            assert "Skills" in _all_text(app)
+            assert "review" in _all_text(app)
+            assert _text(app, "#conversation") == before
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert input_widget.value == ""
+            assert service.prompts == []
+            await pilot.press("escape")
+            await pilot.pause(0.1)
 
             input_widget.value = "/skills trust"
             await pilot.press("enter")
+            await pilot.pause(0.1)
             assert service.trusted_skills_count == 1
             assert "已信任当前 workspace 的项目 skills" in _text(app, "#conversation")
 
@@ -948,6 +959,56 @@ def test_tui_skill_command_starts_prompt_with_explicit_skill_context(tmp_path: P
             assert service.prompts[0].startswith("Use skill review explicitly.")
             assert "Follow this workflow." in service.prompts[0]
             assert "check this" in service.prompts[0]
+
+    asyncio.run(run_test())
+
+
+def test_tui_skill_command_without_name_opens_skill_picker(tmp_path: Path) -> None:
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        skills=[
+            {
+                "name": "review",
+                "description": "Review workflow.",
+                "source": "user",
+                "command_name": "review",
+                "user_invocable": True,
+                "disable_model_invocation": False,
+            },
+            {
+                "name": "csv-helper",
+                "description": "CSV analysis workflow.",
+                "source": "user",
+                "command_name": "csv-helper",
+                "user_invocable": True,
+                "disable_model_invocation": False,
+            },
+        ],
+    )
+
+    async def run_test() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input", PromptInput)
+            input_widget.value = "/skill"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            assert "选择 Skill" in _all_text(app)
+            assert "2 skills" in _all_text(app)
+            assert "review" in _all_text(app)
+            assert "csv-helper" in _all_text(app)
+
+            await pilot.press("c", "s", "v")
+            await pilot.pause(0.1)
+            assert "搜索: csv" in _all_text(app)
+            assert "csv-helper" in _all_text(app)
+            assert "review" not in _all_text(app)
+
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert input_widget.value == "/skill csv-helper "
+            assert service.prompts == []
 
     asyncio.run(run_test())
 
@@ -3069,7 +3130,11 @@ def test_tui_slash_command_suggestions_filter_execute_and_do_not_pollute_convers
             await pilot.pause(0.1)
             assert "快捷命令" in _all_text(app)
             assert "/help" in _all_text(app)
-            assert "/resume" in _all_text(app)
+            assert "/memory" in _all_text(app)
+            assert "/resume" not in _all_text(app)
+            assert app.command_suggestions_is_open()
+            assert app.query_one("#command-suggestions-dialog").parent.id == "input-panel"
+            assert app.query_one("#prompt-input").value == "/"
             await pilot.press("h", "e")
             await pilot.pause(0.1)
             assert "过滤: /he" in _all_text(app)
@@ -3094,6 +3159,13 @@ def test_tui_slash_command_suggestions_filter_execute_and_do_not_pollute_convers
             await pilot.pause(0.1)
 
             input_widget = app.query_one("#prompt-input")
+            input_widget.value = "整理 /tmp"
+            await pilot.press("/")
+            await pilot.pause(0.1)
+            assert not app.command_suggestions_is_open()
+            assert app.query_one("#prompt-input").value == "整理 /tmp/"
+
+            input_widget = app.query_one("#prompt-input")
             input_widget.value = "/new"
             await pilot.press("enter")
             await pilot.pause(0.1)
@@ -3110,6 +3182,21 @@ def test_tui_slash_command_suggestions_filter_execute_and_do_not_pollute_convers
             assert "未知命令：/unknown" in _text(app, "#conversation")
 
     asyncio.run(run())
+
+
+def test_tui_slash_command_suggestions_scroll_visible_window() -> None:
+    from haagent.tui.command_suggestions import CommandSuggestionState
+
+    state = CommandSuggestionState(commands=command_registry().commands())
+    for _ in range(8):
+        state = state.move(1)
+
+    rendered = state.render()
+
+    assert "> /permissions" in rendered
+    assert "/help" not in rendered
+    assert "/skills" in rendered
+    assert "/cancel" not in rendered
 
 
 def test_tui_file_reference_overlay_selects_workspace_file(tmp_path: Path) -> None:

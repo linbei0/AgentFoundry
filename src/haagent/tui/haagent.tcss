@@ -55,6 +55,14 @@ Screen.theme-monochrome {
     background: $surface;
 }
 
+#command-suggestions-dialog {
+    width: 1fr;
+    height: 9;
+    padding: 0 1;
+    border: solid $primary;
+    background: $surface;
+}
+
 #prompt-input {
     width: 1fr;
     height: 4;
@@ -159,7 +167,7 @@ ConfirmModal,
 ExternalDirectoryDecisionModal,
 SessionOverlay,
 SearchOverlay,
-CommandSuggestionOverlay {
+SkillPickerOverlay {
     align: center middle;
 }
 
@@ -171,7 +179,7 @@ CommandSuggestionOverlay {
 #external-directory-dialog,
 #sessions-dialog,
 #search-dialog,
-#command-suggestions-dialog {
+#skill-picker-dialog {
     width: 72;
     height: auto;
     padding: 1 2;
@@ -184,8 +192,12 @@ CommandSuggestionOverlay {
 #external-directory-dialog,
 #sessions-dialog,
 #search-dialog,
-#command-suggestions-dialog {
+#skill-picker-dialog {
     border: solid $primary;
+}
+
+#skill-picker-dialog {
+    width: 96%;
 }
 
 #approval-dialog,

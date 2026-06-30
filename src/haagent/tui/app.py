@@ -56,6 +56,7 @@ from haagent.tui.theme import (
 from haagent.tui.tool_timeline import ToolTimelineState
 from haagent.tui.search_modal import SearchOverlay
 from haagent.tui.sessions import SessionOverlay, SessionOverlayResult
+from haagent.tui.skill_picker import SkillPickerOverlay
 from haagent.tui.utils import safe_summary
 from haagent.tui.widgets import ConversationView, FooterBar, PromptInput, ResizeMessage, SideBar, StatusBar, _end_location
 
@@ -141,6 +142,7 @@ class HaAgentTuiApp(App[None]):
         self._theme_choice = select_theme()
         self._file_ref_overlay: FileReferenceOverlay | None = None
         self._file_ref_index: FileReferenceIndex | None = None
+        self._command_suggestion_overlay: CommandSuggestionOverlay | None = None
 
     def compose(self) -> ComposeResult:
         yield StatusBar("", id="status-bar")
@@ -185,6 +187,9 @@ class HaAgentTuiApp(App[None]):
         self._update_responsive_layout(width=event.size.width, height=event.size.height)
 
     def on_key(self, event: events.Key) -> None:
+        if self._command_suggestion_overlay is not None and event.key in {"escape", "up", "down", "enter"}:
+            self.action_handle_command_suggestion_key(event)
+            return
         if self._file_ref_overlay is not None and event.key in {"escape", "up", "down", "enter"}:
             self.action_handle_file_ref_key(event)
             return
@@ -213,12 +218,16 @@ class HaAgentTuiApp(App[None]):
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "prompt-input" or self._file_ref_overlay is None:
+            if event.text_area.id == "prompt-input":
+                self._sync_command_suggestions_with_prompt(self._prompt_value(event.text_area))
             return
-        query = query_after_at(self._prompt_value(event.text_area))
+        text = self._prompt_value(event.text_area)
+        query = query_after_at(text)
         if query is None:
             self._close_file_ref_overlay()
-            return
-        self._file_ref_overlay.update_query(query)
+        else:
+            self._file_ref_overlay.update_query(query)
+        self._sync_command_suggestions_with_prompt(text)
 
     def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         self._submit_prompt(event.input)
@@ -295,10 +304,16 @@ class HaAgentTuiApp(App[None]):
 
     def action_open_command_suggestions(self) -> None:
         prompt_input = self.query_one("#prompt-input", PromptInput)
-        if prompt_input.has_focus and self._prompt_value(prompt_input):
-            prompt_input.insert("/")
+        value = self._prompt_value(prompt_input)
+        if prompt_input.has_focus and value:
+            if value.startswith("/") and " " not in value:
+                self._open_command_suggestions(value.removeprefix("/"))
+            else:
+                prompt_input.insert("/")
             return
-        self.push_screen(CommandSuggestionOverlay(self._commands.commands()), self._handle_command_suggestion_result)
+        if not value:
+            prompt_input.insert("/")
+        self._open_command_suggestions(self._prompt_value(prompt_input).removeprefix("/"))
 
     def action_open_file_refs(self) -> None:
         prompt_input = self.query_one("#prompt-input", PromptInput)
@@ -538,7 +553,7 @@ class HaAgentTuiApp(App[None]):
                         ),
                     )
             elif not value:
-                self._append_block("Skills", _skills_summary_text(self.service.list_skills()))
+                self._open_skill_picker(mode="manage")
             else:
                 self._append_block("Command", _skills_usage_text())
         except Exception as error:
@@ -561,8 +576,7 @@ class HaAgentTuiApp(App[None]):
     def _handle_skill_command(self, argument: str) -> None:
         text = argument.strip()
         if not text:
-            self._append_block("Command", "用法：/skill <name> [request]")
-            self._refresh()
+            self._open_skill_picker(mode="use")
             return
         skill_name, _, request = text.partition(" ")
         try:
@@ -584,6 +598,51 @@ class HaAgentTuiApp(App[None]):
         )
         self._append_block("Skills", f"已加载 skill：{skill.name}")
         self._start_prompt(prompt)
+
+    def _open_skill_picker(self, *, mode: str) -> None:
+        try:
+            summary = self.service.list_skills()
+        except Exception as error:
+            self._append_block("Skills warning", f"读取 skills 失败：{error}")
+            self._refresh()
+            return
+        skills = list(getattr(summary, "skills", []) or [])
+        if not skills:
+            self._append_block("Skills", "暂无可用 skills。")
+            self._refresh()
+            return
+        blocked_roots = list(getattr(summary, "blocked_project_skill_roots", []) or [])
+        if mode == "manage":
+            self.push_screen(
+                SkillPickerOverlay(
+                    skills,
+                    blocked_project_skill_roots=blocked_roots,
+                    title="Skills",
+                    instruction="输入过滤，↑/↓ 浏览，Esc 关闭",
+                    footer="使用 /skill 选择并调用；/skills search 远端搜索；/skills trust 信任项目 skills。",
+                    select_on_enter=False,
+                ),
+                self._handle_skill_picker_result,
+            )
+            return
+        self.push_screen(
+            SkillPickerOverlay(skills, blocked_project_skill_roots=blocked_roots),
+            self._handle_skill_picker_result,
+        )
+
+    def _handle_skill_picker_result(self, skill: dict[str, object] | None) -> None:
+        if skill is None:
+            self.set_timer(0.01, self._restore_prompt_focus)
+            return
+        command_name = str(skill.get("command_name") or skill.get("name") or "").strip()
+        if not command_name:
+            self._append_block("Skills warning", "选择的 skill 缺少命令名。")
+            self._refresh()
+            self.set_timer(0.01, self._restore_prompt_focus)
+            return
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        self._set_prompt_value(prompt_input, f"/skill {command_name} ")
+        self.set_timer(0.01, self._restore_prompt_focus)
 
     def _show_permissions(self) -> None:
         status = self.service.get_workspace_status()
@@ -918,10 +977,63 @@ class HaAgentTuiApp(App[None]):
         if isinstance(self.screen, ModelCatalogLoadingOverlay):
             self.screen.dismiss(None)
 
-    def _handle_command_suggestion_result(self, command) -> None:
-        if command is not None:
-            self._handle_slash_command(parse_slash_command(command.token, self._commands))
-        self.set_timer(0.01, self._restore_prompt_focus)
+    def _open_command_suggestions(self, query: str = "") -> None:
+        self._close_file_ref_overlay()
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        if self._command_suggestion_overlay is None:
+            overlay = CommandSuggestionOverlay(self._commands.commands())
+            self._command_suggestion_overlay = overlay
+            self.query_one("#input-panel", Vertical).mount(overlay, before=prompt_input)
+            self.query_one("#input-panel", Vertical).styles.height = 14
+        self._command_suggestion_overlay.update_query(query)
+        prompt_input.focus()
+
+    def action_handle_command_suggestion_key(self, event: events.Key) -> None:
+        overlay = self._command_suggestion_overlay
+        if overlay is None:
+            return
+        result = overlay.handle_key(event)
+        if result is None:
+            return
+        if result == "":
+            self._close_command_suggestions()
+            return
+        self._close_command_suggestions()
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        self._set_prompt_value(prompt_input, "")
+        self._handle_slash_command(parse_slash_command(result.token, self._commands))
+
+    def action_accept_command_suggestion(self) -> None:
+        overlay = self._command_suggestion_overlay
+        if overlay is None:
+            return
+        command = overlay.state.selected_command
+        if command is None:
+            self._close_command_suggestions()
+            return
+        self._close_command_suggestions()
+        prompt_input = self.query_one("#prompt-input", PromptInput)
+        self._set_prompt_value(prompt_input, "")
+        self._handle_slash_command(parse_slash_command(command.token, self._commands))
+
+    def _sync_command_suggestions_with_prompt(self, text: str) -> None:
+        if self._command_suggestion_overlay is None:
+            return
+        if not text.startswith("/") or " " in text:
+            self._close_command_suggestions()
+            return
+        self._command_suggestion_overlay.update_query(text.removeprefix("/"))
+
+    def _close_command_suggestions(self) -> None:
+        overlay = self._command_suggestion_overlay
+        self._command_suggestion_overlay = None
+        if overlay is not None and overlay.is_mounted:
+            overlay.remove()
+        self.query_one("#input-panel", Vertical).styles.height = 5
+        self.query_one("#prompt-input", PromptInput).focus()
+
+    def command_suggestions_is_open(self) -> bool:
+        return self._command_suggestion_overlay is not None
 
     def _handle_file_reference_result(self, token: str | None) -> None:
         prompt_input = self.query_one("#prompt-input", PromptInput)
