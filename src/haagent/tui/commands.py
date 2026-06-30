@@ -52,7 +52,7 @@ def command_registry() -> CommandRegistry:
             SlashCommand("model", "打开模型中心", "open_models"),
             SlashCommand("memory", "打开记忆候选审查", "memory"),
             SlashCommand("tools", "聚焦工具视图", "tools"),
-            SlashCommand("skills", "查看和信任本地 skills", "skills"),
+            SlashCommand("skills", "查看、信任、搜索和安装 skills", "skills"),
             SlashCommand("skill", "显式使用一个 skill", "skill"),
             SlashCommand("web", "切换联网工具", "web"),
             SlashCommand("permissions", "管理外部目录权限", "permissions"),

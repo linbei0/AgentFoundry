@@ -72,6 +72,8 @@ class FakeAssistantService:
         permission_mode: str = "request_approval",
         skills: list[dict[str, object]] | None = None,
         blocked_project_skill_roots: list[str] | None = None,
+        marketplace_results: list[SimpleNamespace] | None = None,
+        marketplace_warnings: list[str] | None = None,
     ) -> None:
         self.workspace_root = workspace_root
         self.profile_name = profile_name
@@ -99,9 +101,13 @@ class FakeAssistantService:
         self.permission_mode = permission_mode
         self.skills = list(skills or [])
         self.blocked_project_skill_roots = list(blocked_project_skill_roots or [])
+        self.marketplace_results = list(marketplace_results or [])
+        self.marketplace_warnings = list(marketplace_warnings or [])
         self.trusted_skills_count = 0
         self.untrusted_skills_count = 0
         self.read_skill_names: list[str] = []
+        self.searched_marketplace_queries: list[tuple[str, tuple[str, ...] | None, int]] = []
+        self.installed_marketplace_ids: list[str] = []
         self.next_turn_target_paths: list[str] = []
         self.started = threading.Event()
         self.release = threading.Event()
@@ -365,6 +371,31 @@ class FakeAssistantService:
             name=str(match.get("name")),
             command_name=str(match.get("command_name") or match.get("name")),
             content=f"# {match.get('name')}\nFollow this workflow.",
+        )
+
+    def search_skill_marketplace(self, query: str, *, providers=None, limit: int = 10):
+        provider_tuple = tuple(providers) if providers is not None else None
+        self.searched_marketplace_queries.append((query, provider_tuple, limit))
+        return SimpleNamespace(
+            status="success" if self.marketplace_results else "error",
+            query=query,
+            results=list(self.marketplace_results),
+            warnings=list(self.marketplace_warnings),
+        )
+
+    def install_marketplace_skill(self, result_id: str):
+        self.installed_marketplace_ids.append(result_id)
+        match = next((item for item in self.marketplace_results if item.result_id == result_id), None)
+        if match is None:
+            raise RuntimeError(f"unknown marketplace result id: {result_id}")
+        if not match.installable:
+            raise RuntimeError("only skills_sh results are installable in marketplace v1")
+        return SimpleNamespace(
+            name=match.name,
+            command_name=match.name.lower().replace(" ", "-"),
+            skill_dir=self.workspace_root / ".haagent" / "skills" / match.name.lower().replace(" ", "-"),
+            skill_file=self.workspace_root / ".haagent" / "skills" / match.name.lower().replace(" ", "-") / "SKILL.md",
+            source_url=match.detail_url,
         )
 
     def list_memory_candidates(self, status: str | None = "pending") -> list[MemoryCandidate]:
@@ -759,6 +790,132 @@ def test_tui_skills_command_lists_skills_and_trusts_project_roots(tmp_path: Path
             await pilot.press("enter")
             assert service.trusted_skills_count == 1
             assert "已信任当前 workspace 的项目 skills" in _text(app, "#conversation")
+
+    asyncio.run(run_test())
+
+
+def test_tui_skills_search_lists_marketplace_results(tmp_path: Path) -> None:
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        marketplace_results=[
+            SimpleNamespace(
+                result_id="skills_sh-1",
+                provider="skills_sh",
+                name="analyze-csv",
+                source="office",
+                summary="Analyze CSV files.",
+                detail_url="https://skills.sh/office/analyze-csv",
+                installable=True,
+                quality={"installs": 1234},
+            ),
+            SimpleNamespace(
+                result_id="skillsmp-2",
+                provider="skillsmp",
+                name="csv-helper",
+                source="data-team",
+                summary="Find CSV workflows.",
+                detail_url="https://skillsmp.com/skills/csv-helper",
+                installable=False,
+                quality={"stars": 42},
+            ),
+        ],
+        marketplace_warnings=["skillsmp search failed: HTTP 502"],
+    )
+
+    async def run_test() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input", PromptInput)
+            input_widget.value = "/skills search csv"
+            await pilot.press("enter")
+
+            conversation = _text(app, "#conversation")
+            assert service.searched_marketplace_queries == [("csv", None, 10)]
+            assert "analyze-csv" in conversation
+            assert "skills_sh-1" in conversation
+            assert "skills_sh" in conversation
+            assert "可安装" in conversation
+            assert "csv-helper" in conversation
+            assert "skillsmp" in conversation
+            assert "暂不支持直接安装" in conversation
+            assert "skillsmp search failed: HTTP 502" in conversation
+
+    asyncio.run(run_test())
+
+
+def test_tui_skills_install_installs_cached_marketplace_result(tmp_path: Path) -> None:
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        marketplace_results=[
+            SimpleNamespace(
+                result_id="skills_sh-1",
+                provider="skills_sh",
+                name="analyze-csv",
+                source="office",
+                summary="Analyze CSV files.",
+                detail_url="https://skills.sh/office/analyze-csv",
+                installable=True,
+                quality={},
+            ),
+        ],
+    )
+
+    async def run_test() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input", PromptInput)
+            input_widget.value = "/skills install skills_sh-1"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert service.installed_marketplace_ids == []
+            assert "安装远端 skill" in _all_text(app)
+            await pilot.press("y")
+            await pilot.pause()
+
+            conversation = _text(app, "#conversation")
+            assert service.installed_marketplace_ids == ["skills_sh-1"]
+            assert "已安装 marketplace skill：analyze-csv" in conversation
+            assert "命令：$analyze-csv" in conversation
+            assert "https://skills.sh/office/analyze-csv" in conversation
+
+    asyncio.run(run_test())
+
+
+def test_tui_skills_install_reports_marketplace_errors(tmp_path: Path) -> None:
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        marketplace_results=[
+            SimpleNamespace(
+                result_id="skillsmp-1",
+                provider="skillsmp",
+                name="csv-helper",
+                source="data-team",
+                summary="Find CSV workflows.",
+                detail_url="https://skillsmp.com/skills/csv-helper",
+                installable=False,
+                quality={},
+            ),
+        ],
+    )
+
+    async def run_test() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input", PromptInput)
+            input_widget.value = "/skills install skillsmp-1"
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert service.installed_marketplace_ids == ["skillsmp-1"]
+            assert "skills 操作失败" in _text(app, "#conversation")
+            assert "only skills_sh results are installable" in _text(app, "#conversation")
+
+            input_widget.value = "/skills wat"
+            await pilot.press("enter")
+            assert "/skills search <query>" in _text(app, "#conversation")
+            assert "/skills install <result-id>" in _text(app, "#conversation")
 
     asyncio.run(run_test())
 

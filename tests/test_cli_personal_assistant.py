@@ -164,6 +164,7 @@ def test_chat_task_does_not_include_web_tools_by_default(tmp_path: Path, monkeyp
 
     assert "web_search" not in task.allowed_tools
     assert "web_fetch" not in task.allowed_tools
+    assert "skill_market_search" not in task.allowed_tools
     assert "skill_list" not in task.allowed_tools
     assert "skill_read" not in task.allowed_tools
 
@@ -213,8 +214,10 @@ def test_chat_task_includes_web_tools_when_explicitly_enabled(tmp_path: Path) ->
 
     assert "web_search" in task.allowed_tools
     assert "web_fetch" in task.allowed_tools
+    assert "skill_market_search" in task.allowed_tools
     assert "web_search" not in task.policy["approval_allowed_tools"]
     assert "web_fetch" not in task.policy["approval_allowed_tools"]
+    assert "skill_market_search" not in task.policy["approval_allowed_tools"]
 
 
 def test_chat_session_auto_compacts_old_turn_summaries_without_model_summary(tmp_path: Path) -> None:

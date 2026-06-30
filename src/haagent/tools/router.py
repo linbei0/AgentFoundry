@@ -30,6 +30,7 @@ from haagent.tools.code_run import code_run
 from haagent.tools.file_tools import apply_patch, apply_patch_set, context_find, file_list, file_read, file_search, file_write
 from haagent.tools.registry import TOOL_REGISTRY, validate_tool_registry
 from haagent.tools.shell import shell
+from haagent.tools.skill_market import skill_market_search
 from haagent.tools.skills import skill_list, skill_read
 from haagent.tools.web import web_fetch, web_search
 
@@ -62,6 +63,7 @@ class ToolRouter:
             "start_memory_update": self._start_memory_update,
             "skill_list": lambda args: skill_list(args, self._workspace_root, self._skill_settings),
             "skill_read": lambda args: skill_read(args, self._workspace_root, self._skill_settings),
+            "skill_market_search": skill_market_search,
             "web_search": web_search,
             "web_fetch": web_fetch,
             "file_write": lambda args: file_write(args, self._workspace_root, self._path_policy),

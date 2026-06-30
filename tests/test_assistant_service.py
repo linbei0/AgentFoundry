@@ -20,6 +20,7 @@ from haagent.models.gateway import ModelResponse, OpenAIChatCompletionsGateway
 from haagent.models import provider_profile
 from haagent.models.gateway_registry import gateway_from_profile
 from haagent.models.provider_profile import ProviderProfileRecord, save_active_profile, save_provider_profile
+from haagent.skills.marketplace import MarketplaceProvider, MarketplaceSearchResult, MarketplaceSkillCard
 
 
 class RecordingGateway:
@@ -174,6 +175,121 @@ def test_service_lists_model_profiles_with_active_and_credential_status(
     assert profiles[0].name == "router"
     assert profiles[0].active is True
     assert profiles[0].capability.status == "runnable"
+
+
+def test_service_searches_skill_marketplace_and_caches_results(tmp_path: Path, monkeypatch) -> None:
+    service = _service(tmp_path)
+    calls: list[tuple[str, list[str] | None, int]] = []
+
+    def fake_search_marketplace(query: str, *, providers=None, limit: int = 10):
+        calls.append((query, providers, limit))
+        return MarketplaceSearchResult(
+            status="success",
+            query=query,
+            cards=[
+                MarketplaceSkillCard(
+                    provider=MarketplaceProvider.SKILLS_SH,
+                    result_id="skills_sh-1",
+                    remote_id="cowork-os/cowork-os/analyze-csv",
+                    name="analyze-csv",
+                    source="cowork-os/cowork-os",
+                    summary="Analyze CSV files.",
+                    detail_url="https://skills.sh/cowork-os/cowork-os/analyze-csv",
+                    installable=True,
+                ),
+                MarketplaceSkillCard(
+                    provider=MarketplaceProvider.SKILLSMP,
+                    result_id="skillsmp-2",
+                    remote_id="openai-csv-workbench",
+                    name="csv-workbench",
+                    source="openai",
+                    summary="Analyze CSV files.",
+                    detail_url="https://skillsmp.com/creators/openai/csv-workbench",
+                    installable=False,
+                ),
+            ],
+            warnings=[],
+        )
+
+    monkeypatch.setattr("haagent.app.assistant_service.search_marketplace", fake_search_marketplace)
+
+    result = service.search_skill_marketplace("csv", providers=["skills_sh"], limit=3)
+
+    assert calls == [("csv", ["skills_sh"], 3)]
+    assert result.status == "success"
+    assert [item.result_id for item in result.results] == ["skills_sh-1", "skillsmp-2"]
+    assert result.results[0].installable is True
+    assert result.results[1].installable is False
+
+
+def test_service_installs_cached_skills_sh_marketplace_result(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    service = _service(tmp_path)
+    monkeypatch.setattr(
+        "haagent.app.assistant_service.search_marketplace",
+        lambda query, *, providers=None, limit=10: MarketplaceSearchResult(
+            status="success",
+            query=query,
+            cards=[
+                MarketplaceSkillCard(
+                    provider=MarketplaceProvider.SKILLS_SH,
+                    result_id="skills_sh-1",
+                    remote_id="cowork-os/cowork-os/analyze-csv",
+                    name="analyze-csv",
+                    source="cowork-os/cowork-os",
+                    summary="Analyze CSV files.",
+                    detail_url="https://skills.sh/cowork-os/cowork-os/analyze-csv",
+                    installable=True,
+                ),
+            ],
+            warnings=[],
+        ),
+    )
+    service.search_skill_marketplace("csv")
+
+    installed = service.install_marketplace_skill("skills_sh-1")
+
+    assert installed.command_name == "analyze-csv"
+    assert installed.skill_file.exists()
+    assert "source: marketplace" in installed.skill_file.read_text(encoding="utf-8")
+    skill_names = [skill["name"] for skill in service.list_skills().skills]
+    assert "analyze-csv" in skill_names
+
+
+def test_service_rejects_unknown_marketplace_result_id(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    with pytest.raises(AssistantServiceError, match="unknown marketplace result id"):
+        service.install_marketplace_skill("skills_sh-404")
+
+
+def test_service_rejects_skillsmp_marketplace_install(tmp_path: Path, monkeypatch) -> None:
+    service = _service(tmp_path)
+    monkeypatch.setattr(
+        "haagent.app.assistant_service.search_marketplace",
+        lambda query, *, providers=None, limit=10: MarketplaceSearchResult(
+            status="success",
+            query=query,
+            cards=[
+                MarketplaceSkillCard(
+                    provider=MarketplaceProvider.SKILLSMP,
+                    result_id="skillsmp-1",
+                    remote_id="openai-csv-workbench",
+                    name="csv-workbench",
+                    source="openai",
+                    summary="Analyze CSV files.",
+                    detail_url="https://skillsmp.com/creators/openai/csv-workbench",
+                    installable=False,
+                ),
+            ],
+            warnings=[],
+        ),
+    )
+    service.search_skill_marketplace("csv")
+
+    with pytest.raises(AssistantServiceError, match="only skills_sh results are installable"):
+        service.install_marketplace_skill("skillsmp-1")
 
 
 def test_service_sets_default_model_profile_without_switching_current_session(

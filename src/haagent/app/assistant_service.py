@@ -53,6 +53,12 @@ from haagent.runtime.chat_session import (
 )
 from haagent.runtime.human_interaction import HumanInteractionHandler
 from haagent.runtime.path_policy import PathAccess, PermissionMode
+from haagent.skills.marketplace import (
+    MarketplaceError,
+    MarketplaceSkillCard,
+    install_marketplace_skill_card,
+    search_marketplace,
+)
 from haagent.skills import trust_project_root, untrust_project_root
 from haagent.tools.skills import skill_list, skill_read
 from haagent.memory import (
@@ -176,6 +182,35 @@ class AssistantSkillContent:
 
 
 @dataclass(frozen=True)
+class AssistantMarketplaceSkill:
+    result_id: str
+    provider: str
+    name: str
+    source: str
+    summary: str
+    detail_url: str
+    installable: bool
+    quality: dict[str, int | float | str]
+
+
+@dataclass(frozen=True)
+class AssistantMarketplaceSearch:
+    status: str
+    query: str
+    results: list[AssistantMarketplaceSkill]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class AssistantMarketplaceInstall:
+    name: str
+    command_name: str
+    skill_dir: Path
+    skill_file: Path
+    source_url: str
+
+
+@dataclass(frozen=True)
 class ModelProfileConfigureRequest:
     name: str
     provider: str
@@ -209,6 +244,7 @@ class AssistantService:
         self.enable_web = enable_web
         self._session: AgentSession | None = None
         self._pending_model_profile_name: str | None = None
+        self._marketplace_results: dict[str, MarketplaceSkillCard] = {}
         self.initial_resume = initial_resume
         self.initial_continue = initial_continue
 
@@ -562,6 +598,41 @@ class AssistantService:
             content=str(result["content"]),
         )
 
+    def search_skill_marketplace(
+        self,
+        query: str,
+        *,
+        providers: list[str] | None = None,
+        limit: int = 10,
+    ) -> AssistantMarketplaceSearch:
+        try:
+            result = search_marketplace(query, providers=providers, limit=limit)
+        except MarketplaceError as error:
+            raise AssistantServiceError(str(error)) from error
+        self._marketplace_results = {card.result_id: card for card in result.cards}
+        return AssistantMarketplaceSearch(
+            status=result.status,
+            query=result.query,
+            results=[_marketplace_skill(card) for card in result.cards],
+            warnings=list(result.warnings),
+        )
+
+    def install_marketplace_skill(self, result_id: str) -> AssistantMarketplaceInstall:
+        card = self._marketplace_results.get(result_id)
+        if card is None:
+            raise AssistantServiceError(f"unknown marketplace result id: {result_id}")
+        try:
+            installed = install_marketplace_skill_card(card)
+        except MarketplaceError as error:
+            raise AssistantServiceError(str(error)) from error
+        return AssistantMarketplaceInstall(
+            name=installed.name,
+            command_name=installed.command_name,
+            skill_dir=installed.skill_dir,
+            skill_file=installed.skill_file,
+            source_url=installed.source_url,
+        )
+
     def run_prompt_events(
         self,
         prompt: str,
@@ -645,6 +716,19 @@ class AssistantService:
 
     def _memory_store(self) -> MemoryStore:
         return MemoryStore(workspace_root=self.workspace_root)
+
+
+def _marketplace_skill(card: MarketplaceSkillCard) -> AssistantMarketplaceSkill:
+    return AssistantMarketplaceSkill(
+        result_id=card.result_id,
+        provider=card.provider.value,
+        name=card.name,
+        source=card.source,
+        summary=card.summary,
+        detail_url=card.detail_url,
+        installable=card.installable,
+        quality=dict(card.quality),
+    )
 
 
 def _session_status(session: AgentSession) -> AssistantSessionStatus:

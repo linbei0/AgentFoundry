@@ -65,7 +65,7 @@ CHAT_ALLOWED_TOOLS = [
     "apply_patch_set",
     "shell",
 ]
-CHAT_WEB_TOOLS = ["web_search", "web_fetch"]
+CHAT_WEB_TOOLS = ["web_search", "web_fetch", "skill_market_search"]
 CHAT_SKILL_TOOLS = ["skill_list", "skill_read"]
 CHAT_APPROVED_TOOLS = ["file_write", "code_run", "apply_patch", "apply_patch_set", "shell"]
 CHAT_MAX_TURNS = 20

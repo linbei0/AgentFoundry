@@ -223,6 +223,31 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
             "additionalProperties": False,
         },
     ),
+    "skill_market_search": ToolDefinition(
+        name="skill_market_search",
+        description="search the remote skill marketplace providers skills_sh and skillsmp as compact external metadata",
+        risk_level="low",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "marketplace search query; English keywords usually work best",
+                },
+                "providers": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["skills_sh", "skillsmp"]},
+                    "description": "optional provider filter; defaults to both skills_sh and skillsmp",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "maximum results to return; defaults to 10 and must be between 1 and 10",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    ),
     "web_search": ToolDefinition(
         name="web_search",
         description="search the public web using the configured search provider and return sourced compact results",

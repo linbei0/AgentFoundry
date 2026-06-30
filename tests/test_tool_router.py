@@ -13,6 +13,7 @@ from haagent.runtime.path_policy import ExternalRoot, PathPolicy
 from haagent.skills import SkillSettings
 from haagent.tools.registry import TOOL_REGISTRY
 from haagent.tools.router import ToolRouter
+from haagent.tools import router as router_module
 from haagent.tools.shell import shell
 
 
@@ -180,6 +181,43 @@ def test_project_skill_list_marks_untrusted_project_roots(tmp_path: Path, monkey
     assert result["status"] == "success"
     assert result["skills"] == []
     assert result["blocked_project_skill_roots"] == [str((repo / ".haagent" / "skills").resolve())]
+
+
+def test_skill_market_search_runs_through_router_and_writes_trace(tmp_path: Path, monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_skill_market_search(args: dict[str, object]) -> dict[str, object]:
+        calls.append(args)
+        return {
+            "status": "success",
+            "query": args["query"],
+            "results": [
+                {
+                    "result_id": "skills_sh-1",
+                    "provider": "skills_sh",
+                    "name": "csv",
+                    "source": "vercel-labs/bash-tool",
+                    "summary": "",
+                    "detail_url": "https://skills.sh/vercel-labs/bash-tool/csv",
+                    "installable": True,
+                    "quality": {},
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(router_module, "skill_market_search", fake_skill_market_search)
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["skill_market_search"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("skill_market_search", {"query": "csv", "providers": ["skills_sh"], "limit": 1})
+
+    assert calls == [{"query": "csv", "providers": ["skills_sh"], "limit": 1}]
+    assert result["status"] == "success"
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "skill_market_search"
+    assert record["status"] == "success"
+    assert record["result"] == result
 
 
 def test_medium_risk_web_fetch_runs_without_high_risk_approval(tmp_path: Path) -> None:

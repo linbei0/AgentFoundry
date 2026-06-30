@@ -27,6 +27,7 @@ def test_tool_registry_contains_mvp_tools() -> None:
         "start_memory_update",
         "skill_list",
         "skill_read",
+        "skill_market_search",
         "web_search",
         "web_fetch",
         "file_write",
@@ -141,6 +142,17 @@ def test_skill_tool_schemas_are_low_risk_and_do_not_require_body_in_list() -> No
     assert set(read_schema["parameters"]["properties"]) == {"name"}
     assert TOOL_REGISTRY["skill_list"].risk_level == "low"
     assert TOOL_REGISTRY["skill_read"].risk_level == "low"
+
+
+def test_skill_market_search_schema_is_read_only_marketplace_search() -> None:
+    schema = export_tool_schemas(["skill_market_search"])[0]
+
+    assert schema["name"] == "skill_market_search"
+    assert "marketplace" in schema["description"]
+    assert schema["parameters"]["required"] == ["query"]
+    assert set(schema["parameters"]["properties"]) == {"query", "providers", "limit"}
+    assert schema["parameters"]["properties"]["providers"]["items"]["enum"] == ["skills_sh", "skillsmp"]
+    assert TOOL_REGISTRY["skill_market_search"].risk_level == "low"
 
 
 def test_web_tool_schemas_describe_explicit_read_only_network_access() -> None:

@@ -503,7 +503,8 @@ class HaAgentTuiApp(App[None]):
         self._refresh()
 
     def _handle_skills_command(self, argument: str) -> None:
-        value = argument.strip().lower()
+        raw_value = argument.strip()
+        value = raw_value.lower()
         try:
             if value == "trust":
                 summary = self.service.trust_project_skills()
@@ -511,12 +512,50 @@ class HaAgentTuiApp(App[None]):
             elif value == "untrust":
                 summary = self.service.untrust_project_skills()
                 self._append_block("Skills", "已取消信任当前 workspace 的项目 skills。\n" + _skills_summary_text(summary))
+            elif value.startswith("search "):
+                query = raw_value.split(" ", 1)[1].strip()
+                if not query:
+                    self._append_block("Command", _skills_usage_text())
+                else:
+                    result = self.service.search_skill_marketplace(query, limit=10)
+                    self._append_block("Skills marketplace", _skill_marketplace_summary_text(result))
+            elif value.startswith("install "):
+                result_id = raw_value.split(" ", 1)[1].strip()
+                if not result_id:
+                    self._append_block("Command", _skills_usage_text())
+                else:
+                    self.push_screen(
+                        ConfirmModal(
+                            "安装远端 skill",
+                            (
+                                f"将安装 marketplace 搜索结果：{result_id}\n"
+                                "远端内容会作为外部引用写入用户级 skills；使用前仍需审阅来源页面。确认？"
+                            ),
+                        ),
+                        lambda confirmed, result_id=result_id: self._handle_skill_marketplace_install_confirmed(
+                            result_id,
+                            confirmed,
+                        ),
+                    )
             elif not value:
                 self._append_block("Skills", _skills_summary_text(self.service.list_skills()))
             else:
-                self._append_block("Command", "用法：/skills、/skills trust 或 /skills untrust")
+                self._append_block("Command", _skills_usage_text())
         except Exception as error:
             self._append_block("Skills warning", f"skills 操作失败：{error}")
+        self._refresh()
+
+    def _handle_skill_marketplace_install_confirmed(self, result_id: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            self._append_block("Skills marketplace", f"已取消安装 marketplace skill：{result_id}")
+            self._refresh()
+            return
+        try:
+            installed = self.service.install_marketplace_skill(result_id)
+        except Exception as error:
+            self._append_block("Skills warning", f"skills 操作失败：{error}")
+        else:
+            self._append_block("Skills marketplace", _skill_marketplace_install_text(installed))
         self._refresh()
 
     def _handle_skill_command(self, argument: str) -> None:
@@ -1358,4 +1397,80 @@ def _skills_summary_text(summary) -> str:
         for path in blocked:
             lines.append(f"- {path}")
         lines.append("输入 /skills trust 信任当前 workspace 的项目 skills。")
+    return "\n".join(lines)
+
+
+def _skills_usage_text() -> str:
+    return "\n".join(
+        [
+            "用法：",
+            "- /skills",
+            "- /skills trust",
+            "- /skills untrust",
+            "- /skills search <query>",
+            "- /skills install <result-id>",
+        ],
+    )
+
+
+def _skill_marketplace_summary_text(result) -> str:
+    lines = [
+        f"查询：{getattr(result, 'query', '')}",
+        f"状态：{getattr(result, 'status', 'unknown')}",
+    ]
+    results = list(getattr(result, "results", []) or [])
+    if results:
+        lines.append("")
+        lines.append("结果：")
+        for item in results:
+            lines.append(_skill_marketplace_result_line(item))
+    else:
+        lines.append("")
+        lines.append("未找到 marketplace skills。")
+    warnings = list(getattr(result, "warnings", []) or [])
+    if warnings:
+        lines.append("")
+        lines.append("警告：")
+        for warning in warnings:
+            lines.append(f"- {warning}")
+    return "\n".join(lines)
+
+
+def _skill_marketplace_result_line(item) -> str:
+    result_id = str(getattr(item, "result_id", "unknown"))
+    provider = str(getattr(item, "provider", "unknown"))
+    name = str(getattr(item, "name", "unknown"))
+    source = str(getattr(item, "source", ""))
+    summary = str(getattr(item, "summary", ""))
+    detail_url = str(getattr(item, "detail_url", ""))
+    install_state = "可安装" if bool(getattr(item, "installable", False)) else "暂不支持直接安装"
+    quality = _skill_marketplace_quality_text(getattr(item, "quality", {}) or {})
+    pieces = [f"- {result_id} [{provider}] {name}"]
+    if source:
+        pieces.append(f"by {source}")
+    pieces.append(f"({install_state})")
+    if quality:
+        pieces.append(quality)
+    if summary:
+        pieces.append(f"- {summary}")
+    if detail_url:
+        pieces.append(f"- {detail_url}")
+    return " ".join(pieces)
+
+
+def _skill_marketplace_quality_text(quality) -> str:
+    if not isinstance(quality, dict) or not quality:
+        return ""
+    pairs = [f"{key}={value}" for key, value in sorted(quality.items())]
+    return "[" + ", ".join(pairs) + "]"
+
+
+def _skill_marketplace_install_text(installed) -> str:
+    lines = [
+        f"已安装 marketplace skill：{getattr(installed, 'name', 'unknown')}",
+        f"命令：${getattr(installed, 'command_name', 'unknown')}",
+        f"目录：{getattr(installed, 'skill_dir', '')}",
+        f"来源：{getattr(installed, 'source_url', '')}",
+        "远端内容已作为外部引用写入；使用前请审阅来源页面。",
+    ]
     return "\n".join(lines)
