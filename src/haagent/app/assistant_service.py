@@ -47,6 +47,7 @@ from haagent.runtime.chat_session import (
     ChatSessionError,
     ChatTurnResult,
     SessionSummary,
+    SessionTurnSummary,
     find_latest_session,
     list_sessions,
 )
@@ -118,6 +119,16 @@ class AssistantSessionSummary:
     turn_count: int
     first_request: str
     session_path: Path
+
+
+@dataclass(frozen=True)
+class AssistantSessionTurn:
+    turn_index: int
+    request: str
+    summary: str
+    status: str
+    episode_path: Path
+    verification_status: str
 
 
 @dataclass(frozen=True)
@@ -292,6 +303,14 @@ class AssistantService:
     def list_sessions(self) -> list[AssistantSessionSummary]:
         try:
             return [_session_summary(summary) for summary in list_sessions(self.runs_root, self.workspace_root)]
+        except ChatSessionError as error:
+            raise AssistantServiceError(str(error)) from error
+
+    def current_session_history(self) -> list[AssistantSessionTurn]:
+        if self._session is None:
+            return []
+        try:
+            return [_session_turn(turn) for turn in self._session.turn_summaries()]
         except ChatSessionError as error:
             raise AssistantServiceError(str(error)) from error
 
@@ -608,6 +627,17 @@ def _session_summary(summary: SessionSummary) -> AssistantSessionSummary:
         turn_count=summary.turn_count,
         first_request=summary.first_request,
         session_path=summary.session_path,
+    )
+
+
+def _session_turn(turn: SessionTurnSummary) -> AssistantSessionTurn:
+    return AssistantSessionTurn(
+        turn_index=turn.turn_index,
+        request=turn.request,
+        summary=turn.summary,
+        status=turn.status,
+        episode_path=turn.episode_path,
+        verification_status=turn.verification_status,
     )
 
 

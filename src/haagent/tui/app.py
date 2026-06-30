@@ -166,7 +166,7 @@ class HaAgentTuiApp(App[None]):
             except Exception as error:
                 self._append_block("Session warning", f"恢复会话失败：{error}")
             else:
-                self._append_line(f"已恢复 session：{status.session_id}")
+                self._show_session_history(status, prefix="已恢复 session")
             return
         if not bool(getattr(self.service, "initial_continue", False)):
             return
@@ -175,7 +175,7 @@ class HaAgentTuiApp(App[None]):
         except Exception as error:
             self._append_block("Session warning", f"继续最新 session 失败：{error}")
         else:
-            self._append_line(f"已继续最新 session：{status.session_id}")
+            self._show_session_history(status, prefix="已继续最新 session")
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive_layout(width=event.size.width, height=event.size.height)
@@ -637,7 +637,12 @@ class HaAgentTuiApp(App[None]):
         except Exception as error:
             self._append_block("Session warning", f"会话操作失败：{error}")
         else:
-            self._append_line(f"当前会话：{status.session_id}")
+            if result.action == "new":
+                self._conversation_lines = [f"当前会话：{status.session_id}"]
+                self._conversation_rendered_count = 0
+                self._conversation_placeholder_rendered = True
+            else:
+                self._show_session_history(status, prefix="当前会话")
         self._refresh()
         self.set_timer(0.01, self._restore_prompt_focus)
 
@@ -1144,6 +1149,24 @@ class HaAgentTuiApp(App[None]):
 
     def _footer_text(self) -> str:
         return footer_text(self._help_context())
+
+    def _show_session_history(self, status, *, prefix: str) -> None:
+        lines = []
+        try:
+            history = list(self.service.current_session_history())
+        except Exception as error:
+            lines.append(f"{prefix}历史读取失败：{error}")
+            history = []
+        if not history and not lines:
+            lines.append("")
+        for turn in history:
+            lines.append(f"{BLOCK_TITLES['You']}\n  {turn.request}")
+            lines.append(f"{BLOCK_TITLES['Assistant']}\n  {turn.summary}")
+            if turn.status != "completed":
+                lines.append(f"状态：{turn.status}")
+        self._conversation_lines = lines
+        self._conversation_rendered_count = 0
+        self._conversation_placeholder_rendered = True
 
     def _append_block(self, title: str, body: str) -> None:
         self._conversation_lines.append(f"{BLOCK_TITLES.get(title, title)}\n  {body}")

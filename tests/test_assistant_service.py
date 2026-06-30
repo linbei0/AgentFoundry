@@ -757,6 +757,11 @@ def test_resume_session_sets_current_session(tmp_path: Path, monkeypatch) -> Non
     assert resumed.session_id == created.session_id
     assert resumed.turn_count == 1
     assert service.current_session().session_id == created.session_id
+    history = service.current_session_history()
+    assert len(history) == 1
+    assert history[0].request == "remember this"
+    assert "remember this" in history[0].summary
+    assert history[0].status == "completed"
 
 
 def test_external_root_authorization_is_saved_and_restored_with_session(tmp_path: Path, monkeypatch) -> None:

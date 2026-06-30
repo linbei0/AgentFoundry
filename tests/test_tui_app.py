@@ -65,6 +65,7 @@ class FakeAssistantService:
         memory_error: Exception | None = None,
         current_session_id: str = "session-test",
         sessions: list[AssistantSessionSummary] | None = None,
+        session_histories: dict[str, list[SimpleNamespace]] | None = None,
         enable_web: bool = False,
         external_roots: list[dict[str, str]] | None = None,
         permission_mode: str = "request_approval",
@@ -89,6 +90,7 @@ class FakeAssistantService:
         self.memory_error = memory_error
         self.current_session_id = current_session_id
         self.sessions = list(sessions or [])
+        self.session_histories = dict(session_histories or {})
         self.enable_web = enable_web
         self.external_roots = list(external_roots or [])
         self.permission_mode = permission_mode
@@ -226,6 +228,9 @@ class FakeAssistantService:
 
     def list_sessions(self) -> list[AssistantSessionSummary]:
         return list(self.sessions)
+
+    def current_session_history(self):
+        return list(self.session_histories.get(self.current_session_id, []))
 
     def list_model_profiles(self):
         return list(self.model_profiles)
@@ -2566,7 +2571,20 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
     ]
 
     async def run_resume() -> None:
-        service = FakeAssistantService(workspace_root=tmp_path, sessions=sessions)
+        service = FakeAssistantService(
+            workspace_root=tmp_path,
+            sessions=sessions,
+            session_histories={
+                "session-beta": [
+                    SimpleNamespace(
+                        turn_index=1,
+                        request="分析 CSV",
+                        summary="用户要分析 sales.csv，助手已说明会检查列名和异常值。",
+                        status="completed",
+                    ),
+                ],
+            },
+        )
         app = HaAgentTuiApp(service)
         async with app.run_test(size=(120, 40)) as pilot:
             input_widget = app.query_one("#prompt-input")
@@ -2582,6 +2600,11 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
             await pilot.pause(0.1)
             assert service.resumed_sessions == [str(sessions[1].session_path)]
             assert "session-beta" in _text(app, "#status-bar")
+            conversation = _text(app, "#conversation")
+            assert "分析 CSV" in conversation
+            assert "用户要分析 sales.csv" in conversation
+            assert "当前会话：session-beta" not in conversation
+            assert "整理会议纪要" not in conversation
             assert "输入过滤  ↑/↓ 移动  Enter 恢复" not in _all_text(app)
 
     async def run_continue_new_escape() -> None:

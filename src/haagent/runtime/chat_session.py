@@ -142,6 +142,16 @@ class SessionSummary:
     session_path: Path
 
 
+@dataclass(frozen=True)
+class SessionTurnSummary:
+    turn_index: int
+    request: str
+    summary: str
+    status: str
+    episode_path: Path
+    verification_status: str
+
+
 class AgentSession:
     def __init__(
         self,
@@ -535,6 +545,10 @@ class AgentSession:
 
     def summary_text(self) -> str | None:
         return self._session_memory().summary_text
+
+    def turn_summaries(self) -> list[SessionTurnSummary]:
+        """读取当前 session 已记录轮次，供 UI 展示可恢复上下文。"""
+        return [_session_turn_summary(turn) for turn in _read_session_turns(self.session_path)]
 
     def _session_memory(self):
         return compact_session_memory(
@@ -1032,6 +1046,17 @@ def _read_session_turns(session_path: Path) -> list[dict[str, object]]:
                 raise ChatSessionError(f"invalid turns.jsonl line {index}: {field_name} must be a string")
         turns.append(record)
     return turns
+
+
+def _session_turn_summary(record: dict[str, object]) -> SessionTurnSummary:
+    return SessionTurnSummary(
+        turn_index=int(record["turn_index"]),
+        request=str(record["request"]),
+        summary=str(record["summary"]),
+        status=str(record["status"]),
+        episode_path=Path(str(record["episode_path"])),
+        verification_status=str(record["verification_status"]),
+    )
 
 
 def _optional_string(value: object) -> str | None:
