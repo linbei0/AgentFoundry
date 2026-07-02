@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from haagent.models import provider_profile as provider_profile_module
+from haagent.mcp.settings import load_mcp_settings
 from haagent.models.catalog import (
     DEFAULT_MODEL_CATALOG_CACHE_MAX_AGE,
     CatalogFetchResult,
@@ -331,6 +332,35 @@ class AssistantService:
         if self._session is None:
             return None
         return _session_status(self._session)
+
+    def get_mcp_status(self) -> dict[str, object]:
+        if self._session is None:
+            settings = load_mcp_settings()
+            servers = [
+                {
+                    "name": name,
+                    "state": "configured",
+                    "detail": "not loaded; create or resume a session to connect",
+                    "tool_count": 0,
+                    "resource_count": 0,
+                }
+                for name in settings.servers
+            ]
+            return {
+                "configured_count": len(servers),
+                "connected_count": 0,
+                "failed_count": 0,
+                "servers": servers,
+            }
+        mcp_status = getattr(self._session, "mcp_status", None)
+        if callable(mcp_status):
+            return mcp_status()
+        return {
+            "configured_count": 0,
+            "connected_count": 0,
+            "failed_count": 0,
+            "servers": [],
+        }
 
     def set_web_enabled(self, enabled: bool) -> AssistantWorkspaceStatus:
         self.enable_web = enabled

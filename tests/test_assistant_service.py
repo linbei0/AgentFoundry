@@ -656,6 +656,55 @@ def test_service_web_flag_is_reported_and_passed_to_new_session(tmp_path: Path, 
     assert service._session.enable_web is True
 
 
+def test_assistant_service_mcp_status_without_session(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    service = AssistantService(workspace_root=tmp_path, runs_root=tmp_path / ".runs")
+
+    status = service.get_mcp_status()
+
+    assert status["configured_count"] == 0
+    assert status["connected_count"] == 0
+    assert status["failed_count"] == 0
+    assert status["servers"] == []
+
+
+def test_assistant_service_reads_configured_mcp_servers_without_session(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    _set_home(monkeypatch, home)
+    config_dir = home / ".haagent"
+    config_dir.mkdir(parents=True)
+    (config_dir / "mcp.json").write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "exa": {
+                        "type": "http",
+                        "url": "https://mcp.exa.ai/mcp",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AssistantService(workspace_root=tmp_path, runs_root=tmp_path / ".runs")
+
+    status = service.get_mcp_status()
+
+    assert status["configured_count"] == 1
+    assert status["connected_count"] == 0
+    assert status["failed_count"] == 0
+    assert status["servers"] == [
+        {
+            "name": "exa",
+            "state": "configured",
+            "detail": "not loaded; create or resume a session to connect",
+            "tool_count": 0,
+            "resource_count": 0,
+        }
+    ]
+
+
 def test_service_can_toggle_web_for_current_and_future_sessions(tmp_path: Path, monkeypatch) -> None:
     _set_home(monkeypatch, tmp_path / "home")
     _write_user_profile(Path.home())

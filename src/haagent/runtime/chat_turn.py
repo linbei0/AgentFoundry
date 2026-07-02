@@ -7,7 +7,7 @@ haagent/runtime/chat_turn.py - Chat 单轮事件映射
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -19,6 +19,7 @@ from haagent.runtime.human_interaction import HumanInteractionHandler
 from haagent.runtime.path_policy import PathPolicy, default_path_policy, serialize_path_policy
 from haagent.runtime.run_recorder import RunResult
 from haagent.skills import load_skill_registry
+from haagent.tools.registry import ToolRuntimeRegistry
 from haagent.tools.presentation import summarize_tool_args, summarize_tool_result
 
 
@@ -73,6 +74,8 @@ class OrchestratorFactory(Protocol):
         event_sink,
         interaction_handler: HumanInteractionHandler | None,
         cancellation_token: CancellationToken,
+        tool_registry: ToolRuntimeRegistry | None = None,
+        mcp_runtime: object | None = None,
     ):
         ...
 
@@ -95,6 +98,9 @@ class ChatTurnRequest:
     interaction_handler: HumanInteractionHandler | None
     cancellation_token: CancellationToken
     orchestrator_factory: OrchestratorFactory
+    tool_registry: ToolRuntimeRegistry | None = None
+    mcp_runtime: object | None = None
+    mcp_tool_names: list[str] = field(default_factory=list)
 
 
 class ChatTurnRunner:
@@ -111,6 +117,7 @@ class ChatTurnRunner:
                 path_policy=request.path_policy,
                 enable_web=request.enable_web,
                 target_paths=request.target_paths,
+                mcp_tool_names=request.mcp_tool_names,
             )
             orchestrator = request.orchestrator_factory(
                 runs_root=request.runs_root,
@@ -123,6 +130,8 @@ class ChatTurnRunner:
                 event_sink=request.event_sink,
                 interaction_handler=request.interaction_handler,
                 cancellation_token=request.cancellation_token,
+                tool_registry=request.tool_registry,
+                mcp_runtime=request.mcp_runtime,
             )
             return orchestrator.run(task_path)
 
@@ -135,13 +144,24 @@ def write_chat_task_yaml(
     path_policy: PathPolicy | None = None,
     enable_web: bool = False,
     target_paths: list[str] | None = None,
+    mcp_tool_names: list[str] | None = None,
 ) -> None:
     allowed_tools = list(CHAT_ALLOWED_TOOLS)
+    mcp_tools = list(mcp_tool_names or [])
     if enable_web:
         allowed_tools.extend(CHAT_WEB_TOOLS)
     if load_skill_registry(workspace_root=workspace_root).list_skills():
         allowed_tools.extend(CHAT_SKILL_TOOLS)
+    if mcp_tools:
+        allowed_tools.extend(mcp_tools)
+        allowed_tools.extend(["list_mcp_resources", "read_mcp_resource"])
     policy = path_policy or default_path_policy(workspace_root)
+    approval_allowed_tools = [*CHAT_APPROVED_TOOLS, *mcp_tools]
+    approved_tools = (
+        approval_allowed_tools
+        if policy.permission_mode in {"auto_approve", "full_access"}
+        else []
+    )
     task = {
         "goal": request,
         "workspace_root": str(workspace_root.resolve()),
@@ -152,12 +172,8 @@ def write_chat_task_yaml(
         "acceptance_criteria": ["Complete the requested chat task."],
         "verification_commands": [],
         "policy": {
-            "approval_allowed_tools": list(CHAT_APPROVED_TOOLS),
-            "approved_tools": (
-                list(CHAT_APPROVED_TOOLS)
-                if policy.permission_mode in {"auto_approve", "full_access"}
-                else []
-            ),
+            "approval_allowed_tools": approval_allowed_tools,
+            "approved_tools": approved_tools,
         },
     }
     path.write_text(yaml.safe_dump(task, sort_keys=False, allow_unicode=True), encoding="utf-8")

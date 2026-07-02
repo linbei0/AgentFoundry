@@ -136,6 +136,31 @@ policy:
     assert task.policy == {"approval_allowed_tools": ["shell"], "approved_tools": ["shell"]}
 
 
+def test_load_task_allows_dynamic_policy_tool_when_listed_in_allowed_tools(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    write_task(
+        task_path,
+        """
+goal: Dynamic MCP tool
+constraints: []
+allowed_tools:
+  - mcp__fixture__echo
+acceptance_criteria: []
+verification_commands: []
+policy:
+  approval_allowed_tools:
+    - mcp__fixture__echo
+""".strip(),
+    )
+
+    task = load_task(task_path)
+
+    assert task.policy == {
+        "approval_allowed_tools": ["mcp__fixture__echo"],
+        "approved_tools": [],
+    }
+
+
 def test_load_task_rejects_non_list_policy_approval_allowed_tools(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(
@@ -176,7 +201,7 @@ policy:
         load_task(task_path)
 
 
-def test_load_task_rejects_unknown_policy_approval_allowed_tool(tmp_path: Path) -> None:
+def test_load_task_rejects_policy_approval_tool_not_in_allowed_tools(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(
         task_path,
@@ -193,11 +218,11 @@ policy:
 """.strip(),
     )
 
-    with pytest.raises(TaskLoadError, match="unknown policy.approval_allowed_tools"):
+    with pytest.raises(TaskLoadError, match="policy.approval_allowed_tools must be included in allowed_tools"):
         load_task(task_path)
 
 
-def test_load_task_rejects_unknown_policy_approved_tool(tmp_path: Path) -> None:
+def test_load_task_rejects_policy_approved_tool_not_in_allowed_tools(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     write_task(
         task_path,
@@ -216,7 +241,7 @@ policy:
 """.strip(),
     )
 
-    with pytest.raises(TaskLoadError, match="unknown policy.approved_tools"):
+    with pytest.raises(TaskLoadError, match="policy.approved_tools must be included in allowed_tools"):
         load_task(task_path)
 
 
@@ -228,7 +253,7 @@ def test_load_task_rejects_approved_tool_not_approval_allowed(tmp_path: Path) ->
 goal: Approved without allowed
 constraints: []
 allowed_tools:
-  - fake_tool
+  - shell
 acceptance_criteria: []
 verification_commands: []
 policy:

@@ -29,7 +29,13 @@ from haagent.skills import SkillSettings
 from haagent.tools.base import ToolHandler, ToolRoutingError, tool_error
 from haagent.tools.code_run import code_run
 from haagent.tools.file_tools import apply_patch, apply_patch_set, file_list, file_read, file_search, file_write
-from haagent.tools.registry import TOOL_REGISTRY, validate_tool_registry
+from haagent.tools.mcp_tools import list_mcp_resources, read_mcp_resource, run_mcp_tool
+from haagent.tools.registry import (
+    TOOL_REGISTRY,
+    ToolRuntimeRegistry,
+    default_tool_runtime_registry,
+    validate_tool_registry,
+)
 from haagent.tools.shell import shell
 from haagent.tools.skill_market import skill_market_search
 from haagent.tools.skills import skill_list, skill_read
@@ -47,6 +53,8 @@ class ToolRouter:
         approved_tools: list[str] | None = None,
         skill_settings: SkillSettings | None = None,
         cancellation_token: CancellationToken | None = None,
+        tool_registry: ToolRuntimeRegistry | None = None,
+        mcp_runtime: Any | None = None,
     ) -> None:
         self._allowed_tools = set(allowed_tools)
         self._approval_allowed_tools = list(approval_allowed_tools or [])
@@ -55,6 +63,8 @@ class ToolRouter:
         self._workspace_root = workspace_root.resolve()
         self._skill_settings = skill_settings
         self._cancellation_token = cancellation_token
+        self._tool_registry = tool_registry or default_tool_runtime_registry()
+        self._mcp_runtime = mcp_runtime
         self._path_policy = path_policy.resolved() if path_policy is not None else default_path_policy(self._workspace_root)
         self._handlers: dict[str, ToolHandler] = {
             "fake_tool": self._fake_tool,
@@ -68,6 +78,8 @@ class ToolRouter:
             "skill_market_search": skill_market_search,
             "web_search": web_search,
             "web_fetch": web_fetch,
+            "list_mcp_resources": lambda args: list_mcp_resources(args, self._mcp_runtime),
+            "read_mcp_resource": lambda args: read_mcp_resource(args, self._mcp_runtime),
             "file_write": lambda args: file_write(args, self._workspace_root, self._path_policy),
             "code_run": lambda args: code_run(
                 args,
@@ -103,11 +115,12 @@ class ToolRouter:
         try:
             if tool_name not in self._allowed_tools:
                 result = tool_error("tool_not_allowed", f"tool is not allowed: {tool_name}")
-            elif tool_name not in self._handlers:
+            elif not self._tool_registry.has(tool_name):
                 result = tool_error("unknown_tool", f"unknown tool: {tool_name}")
             else:
+                tool_definition = self._tool_registry.get(tool_name)
                 policy_decision = evaluate_tool_call(
-                    TOOL_REGISTRY[tool_name],
+                    tool_definition,
                     approval_allowed_tools=self._approval_allowed_tools,
                     approved_tools=self._approved_tools,
                 )
@@ -118,7 +131,7 @@ class ToolRouter:
                         policy_decision,
                         interaction_handler,
                     )
-                elif validation_error := _validate_args(tool_name, args):
+                elif validation_error := _validate_args(tool_name, args, self._tool_registry):
                     result = validation_error
                 elif guardrail_result := check_tool_input(tool_name, args):
                     result = tool_error(
@@ -127,6 +140,8 @@ class ToolRouter:
                     )
                 elif tool_name == "request_user_input":
                     result = self._request_user_input(args, interaction_handler)
+                elif tool_name.startswith("mcp__"):
+                    result = run_mcp_tool(tool_name, args, self._mcp_runtime)
                 else:
                     result = self._run_handler(tool_name, args, interaction_handler)
         except Exception as error:
@@ -203,7 +218,7 @@ class ToolRouter:
                 policy_decision,
                 None,
             )
-        validation_error = _validate_args(tool_name, args)
+        validation_error = _validate_args(tool_name, args, self._tool_registry)
         if validation_error:
             return validation_error, policy_decision, None
         response = interaction_handler(
@@ -234,6 +249,8 @@ class ToolRouter:
                 granted_policy,
                 guardrail_result,
             )
+        if tool_name.startswith("mcp__"):
+            return run_mcp_tool(tool_name, args, self._mcp_runtime), granted_policy, None
         return self._run_handler(tool_name, args, interaction_handler), granted_policy, None
 
     def _run_handler(
@@ -285,8 +302,13 @@ class ToolRouter:
         )
 
 
-def _validate_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any] | None:
-    schema = TOOL_REGISTRY[tool_name].parameters
+def _validate_args(
+    tool_name: str,
+    args: dict[str, Any],
+    registry: ToolRuntimeRegistry | None = None,
+) -> dict[str, Any] | None:
+    runtime_registry = registry or default_tool_runtime_registry()
+    schema = runtime_registry.get(tool_name).parameters
     if schema.get("type") != "object":
         return tool_error("tool_argument_invalid", "tool arguments schema must be object")
 

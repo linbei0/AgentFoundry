@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 def create_session(service: "AssistantService") -> "AssistantSessionStatus":
     try:
+        _close_session_if_needed(service)
         profile = service._load_session_profile()
         service._session = service.session_cls(
             workspace_root=service.workspace_root,
@@ -45,6 +46,7 @@ def create_session(service: "AssistantService") -> "AssistantSessionStatus":
 
 def resume_session(service: "AssistantService", session: str | Path) -> "AssistantSessionStatus":
     try:
+        _close_session_if_needed(service)
         profile = service._load_resume_profile(session)
         service._session = service.session_cls.resume(
             session,
@@ -190,3 +192,10 @@ def _ensure_session(service: "AssistantService"):
 
 def _raise_service_error(service: "AssistantService", error: Exception) -> None:
     raise service.error_cls(str(error)) from error
+
+
+def _close_session_if_needed(service: "AssistantService") -> None:
+    session = getattr(service, "_session", None)
+    close = getattr(session, "close", None)
+    if callable(close):
+        close()

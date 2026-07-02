@@ -12,7 +12,7 @@ from typing import Any
 
 from haagent.context.instructions import AGENT_INSTRUCTIONS
 from haagent.runtime.task_contract import TaskSpec
-from haagent.tools.registry import TOOL_REGISTRY
+from haagent.tools.registry import ToolRuntimeRegistry, default_tool_runtime_registry
 
 
 def generate_tool_call_id() -> str:
@@ -61,7 +61,9 @@ def build_task_message(
     working_state_content: str | None = None,
     memory_block: str | None = None,
     interaction_state_lines: list[str] | None = None,
+    tool_registry: ToolRuntimeRegistry | None = None,
 ) -> dict[str, Any]:
+    runtime_registry = tool_registry or default_tool_runtime_registry()
     lines: list[str] = []
     lines.append("Task:")
     lines.append(f"goal: {task.goal}")
@@ -79,7 +81,7 @@ def build_task_message(
 
     lines.append("allowed_tools:")
     for tool in task.allowed_tools:
-        lines.append(f"- {tool}: {TOOL_REGISTRY[tool].description}")
+        lines.append(f"- {tool}: {runtime_registry.get(tool).description}")
 
     if task.acceptance_criteria:
         lines.append("acceptance_criteria:")

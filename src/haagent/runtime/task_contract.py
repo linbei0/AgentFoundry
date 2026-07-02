@@ -12,9 +12,6 @@ from typing import Any
 
 import yaml
 
-from haagent.tools.registry import TOOL_REGISTRY
-
-
 class TaskLoadError(ValueError):
     """Raised when task.yaml cannot be loaded as a valid task spec."""
 
@@ -44,13 +41,13 @@ def load_task(path: Path) -> TaskSpec:
     return TaskSpec(
         goal=goal,
         constraints=_required_str_list(raw, "constraints"),
-        allowed_tools=_required_str_list(raw, "allowed_tools"),
+        allowed_tools=(allowed_tools := _required_str_list(raw, "allowed_tools")),
         acceptance_criteria=_required_str_list(raw, "acceptance_criteria"),
         verification_commands=_required_str_list(raw, "verification_commands"),
         workspace_root=_optional_str(raw, "workspace_root"),
         path_policy=_optional_path_policy(raw),
         target_paths=_optional_str_list(raw, "target_paths"),
-        policy=_optional_policy(raw),
+        policy=_optional_policy(raw, allowed_tools),
     )
 
 
@@ -104,7 +101,7 @@ def _required_str_list(raw: dict[str, Any], field: str) -> list[str]:
     return value
 
 
-def _optional_policy(raw: dict[str, Any]) -> dict[str, list[str]]:
+def _optional_policy(raw: dict[str, Any], allowed_tools: list[str]) -> dict[str, list[str]]:
     policy = raw.get("policy", {})
     if policy is None:
         policy = {}
@@ -122,15 +119,17 @@ def _optional_policy(raw: dict[str, Any]) -> dict[str, list[str]]:
         for item in approved_tools
     ):
         raise TaskLoadError("policy.approved_tools must be a list of strings")
-    unknown_tools = [tool for tool in approval_allowed_tools if tool not in TOOL_REGISTRY]
-    if unknown_tools:
+    disallowed_approval_tools = [tool for tool in approval_allowed_tools if tool not in allowed_tools]
+    if disallowed_approval_tools:
         raise TaskLoadError(
-            f"unknown policy.approval_allowed_tools: {', '.join(unknown_tools)}",
+            "policy.approval_allowed_tools must be included in allowed_tools: "
+            + ", ".join(disallowed_approval_tools),
         )
-    unknown_approved_tools = [tool for tool in approved_tools if tool not in TOOL_REGISTRY]
-    if unknown_approved_tools:
+    disallowed_approved_tools = [tool for tool in approved_tools if tool not in allowed_tools]
+    if disallowed_approved_tools:
         raise TaskLoadError(
-            f"unknown policy.approved_tools: {', '.join(unknown_approved_tools)}",
+            "policy.approved_tools must be included in allowed_tools: "
+            + ", ".join(disallowed_approved_tools),
         )
     not_allowed_tools = [tool for tool in approved_tools if tool not in approval_allowed_tools]
     if not_allowed_tools:

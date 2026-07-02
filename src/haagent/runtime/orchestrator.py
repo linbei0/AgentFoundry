@@ -57,7 +57,7 @@ from haagent.runtime.state import RunStatus
 from haagent.runtime.run_turns import TurnLoopDependencies, TurnLoopState, run_turn_loop
 from haagent.runtime.task_contract import TaskLoadError
 from haagent.tools.base import ToolRoutingError, tool_error
-from haagent.tools.registry import export_tool_schemas
+from haagent.tools.registry import ToolRuntimeRegistry, default_tool_runtime_registry
 from haagent.tools.router import ToolRouter
 from haagent.verification.engine import VerificationEngine
 
@@ -75,6 +75,8 @@ class RunOrchestrator:
         event_sink: Callable[[dict[str, object]], None] | None = None,
         interaction_handler: HumanInteractionHandler | None = None,
         cancellation_token: CancellationToken | None = None,
+        tool_registry: ToolRuntimeRegistry | None = None,
+        mcp_runtime: Any | None = None,
     ) -> None:
         self._runs_root = runs_root
         self._model_gateway = model_gateway or FakeModelGateway()
@@ -86,6 +88,8 @@ class RunOrchestrator:
         self._event_sink = event_sink
         self._interaction_handler = interaction_handler
         self._cancellation_token = cancellation_token
+        self._tool_registry = tool_registry or default_tool_runtime_registry()
+        self._mcp_runtime = mcp_runtime
 
     def _emit_event(self, event: dict[str, object]) -> None:
         if self._event_sink is not None:
@@ -136,6 +140,8 @@ class RunOrchestrator:
                 approval_allowed_tools=task.policy["approval_allowed_tools"],
                 approved_tools=task.policy["approved_tools"],
                 cancellation_token=self._cancellation_token,
+                tool_registry=self._tool_registry,
+                mcp_runtime=self._mcp_runtime,
             )
             verification_engine: VerificationEngine | None = None
             passed_verification_commands: set[str] = set()
@@ -156,6 +162,7 @@ class RunOrchestrator:
                 tool_result_microcompact_count=self._tool_result_microcompact_count,
                 working_state=self._working_state,
                 interaction_resolver=interaction_resolver,
+                tool_registry=self._tool_registry,
             )
             context_id = prepared_messages.context_id
             messages = prepared_messages.messages
@@ -172,6 +179,7 @@ class RunOrchestrator:
                     router=router,
                     task_goal=task.goal,
                     allowed_tools=task.allowed_tools,
+                    tool_registry=self._tool_registry,
                     verification_commands=task.verification_commands,
                     workspace_root=workspace_root,
                     max_turns=self._max_turns,

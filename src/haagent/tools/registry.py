@@ -32,6 +32,35 @@ class ToolDefinition:
         }
 
 
+@dataclass(frozen=True)
+class ToolRuntimeRegistry:
+    static_tools: dict[str, ToolDefinition]
+    dynamic_tools: dict[str, ToolDefinition]
+
+    def get(self, name: str) -> ToolDefinition:
+        if name in self.dynamic_tools:
+            return self.dynamic_tools[name]
+        try:
+            return self.static_tools[name]
+        except KeyError as error:
+            raise KeyError(f"unknown tool: {name}") from error
+
+    def has(self, name: str) -> bool:
+        return name in self.dynamic_tools or name in self.static_tools
+
+    def allowed_definitions(self, names: list[str]) -> list[ToolDefinition]:
+        return [self.get(name) for name in names]
+
+
+def default_tool_runtime_registry(
+    dynamic_tools: dict[str, ToolDefinition] | None = None,
+) -> ToolRuntimeRegistry:
+    return ToolRuntimeRegistry(
+        static_tools=TOOL_REGISTRY,
+        dynamic_tools=dict(dynamic_tools or {}),
+    )
+
+
 TOOL_REGISTRY: dict[str, ToolDefinition] = {
     "fake_tool": ToolDefinition(
         name="fake_tool",
@@ -272,6 +301,31 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
             "additionalProperties": False,
         },
     ),
+    "list_mcp_resources": ToolDefinition(
+        name="list_mcp_resources",
+        description="List resources exposed by connected MCP servers.",
+        risk_level="low",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    ),
+    "read_mcp_resource": ToolDefinition(
+        name="read_mcp_resource",
+        description="Read one resource from a connected MCP server by server name and URI.",
+        risk_level="medium",
+        parameters={
+            "type": "object",
+            "properties": {
+                "server": {"type": "string"},
+                "uri": {"type": "string"},
+            },
+            "required": ["server", "uri"],
+            "additionalProperties": False,
+        },
+    ),
     "file_write": ToolDefinition(
         name="file_write",
         description="create, overwrite, or append a workspace text file",
@@ -440,12 +494,19 @@ def get_tool_definition(name: str) -> ToolDefinition:
         raise KeyError(f"unknown tool: {name}") from error
 
 
-def allowed_tool_definitions(names: list[str]) -> list[ToolDefinition]:
-    return [get_tool_definition(name) for name in names]
+def allowed_tool_definitions(
+    names: list[str],
+    registry: ToolRuntimeRegistry | None = None,
+) -> list[ToolDefinition]:
+    runtime_registry = registry or default_tool_runtime_registry()
+    return runtime_registry.allowed_definitions(names)
 
 
-def export_tool_schemas(names: list[str]) -> list[dict[str, Any]]:
+def export_tool_schemas(
+    names: list[str],
+    registry: ToolRuntimeRegistry | None = None,
+) -> list[dict[str, Any]]:
     return [
         definition.to_model_schema()
-        for definition in allowed_tool_definitions(names)
+        for definition in allowed_tool_definitions(names, registry=registry)
     ]

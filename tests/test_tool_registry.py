@@ -10,6 +10,7 @@ from haagent.tools.registry import (
     TOOL_REGISTRY,
     ToolDefinition,
     allowed_tool_definitions,
+    default_tool_runtime_registry,
     export_tool_schemas,
     get_tool_definition,
     validate_tool_registry,
@@ -29,6 +30,8 @@ def test_tool_registry_contains_mvp_tools() -> None:
         "skill_market_search",
         "web_search",
         "web_fetch",
+        "list_mcp_resources",
+        "read_mcp_resource",
         "file_write",
         "code_run",
         "apply_patch",
@@ -175,6 +178,51 @@ def test_web_tool_schemas_describe_explicit_read_only_network_access() -> None:
     assert fetch_schema["parameters"]["required"] == ["url"]
     assert set(fetch_schema["parameters"]["properties"]) == {"url", "max_chars"}
     assert TOOL_REGISTRY["web_fetch"].risk_level == "medium"
+
+
+def test_mcp_resource_tools_are_static_read_tools() -> None:
+    list_schema, read_schema = export_tool_schemas(["list_mcp_resources", "read_mcp_resource"])
+
+    assert list_schema["parameters"]["required"] == []
+    assert list_schema["parameters"]["additionalProperties"] is False
+    assert TOOL_REGISTRY["list_mcp_resources"].risk_level == "low"
+
+    assert read_schema["parameters"]["required"] == ["server", "uri"]
+    assert set(read_schema["parameters"]["properties"]) == {"server", "uri"}
+    assert TOOL_REGISTRY["read_mcp_resource"].risk_level == "medium"
+
+
+def test_runtime_registry_exports_dynamic_mcp_tool_schema() -> None:
+    dynamic = ToolDefinition(
+        name="mcp__fixture__echo",
+        description="Echo text",
+        risk_level="high",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    )
+    registry = default_tool_runtime_registry({"mcp__fixture__echo": dynamic})
+
+    schemas = export_tool_schemas(["mcp__fixture__echo"], registry=registry)
+
+    assert schemas == [dynamic.to_model_schema()]
+    assert registry.has("mcp__fixture__echo")
+
+
+def test_runtime_registry_does_not_mutate_global_tool_registry() -> None:
+    dynamic = ToolDefinition(
+        name="mcp__fixture__echo",
+        description="Echo text",
+        risk_level="high",
+        parameters={"type": "object", "properties": {}, "required": []},
+    )
+
+    default_tool_runtime_registry({"mcp__fixture__echo": dynamic})
+
+    assert "mcp__fixture__echo" not in TOOL_REGISTRY
 
 
 def test_file_write_schema_describes_modes() -> None:

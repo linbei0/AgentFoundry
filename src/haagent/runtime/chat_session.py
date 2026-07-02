@@ -13,6 +13,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from haagent.mcp.runtime import SyncMcpRuntime
+from haagent.mcp.settings import load_mcp_settings
+from haagent.mcp.tool_adapter import mcp_tool_alias, mcp_tool_definitions
 from haagent.models.gateway import ModelGateway
 from haagent.memory.extraction import MemoryExtractionRequest, MemoryExtractor
 from haagent.runtime.cancellation import CancellationToken
@@ -49,6 +52,7 @@ from haagent.runtime.working_state import (
     update_working_state,
     write_working_state,
 )
+from haagent.tools.registry import default_tool_runtime_registry
 CHAT_MAX_TURNS = 20
 
 
@@ -167,6 +171,16 @@ class AgentSession:
         self._tool_result_microcompact_count = 0
         self._working_state = empty_working_state()
         self._current_cancellation_token: CancellationToken | None = None
+        self._mcp_settings = load_mcp_settings()
+        self._mcp_runtime = SyncMcpRuntime(self._mcp_settings)
+        self._mcp_runtime.start()
+        self._mcp_tool_names = [
+            mcp_tool_alias(tool.server_name, tool.name)
+            for tool in self._mcp_runtime.list_tools()
+        ]
+        self._tool_registry = default_tool_runtime_registry(
+            mcp_tool_definitions(self._mcp_runtime.list_tools()),
+        )
         self.session_path = self.runs_root / "sessions" / self.session_id
         self._created_at = datetime.now(UTC).isoformat()
         self._write_session_metadata()
@@ -214,6 +228,16 @@ class AgentSession:
             instance._working_state = load_working_state(session_path / "working_state.json")
         except WorkingStateError as error:
             raise ChatSessionError(str(error)) from error
+        instance._mcp_settings = load_mcp_settings()
+        instance._mcp_runtime = SyncMcpRuntime(instance._mcp_settings)
+        instance._mcp_runtime.start()
+        instance._mcp_tool_names = [
+            mcp_tool_alias(tool.server_name, tool.name)
+            for tool in instance._mcp_runtime.list_tools()
+        ]
+        instance._tool_registry = default_tool_runtime_registry(
+            mcp_tool_definitions(instance._mcp_runtime.list_tools()),
+        )
         instance.session_path = session_path
         instance._current_cancellation_token = None
         instance._created_at = str(metadata["created_at"])
@@ -287,6 +311,9 @@ class AgentSession:
                 interaction_handler=interaction_handler,
                 cancellation_token=self._current_cancellation_token,
                 orchestrator_factory=RunOrchestrator,
+                tool_registry=self._tool_registry,
+                mcp_runtime=self._mcp_runtime,
+                mcp_tool_names=self._mcp_tool_names,
             ),
         )
 
@@ -514,6 +541,24 @@ class AgentSession:
             "working_state": self._working_state.status_summary(),
         }
 
+    def mcp_status(self) -> dict[str, object]:
+        statuses = self._mcp_runtime.list_statuses()
+        return {
+            "configured_count": len(statuses),
+            "connected_count": sum(1 for item in statuses if item.state == "connected"),
+            "failed_count": sum(1 for item in statuses if item.state == "failed"),
+            "servers": [
+                {
+                    "name": item.name,
+                    "state": item.state,
+                    "detail": item.detail,
+                    "tool_count": len(item.tools),
+                    "resource_count": len(item.resources),
+                }
+                for item in statuses
+            ],
+        }
+
     def new(self) -> None:
         self.session_id = _new_session_id()
         self.turn_count = 0
@@ -524,6 +569,9 @@ class AgentSession:
         self._created_at = datetime.now(UTC).isoformat()
         self._write_session_metadata()
         self._write_working_state()
+
+    def close(self) -> None:
+        self._mcp_runtime.close()
 
     def summary_text(self) -> str | None:
         return self._session_memory().summary_text

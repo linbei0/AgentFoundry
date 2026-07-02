@@ -20,6 +20,7 @@ from haagent.runtime.path_policy import default_path_policy, load_path_policy
 from haagent.runtime.plan import build_plan
 from haagent.runtime.state import RunStatus
 from haagent.runtime.task_contract import TaskSpec, load_task, resolve_workspace_root
+from haagent.tools.registry import ToolRuntimeRegistry
 from haagent.runtime.workspace_preflight import build_workspace_preflight
 from haagent.verification.engine import DEFAULT_COMMAND_TIMEOUT_SECONDS
 
@@ -104,6 +105,7 @@ def prepare_initial_messages(
     tool_result_microcompact_count: int,
     working_state: dict[str, object] | None,
     interaction_resolver: HumanInteractionResolver,
+    tool_registry: ToolRuntimeRegistry | None = None,
 ) -> PreparedMessages:
     context = context_builder_cls(
         task=task,
@@ -115,6 +117,7 @@ def prepare_initial_messages(
         tool_result_microcompact_count=tool_result_microcompact_count,
         working_state=working_state,
         interaction_state=interaction_resolver.state_records(),
+        tool_registry=tool_registry,
     ).build()
     if context.manifest.full_compact_contract is not None:
         writer.append_transcript(

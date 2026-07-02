@@ -447,6 +447,8 @@ class HaAgentTuiApp(App[None]):
             self.action_open_sessions()
         elif command.action == "open_models":
             self.action_open_models()
+        elif command.action == "mcp":
+            self._handle_mcp_command()
         elif command.action == "memory":
             if not self._memory_mode:
                 self.action_toggle_memory()
@@ -483,6 +485,31 @@ class HaAgentTuiApp(App[None]):
         self.service.set_web_enabled(enabled)
         state = "开启" if enabled else "关闭"
         self._append_block("Command", f"联网已{state}；后续任务可使用 web_search / web_fetch。")
+        self._refresh()
+
+    def _handle_mcp_command(self) -> None:
+        status = self.service.get_mcp_status()
+        servers = status.get("servers", [])
+        if not isinstance(servers, list) or not servers:
+            self._append_block("Command", "No MCP servers configured.")
+            self._refresh()
+            return
+        lines = ["MCP servers:"]
+        for item in servers:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "unknown"))
+            state = str(item.get("state", "configured"))
+            detail = str(item.get("detail", "")).strip()
+            if state == "connected":
+                lines.append(
+                    f"- {name}: connected (tools: {int(item.get('tool_count', 0))}, resources: {int(item.get('resource_count', 0))})"
+                )
+            elif detail:
+                lines.append(f"- {name}: {state} - {detail}")
+            else:
+                lines.append(f"- {name}: {state}")
+        self._append_block("Command", "\n".join(lines))
         self._refresh()
 
     def _handle_skills_command(self, argument: str) -> None:

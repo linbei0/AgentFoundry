@@ -72,6 +72,7 @@ class FakeAssistantService:
         blocked_project_skill_roots: list[str] | None = None,
         marketplace_results: list[SimpleNamespace] | None = None,
         marketplace_warnings: list[str] | None = None,
+        mcp_status: dict[str, object] | None = None,
     ) -> None:
         self.workspace_root = workspace_root
         self.profile_name = profile_name
@@ -101,6 +102,15 @@ class FakeAssistantService:
         self.blocked_project_skill_roots = list(blocked_project_skill_roots or [])
         self.marketplace_results = list(marketplace_results or [])
         self.marketplace_warnings = list(marketplace_warnings or [])
+        self.mcp_status = dict(
+            mcp_status
+            or {
+                "configured_count": 0,
+                "connected_count": 0,
+                "failed_count": 0,
+                "servers": [],
+            }
+        )
         self.trusted_skills_count = 0
         self.untrusted_skills_count = 0
         self.read_skill_names: list[str] = []
@@ -158,6 +168,9 @@ class FakeAssistantService:
             external_roots=list(self.external_roots),
             permission_mode=self.permission_mode,
         )
+
+    def get_mcp_status(self) -> dict[str, object]:
+        return dict(self.mcp_status)
 
     def run_prompt_events(self, prompt: str, *, event_sink=None, interaction_handler=None):
         self.prompts.append(prompt)
@@ -806,9 +819,16 @@ def test_tui_slash_command_registry_parses_known_and_unknown_commands() -> None:
         "new",
         "resume",
         "model",
+        "mcp",
         "web",
         "permissions",
     }
+
+
+def test_tui_slash_command_registry_includes_mcp() -> None:
+    registry = command_registry()
+
+    assert registry.get("mcp") is not None
     assert "models" not in {command.name for command in registry.commands()}
 
 
@@ -3049,6 +3069,82 @@ def test_tui_new_session_command_clears_previous_timeline(tmp_path: Path) -> Non
     asyncio.run(run())
 
 
+def test_tui_mcp_command_renders_server_status(tmp_path: Path) -> None:
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        mcp_status={
+            "configured_count": 2,
+            "connected_count": 1,
+            "failed_count": 1,
+            "servers": [
+                {
+                    "name": "fixture",
+                    "state": "connected",
+                    "detail": "",
+                    "tool_count": 1,
+                    "resource_count": 1,
+                },
+                {
+                    "name": "broken",
+                    "state": "failed",
+                    "detail": "connection refused",
+                    "tool_count": 0,
+                    "resource_count": 0,
+                },
+            ],
+        },
+    )
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            prompt_input = app.query_one("#prompt-input")
+            prompt_input.value = "/mcp"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            conversation = _text(app, "#conversation")
+            assert "MCP servers:" in conversation
+            assert "fixture: connected (tools: 1, resources: 1)" in conversation
+            assert "broken: failed - connection refused" in conversation
+
+    asyncio.run(run())
+
+
+def test_tui_mcp_command_renders_configured_not_loaded_without_session(tmp_path: Path) -> None:
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        mcp_status={
+            "configured_count": 1,
+            "connected_count": 0,
+            "failed_count": 0,
+            "servers": [
+                {
+                    "name": "exa",
+                    "state": "configured",
+                    "detail": "not loaded; create or resume a session to connect",
+                    "tool_count": 0,
+                    "resource_count": 0,
+                }
+            ],
+        },
+    )
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            prompt_input = app.query_one("#prompt-input")
+            prompt_input.value = "/mcp"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            conversation = _text(app, "#conversation")
+            assert "MCP servers:" in conversation
+            assert "exa: configured - not loaded; create or resume a session to connect" in conversation
+
+    asyncio.run(run())
+
+
 def test_tui_restored_session_renders_final_response_not_raw_turn_summary(tmp_path: Path) -> None:
     sessions = [_session_summary(tmp_path, "session-raw", "恢复旧会话", 1)]
     raw_summary = "\n".join(
@@ -3237,7 +3333,7 @@ def test_tui_slash_command_suggestions_scroll_visible_window() -> None:
     assert "/permissions" in rendered
     assert "/help" not in rendered
     assert "/skill" in rendered
-    assert "> /cancel" in rendered
+    assert "> /permissions" in rendered
 
 
 def test_tui_file_reference_overlay_selects_workspace_file(tmp_path: Path) -> None:

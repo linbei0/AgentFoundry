@@ -52,7 +52,7 @@ from haagent.runtime.working_state import (
     raw_working_state_text,
 )
 from haagent.skills import discover_project_skill_dirs, is_project_root_trusted, load_skill_registry, load_skill_settings
-from haagent.tools.registry import TOOL_REGISTRY
+from haagent.tools.registry import ToolRuntimeRegistry, default_tool_runtime_registry
 
 
 CONTEXT_MANIFEST_VERSION = "2.0"
@@ -108,6 +108,7 @@ class ContextBuilder:
         working_state: dict | None = None,
         interaction_state: list[dict] | None = None,
         compaction_budget: ContextBudget | None = None,
+        tool_registry: ToolRuntimeRegistry | None = None,
     ) -> None:
         self._task = task
         self._workspace_root = workspace_root
@@ -121,6 +122,7 @@ class ContextBuilder:
         self._interaction_state = list(interaction_state or [])
         self._compaction_budget = compaction_budget or ContextBudget()
         self._selection_budget = selection_budget_for_initial_audit(self._compaction_budget)
+        self._tool_registry = tool_registry or default_tool_runtime_registry()
 
     def build(self) -> BuiltContext:
         """构建初始对话消息（system + task），写入 contexts/ 快照。"""
@@ -151,6 +153,7 @@ class ContextBuilder:
             working_state_content=selected_sections.get("working_state") or None,
             memory_block=selected_sections.get("memory") or None,
             interaction_state_lines=interaction_state_lines,
+            tool_registry=self._tool_registry,
         )
         messages = [system_msg, task_msg]
 
@@ -224,7 +227,7 @@ class ContextBuilder:
         )
 
     def _validate_tools(self) -> None:
-        unknown_tools = [tool for tool in self._task.allowed_tools if tool not in TOOL_REGISTRY]
+        unknown_tools = [tool for tool in self._task.allowed_tools if not self._tool_registry.has(tool)]
         if unknown_tools:
             raise ContextBuildError(f"unknown allowed_tools: {', '.join(unknown_tools)}")
 

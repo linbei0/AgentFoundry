@@ -31,7 +31,7 @@ from haagent.runtime.loop_guidance import (
 from haagent.runtime.run_recorder import RunRecorder, RunResult
 from haagent.runtime.state import RunStatus
 from haagent.tools.base import tool_error
-from haagent.tools.registry import export_tool_schemas
+from haagent.tools.registry import ToolRuntimeRegistry, export_tool_schemas
 from haagent.tools.router import ToolRouter
 from haagent.verification.engine import VerificationEngine
 
@@ -56,6 +56,7 @@ class TurnLoopDependencies:
     router: ToolRouter
     task_goal: str
     allowed_tools: list[str]
+    tool_registry: ToolRuntimeRegistry
     verification_commands: list[str]
     workspace_root: object
     max_turns: int
@@ -84,7 +85,10 @@ def run_turn_loop(
 ) -> RunResult | None:
     for turn in range(1, deps.max_turns + 1):
         deps.raise_if_cancelled()
-        tool_schemas = [] if state.final_response_requested else export_tool_schemas(deps.allowed_tools)
+        tool_schemas = [] if state.final_response_requested else export_tool_schemas(
+            deps.allowed_tools,
+            registry=deps.tool_registry,
+        )
         deps.microcompact_old_tool_messages(state.messages, deps.writer, turn, deps.emit_event)
 
         deps.writer.append_transcript(

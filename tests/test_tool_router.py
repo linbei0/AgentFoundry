@@ -12,6 +12,7 @@ from haagent.runtime.episode import EpisodeWriter
 from haagent.runtime.path_policy import ExternalRoot, PathPolicy
 from haagent.skills import SkillSettings
 from haagent.tools.registry import TOOL_REGISTRY
+from haagent.tools.registry import ToolDefinition, default_tool_runtime_registry
 from haagent.tools.router import ToolRouter
 from haagent.tools import router as router_module
 from haagent.tools.shell import shell
@@ -398,6 +399,94 @@ def test_tool_router_unknown_tool_keeps_existing_failure_semantics(tmp_path: Pat
 
     assert result["status"] == "error"
     assert result["error"]["type"] == "unknown_tool"
+
+
+class FakeMcpRuntime:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, object]) -> str:
+        self.calls.append((server_name, tool_name, arguments))
+        return "echo:hi"
+
+    def list_resources(self) -> list[object]:
+        return []
+
+    def read_resource(self, server_name: str, uri: str) -> str:
+        return "resource text"
+
+
+def test_tool_router_dispatches_dynamic_mcp_tool_through_trace(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    dynamic = ToolDefinition(
+        name="mcp__fixture__echo",
+        description="Echo text",
+        risk_level="high",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    )
+    runtime = FakeMcpRuntime()
+    router = ToolRouter(
+        allowed_tools=["mcp__fixture__echo"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approved_tools=["mcp__fixture__echo"],
+        tool_registry=default_tool_runtime_registry({"mcp__fixture__echo": dynamic}),
+        mcp_runtime=runtime,
+    )
+
+    result = router.dispatch("mcp__fixture__echo", {"text": "hi"})
+
+    assert result == {"status": "success", "output": "echo:hi"}
+    assert runtime.calls == [("fixture", "echo", {"text": "hi"})]
+    record = _read_single_tool_call(writer)
+    assert record["tool_name"] == "mcp__fixture__echo"
+    assert record["status"] == "success"
+    assert record["policy"]["risk_level"] == "high"
+
+
+def test_dynamic_mcp_tool_defaults_to_high_risk_approval(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    dynamic = ToolDefinition(
+        name="mcp__fixture__echo",
+        description="Echo text",
+        risk_level="high",
+        parameters={"type": "object", "properties": {}, "required": []},
+    )
+    router = ToolRouter(
+        allowed_tools=["mcp__fixture__echo"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        approval_allowed_tools=["mcp__fixture__echo"],
+        tool_registry=default_tool_runtime_registry({"mcp__fixture__echo": dynamic}),
+        mcp_runtime=FakeMcpRuntime(),
+    )
+
+    result = router.dispatch("mcp__fixture__echo", {})
+
+    assert result["status"] == "error"
+    assert result["error"]["type"] == "policy_denied"
+    record = _read_single_tool_call(writer)
+    assert record["policy"]["approval"]["status"] == "missing"
+
+
+def test_mcp_resource_tools_dispatch_through_runtime(tmp_path: Path) -> None:
+    writer = make_writer(tmp_path)
+    router = ToolRouter(
+        allowed_tools=["read_mcp_resource"],
+        episode_writer=writer,
+        workspace_root=tmp_path,
+        tool_registry=default_tool_runtime_registry(),
+        mcp_runtime=FakeMcpRuntime(),
+    )
+
+    result = router.dispatch("read_mcp_resource", {"server": "fixture", "uri": "fixture://hello"})
+
+    assert result == {"status": "success", "output": "resource text"}
 
 
 def test_file_read_supports_offset_and_limit(tmp_path: Path) -> None:
