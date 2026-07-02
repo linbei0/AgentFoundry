@@ -339,6 +339,89 @@ def test_context_builder_injects_compact_memory_and_manifest_audit(tmp_path: Pat
     assert memory_source["included_in_model_input"] is True
 
 
+def test_context_builder_injects_memory_index_and_relevant_memory_together(tmp_path: Path) -> None:
+    sop_id = _commit(
+        tmp_path,
+        scope="workspace",
+        category="sop",
+        title="Release SOP",
+        body="Use the release checklist before publishing.",
+        tags=["release"],
+    )
+    fact_id = _commit(
+        tmp_path,
+        scope="workspace",
+        category="facts",
+        title="Context memory",
+        body="ContextBuilder should include this compact memory.",
+        tags=["context"],
+    )
+    writer = _make_writer(tmp_path)
+    writer.write_plan({"planned_steps": ["Use context memory."]})
+
+    context = ContextBuilder(
+        task=_task("Use context memory"),
+        workspace_root=tmp_path / "workspace",
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
+
+    model_input = context.model_input
+    assert "Memory/SOP Navigation Index:" in model_input
+    assert f"scope=workspace category=sop id={sop_id} title=Release SOP" in model_input
+    assert "Relevant Memory:" in model_input
+    assert fact_id in model_input
+    manifest = json.loads((writer.path / "contexts" / f"{context.context_id}-manifest.json").read_text(encoding="utf-8"))
+    selected_sources = {item["source_type"] for item in manifest["selection"]["selected"]}
+    assert {"memory_index", "memory"} <= selected_sources
+
+
+def test_context_builder_records_missing_memory_index_as_skipped(tmp_path: Path) -> None:
+    writer = _make_writer(tmp_path)
+    writer.write_plan({"planned_steps": ["Answer directly."]})
+
+    context = ContextBuilder(
+        task=_task("Answer without memory"),
+        workspace_root=tmp_path / "workspace",
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
+
+    assert "Memory/SOP Navigation Index:" not in context.model_input
+    manifest = json.loads((writer.path / "contexts" / f"{context.context_id}-manifest.json").read_text(encoding="utf-8"))
+    memory_index = [item for item in manifest["selection"]["skipped"] if item["source_type"] == "memory_index"]
+    assert memory_index
+    assert memory_index[0]["skip_reason"] == "missing_index"
+
+
+def test_context_builder_records_empty_memory_index_as_skipped(tmp_path: Path) -> None:
+    _commit(
+        tmp_path,
+        scope="workspace",
+        category="facts",
+        title="Temporary fact",
+        body="This memory will be deleted.",
+    )
+    store = _store(tmp_path)
+    records = store.list_records(scope="workspace", category="facts")
+    store.soft_delete(memory_id=records[0].memory_id, scope="workspace", category="facts", reason="obsolete")
+    writer = _make_writer(tmp_path)
+    writer.write_plan({"planned_steps": ["Answer directly."]})
+
+    context = ContextBuilder(
+        task=_task("Answer without active memory"),
+        workspace_root=tmp_path / "workspace",
+        provider_name="fake",
+        episode_writer=writer,
+    ).build()
+
+    assert "Memory/SOP Navigation Index:" not in context.model_input
+    manifest = json.loads((writer.path / "contexts" / f"{context.context_id}-manifest.json").read_text(encoding="utf-8"))
+    memory_index = [item for item in manifest["selection"]["skipped"] if item["source_type"] == "memory_index"]
+    assert memory_index
+    assert memory_index[0]["skip_reason"] == "empty"
+
+
 def _make_writer(tmp_path: Path) -> EpisodeWriter:
     task_path = tmp_path / "task.yaml"
     task_path.write_text("goal: test\n", encoding="utf-8")

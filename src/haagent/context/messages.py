@@ -59,6 +59,7 @@ def build_task_message(
     task: TaskSpec,
     plan_steps: list[str],
     working_state_content: str | None = None,
+    memory_index_block: str | None = None,
     memory_block: str | None = None,
     interaction_state_lines: list[str] | None = None,
     tool_registry: ToolRuntimeRegistry | None = None,
@@ -102,6 +103,10 @@ def build_task_message(
         lines.append("")
         lines.append("Working State:")
         lines.append(working_state_content.strip())
+
+    if memory_index_block and memory_index_block.strip():
+        lines.append("")
+        lines.append(memory_index_block.strip())
 
     if memory_block and memory_block.strip():
         lines.append("")

@@ -323,7 +323,11 @@ def test_context_builder_returns_compaction_diagnostics_and_manifest(tmp_path: P
     assert manifest["selection"]["selected"]
     assert manifest["selection"]["selected"][0]["source_type"] == "session_summary"
     assert manifest["selection"]["selected"][0]["source_id"] == "session_summary"
-    assert manifest["selection"]["skipped"] == []
+    assert [
+        record["skip_reason"]
+        for record in manifest["selection"]["skipped"]
+        if record["source_type"] == "memory_index"
+    ] == ["missing_index"]
     assert "selection" not in context.model_input
     compaction = manifest["compaction"]
     assert compaction["selected_count"] == 1

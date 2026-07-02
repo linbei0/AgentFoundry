@@ -59,7 +59,7 @@ class ContextSelector:
     budget: ContextSelectionBudget = field(default_factory=ContextSelectionBudget)
 
     def select(self, candidates: list[ContextCandidate]) -> ContextSelectionResult:
-        prepared = [_prepare_candidate(candidate, self.budget) for candidate in candidates if candidate.content.strip()]
+        prepared = [_prepare_candidate(candidate, self.budget) for candidate in candidates]
         used = {"system": 0, "task": 0}
         limits = {"system": self.budget.max_system_chars, "task": self.budget.max_task_chars}
         selected: list[ContextDecision] = []
@@ -71,6 +71,16 @@ class ContextSelector:
             content = candidate.content.strip()
             chars = len(content)
             placement = candidate.placement
+            if not content:
+                skipped.append(
+                    _decision(
+                        candidate,
+                        chars=0,
+                        selected=False,
+                        skip_reason=candidate.skip_reason or "empty",
+                    ),
+                )
+                continue
             if not candidate.hard_required and used[placement] + chars > limits[placement]:
                 skipped.append(_decision(candidate, chars=chars, selected=False, skip_reason="over_budget"))
                 continue
@@ -106,6 +116,9 @@ class ContextCandidateInputs:
     project_instructions: str | None = None
     session_summary: str | None = None
     working_state: str | None = None
+    memory_index: str | None = None
+    memory_index_skip_reason: str | None = None
+    memory_index_metadata: dict[str, Any] = field(default_factory=dict)
     memory_block: str | None = None
     interaction_state: str | None = None
     skills_block: str | None = None
@@ -142,6 +155,19 @@ def collect_context_candidates(inputs: ContextCandidateInputs) -> list[ContextCa
         content=inputs.working_state,
         reason="working_state_present",
         priority=20,
+    )
+    _append_candidate(
+        candidates,
+        source_type="memory_index",
+        source_id="memory_index",
+        placement="task",
+        title="Memory/SOP Navigation Index",
+        content=inputs.memory_index,
+        reason="confirmed_memory_index_available",
+        priority=45,
+        include_empty=inputs.memory_index_skip_reason is not None,
+        skip_reason=inputs.memory_index_skip_reason,
+        metadata=inputs.memory_index_metadata,
     )
     _append_candidate(
         candidates,
@@ -230,17 +256,22 @@ def _append_candidate(
     content: str | None,
     reason: str,
     priority: int,
+    include_empty: bool = False,
+    skip_reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
-    if content and content.strip():
+    if include_empty or (content and content.strip()):
         candidates.append(
             ContextCandidate(
                 source_type=source_type,
                 source_id=source_id,
                 placement=placement,  # type: ignore[arg-type]
                 title=title,
-                content=content.strip(),
+                content=(content or "").strip(),
                 reason=reason,
                 priority=priority,
+                skip_reason=skip_reason,
+                metadata=dict(metadata or {}),
             ),
         )
 
@@ -273,12 +304,16 @@ def _compaction_source(source_type: str) -> str:
         return "session"
     if source_type == "interaction_history":
         return "interaction_state"
+    if source_type == "memory_index":
+        return "memory"
     return source_type
 
 
 def _compaction_kind(source_type: str) -> str:
     if source_type == "interaction_history":
         return "interaction"
+    if source_type == "memory_index":
+        return "memory_index"
     return source_type
 
 
@@ -287,6 +322,7 @@ def _compaction_priority(source_type: str) -> int:
         "project_instructions": 80,
         "working_state": 75,
         "session_summary": 70,
+        "memory_index": 65,
         "memory": 60,
         "interaction_history": 55,
         "skills": 50,

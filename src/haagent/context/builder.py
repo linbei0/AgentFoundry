@@ -39,6 +39,7 @@ from haagent.context.selection import (
     compaction_sections_from_selection,
     selection_budget_for_initial_audit,
 )
+from haagent.memory.navigation import MemoryNavigationBudget, build_memory_navigation
 from haagent.memory.retrieval import (
     MemoryRetrievalRequest,
     MemoryRetriever,
@@ -151,6 +152,7 @@ class ContextBuilder:
             task=self._task,
             plan_steps=list(plan.get("planned_steps", [])),
             working_state_content=selected_sections.get("working_state") or None,
+            memory_index_block=selected_sections.get("memory_index") or None,
             memory_block=selected_sections.get("memory") or None,
             interaction_state_lines=interaction_state_lines,
             tool_registry=self._tool_registry,
@@ -196,6 +198,7 @@ class ContextBuilder:
             source_diagnostics=_source_diagnostics(
                 session_summary=self._session_summary,
                 memory_manifest=self._memory_manifest(),
+                memory_navigation_diagnostics=self._memory_navigation_result().diagnostics,
                 compaction=compaction,
                 observation_records=_compact_observation_records(self._observations),
                 skills_manifest=self._skills_manifest(),
@@ -314,6 +317,18 @@ class ContextBuilder:
         block = self._memory_result().to_model_block()
         return block or None
 
+    def _memory_navigation_result(self):
+        if not hasattr(self, "_cached_memory_navigation_result"):
+            self._cached_memory_navigation_result = build_memory_navigation(
+                workspace_root=self._workspace_root,
+                budget=MemoryNavigationBudget(max_chars=1200),
+            )
+        return self._cached_memory_navigation_result
+
+    def _memory_index_block(self) -> str | None:
+        block = self._memory_navigation_result().content
+        return block or None
+
     def _memory_manifest(self) -> dict | None:
         result = self._memory_result()
         manifest = result.to_manifest_dict()
@@ -330,6 +345,13 @@ class ContextBuilder:
                 project_instructions=(project_instructions or "").strip()[:PROJECT_INSTRUCTIONS_CHAR_LIMIT],
                 session_summary=(self._session_summary or "").strip()[:SESSION_SUMMARY_CHAR_LIMIT],
                 working_state=self._working_state_content(),
+                memory_index=self._memory_index_block(),
+                memory_index_skip_reason=(
+                    None
+                    if self._memory_navigation_result().content
+                    else str(self._memory_navigation_result().diagnostics.get("reason") or "empty")
+                ),
+                memory_index_metadata=self._memory_navigation_result().diagnostics,
                 memory_block=self._memory_block(),
                 interaction_state="\n".join(self._format_interaction_state()),
                 skills_block=self._skills_block(),
@@ -441,12 +463,14 @@ def _source_diagnostics(
     *,
     session_summary: str | None,
     memory_manifest: dict | None,
+    memory_navigation_diagnostics: dict | None,
     compaction: ContextCompactionResult,
     observation_records: list[ObservationCompactionRecord],
     skills_manifest: dict | None = None,
 ) -> dict:
     return {
         "session_summary": _session_summary_source_diagnostics(session_summary, compaction),
+        "memory_index": _memory_index_source_diagnostics(memory_navigation_diagnostics, compaction),
         "memory": _memory_source_diagnostics(memory_manifest, compaction),
         "observations": _observation_source_diagnostics(observation_records),
         "skills": _skills_source_diagnostics(skills_manifest, compaction),
@@ -503,6 +527,15 @@ def _memory_source_diagnostics(memory_manifest: dict | None, compaction: Context
         "budget": dict(budget) if isinstance(budget, dict) else {},
         "included_in_model_input": record is not None and record.decision != "skipped",
     }
+
+
+def _memory_index_source_diagnostics(memory_navigation_diagnostics: dict | None, compaction: ContextCompactionResult) -> dict:
+    diagnostics = dict(memory_navigation_diagnostics or {})
+    record = _diagnostic_record(compaction, "memory_index")
+    diagnostics["included_in_model_input"] = bool(record and record.decision != "skipped")
+    if record is not None:
+        diagnostics["compaction"] = _selection_record_dict(record)
+    return diagnostics
 
 
 def _compact_observation_records(observations: list[dict]) -> list[ObservationCompactionRecord]:

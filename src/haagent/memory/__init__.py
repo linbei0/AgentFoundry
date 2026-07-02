@@ -10,6 +10,12 @@ from haagent.memory.governance import (
     MemoryDuplicateError,
     MemoryGovernanceError,
 )
+from haagent.memory.navigation import (
+    MemoryNavigationBudget,
+    MemoryNavigationEntry,
+    MemoryNavigationResult,
+    build_memory_navigation,
+)
 from haagent.memory.extraction import (
     ExtractedMemoryCandidate,
     MemoryExtractionPolicy,
@@ -51,6 +57,9 @@ __all__ = [
     "MemoryGovernanceError",
     "MemoryIndex",
     "MemoryIndexItem",
+    "MemoryNavigationBudget",
+    "MemoryNavigationEntry",
+    "MemoryNavigationResult",
     "MemoryRetrievalBudget",
     "MemoryRetrievalRequest",
     "MemoryRetrievalResult",
@@ -60,4 +69,5 @@ __all__ = [
     "MemoryStoreError",
     "MemoryTombstone",
     "RetrievedMemory",
+    "build_memory_navigation",
 ]

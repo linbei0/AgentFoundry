@@ -23,6 +23,7 @@ class ContextCandidate:
     reason: str
     priority: int
     hard_required: bool = False
+    skip_reason: str | None = None
     tags: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
