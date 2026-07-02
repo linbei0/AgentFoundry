@@ -743,6 +743,21 @@ def test_file_search_missing_root_returns_short_argument_error(tmp_path: Path) -
     assert str(tmp_path) not in result["error"]["message"]
 
 
+def test_file_search_file_root_suggests_file_read(tmp_path: Path) -> None:
+    (tmp_path / "alpha.txt").write_text("needle appears here\n", encoding="utf-8")
+    writer = make_writer(tmp_path)
+    router = ToolRouter(allowed_tools=["file_search"], episode_writer=writer, workspace_root=tmp_path)
+
+    result = router.dispatch("file_search", {"query": "needle", "root": "alpha.txt"})
+
+    assert result["status"] == "error"
+    assert result["error"] == {
+        "type": "tool_argument_invalid",
+        "message": 'root must be a directory: alpha.txt; root is relative to workspace_root; use "." or omit root',
+    }
+    assert result["suggested_tool"] == {"name": "file_read", "args": {"path": "alpha.txt", "keyword": "needle"}}
+
+
 def test_apply_patch_is_denied_before_handler(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("old", encoding="utf-8")

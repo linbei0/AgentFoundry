@@ -99,7 +99,13 @@ def file_search(args: dict[str, Any], workspace_root: Path, path_policy: PathPol
     if not root.exists():
         return tool_error("tool_argument_invalid", f"root does not exist: {root_arg}; {ROOT_GUIDANCE}")
     if not root.is_dir():
-        return tool_error("tool_argument_invalid", f"root must be a directory: {root_arg}; {ROOT_GUIDANCE}")
+        result = tool_error("tool_argument_invalid", f"root must be a directory: {root_arg}; {ROOT_GUIDANCE}")
+        if root.is_file():
+            result["suggested_tool"] = {
+                "name": "file_read",
+                "args": {"path": _display_path(root, workspace_root), "keyword": query},
+            }
+        return result
 
     rg = shutil.which("rg")
     if rg:

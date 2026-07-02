@@ -122,6 +122,25 @@ def test_file_read_directory_error_suggests_file_list() -> None:
     assert "src" in suggestion.message
 
 
+def test_file_search_file_root_suggests_file_read() -> None:
+    suggestion = suggestion_for_observation(
+        _obs(
+            "file_search",
+            {"query": "needle", "root": "alpha.txt"},
+            {
+                "status": "error",
+                "error": {"type": "tool_argument_invalid", "message": "root must be a directory: alpha.txt"},
+                "suggested_tool": {"name": "file_read", "args": {"path": "alpha.txt", "keyword": "needle"}},
+            },
+        )
+    )
+
+    assert suggestion is not None
+    assert suggestion.trigger == "tool_error"
+    assert "file_read" in suggestion.message
+    assert "alpha.txt" in suggestion.message
+
+
 def test_file_list_missing_directory_suggests_parent_listing() -> None:
     suggestion = suggestion_for_observation(
         _obs(
