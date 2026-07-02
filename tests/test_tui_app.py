@@ -3008,7 +3008,8 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
             await pilot.press("n")
             await pilot.pause(0.1)
             assert service.created_sessions == ["session-new-1"]
-            assert "当前会话：session-new-1" in _text(app, "#conversation")
+            assert "当前会话：session-new-1" not in _text(app, "#conversation")
+            assert "sid:session-n" in _text(app, "#status-bar")
 
             input_widget.value = "/sessions"
             await pilot.press("enter")
@@ -3019,6 +3020,79 @@ def test_tui_sessions_overlay_search_resume_continue_new_and_escape(tmp_path: Pa
 
     asyncio.run(run_resume())
     asyncio.run(run_continue_new_escape())
+
+
+def test_tui_new_session_command_clears_previous_timeline(tmp_path: Path) -> None:
+    service = FakeAssistantService(workspace_root=tmp_path, assistant_content="旧回答")
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "旧问题"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            assert "旧问题" in _text(app, "#conversation")
+            assert "旧回答" in _text(app, "#conversation")
+
+            input_widget.value = "/new"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            conversation = _text(app, "#conversation")
+            assert service.created_sessions == ["session-new-1"]
+            assert "旧问题" not in conversation
+            assert "旧回答" not in conversation
+            assert "新建会话：session-new-1" not in conversation
+            assert "sid:session-n" in _text(app, "#status-bar")
+
+    asyncio.run(run())
+
+
+def test_tui_restored_session_renders_final_response_not_raw_turn_summary(tmp_path: Path) -> None:
+    sessions = [_session_summary(tmp_path, "session-raw", "恢复旧会话", 1)]
+    raw_summary = "\n".join(
+        [
+            "- user_request: 恢复旧会话",
+            "  status: completed",
+            f"  episode_path: {tmp_path / '.runs' / 'episode-1'}",
+            "  assistant_final_response: 这是恢复后应该看到的回答。",
+            "  verification: success",
+        ],
+    )
+    service = FakeAssistantService(
+        workspace_root=tmp_path,
+        sessions=sessions,
+        session_histories={
+            "session-raw": [
+                SimpleNamespace(
+                    turn_index=1,
+                    request="恢复旧会话",
+                    summary=raw_summary,
+                    status="completed",
+                ),
+            ],
+        },
+    )
+
+    async def run() -> None:
+        app = HaAgentTuiApp(service)
+        async with app.run_test(size=(120, 40)) as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/sessions"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+            conversation = _text(app, "#conversation")
+            assert "恢复旧会话" in conversation
+            assert "这是恢复后应该看到的回答。" in conversation
+            assert "user_request:" not in conversation
+            assert "episode_path:" not in conversation
+            assert "verification:" not in conversation
+
+    asyncio.run(run())
 
 
 def test_tui_restores_initial_resume_session_on_mount(tmp_path: Path) -> None:

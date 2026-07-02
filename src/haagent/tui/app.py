@@ -421,7 +421,7 @@ class HaAgentTuiApp(App[None]):
         except Exception as error:
             self._append_block("Session warning", f"新建会话失败：{error}")
         else:
-            self._append_line(f"新建会话：{status.session_id}")
+            self._clear_conversation_for_new_session()
         self._refresh()
 
     def action_resume_latest(self) -> None:
@@ -545,12 +545,7 @@ class HaAgentTuiApp(App[None]):
             self._append_block("Session warning", f"会话操作失败：{error}")
         else:
             if result.action == "new":
-                self._conversation_lines = [f"当前会话：{status.session_id}"]
-                self._conversation_rendered_count = 0
-                self._conversation_placeholder_rendered = False
-                conversation = self.query_one("#conversation", ConversationTimeline)
-                conversation.clear_timeline()
-                conversation.add_system("会话", f"当前会话：{status.session_id}")
+                self._clear_conversation_for_new_session()
             else:
                 self._show_session_history(status, prefix="当前会话")
         self._refresh()
@@ -1142,16 +1137,26 @@ class HaAgentTuiApp(App[None]):
         if not history and not lines:
             lines.append("")
         for turn in history:
+            assistant_text = _session_turn_assistant_text(turn)
             lines.append(f"{BLOCK_TITLES['You']}\n  {turn.request}")
-            lines.append(f"{BLOCK_TITLES['Assistant']}\n  {turn.summary}")
+            lines.append(f"{BLOCK_TITLES['Assistant']}\n  {assistant_text}")
             conversation.add_user(turn.request, turn_index=turn.turn_index)
-            conversation.add_assistant_message(turn.summary, turn_index=turn.turn_index)
+            conversation.add_assistant_message(assistant_text, turn_index=turn.turn_index)
             if turn.status != "completed":
                 lines.append(f"状态：{turn.status}")
                 conversation.add_system("状态", f"状态：{turn.status}", turn_index=turn.turn_index)
         self._conversation_lines = lines
         self._conversation_rendered_count = 0
         self._conversation_placeholder_rendered = False
+
+    def _clear_conversation_for_new_session(self) -> None:
+        self._conversation_lines = []
+        self._conversation_rendered_count = 0
+        self._conversation_placeholder_rendered = False
+        self._streaming_assistant_turn = None
+        self._streaming_assistant_text = ""
+        self._active_turn_index = None
+        self.query_one("#conversation", ConversationTimeline).clear_timeline()
 
     def _append_block(self, title: str, body: str) -> None:
         display_title = BLOCK_TITLES.get(title, title)
@@ -1204,6 +1209,30 @@ class HaAgentTuiApp(App[None]):
 def run_tui(service: AssistantService) -> int:
     HaAgentTuiApp(service).run()
     return 0
+
+
+def _session_turn_assistant_text(turn: object) -> str:
+    for field_name in ("assistant_final_response", "final_response", "response", "content"):
+        value = getattr(turn, field_name, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    summary = str(getattr(turn, "summary", "")).strip()
+    extracted = _summary_field(summary, "assistant_final_response") or _summary_field(summary, "final_response")
+    return extracted or summary
+
+
+def _summary_field(summary: str, field_name: str) -> str:
+    for line in summary.splitlines():
+        normalized = line.strip()
+        if normalized.startswith("- "):
+            normalized = normalized[2:].lstrip()
+        colon_prefix = f"{field_name}:"
+        equals_prefix = f"{field_name}="
+        if normalized.startswith(colon_prefix):
+            return normalized.removeprefix(colon_prefix).strip()
+        if normalized.startswith(equals_prefix):
+            return normalized.removeprefix(equals_prefix).strip()
+    return ""
 
 
 def _configurable_model_catalog_providers(providers: list[object]) -> list[object]:
